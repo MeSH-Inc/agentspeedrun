@@ -1,0 +1,11 @@
+{
+  "name": "agentspeedrun",
+  "owner": { "name": "mesh-inc" },
+  "plugins": [
+    {
+      "name": "agentspeedrun",
+      "source": "./plugins/claude-code",
+      "description": "Time agentic coding projects against milestone categories (any%, 100%, first revenue)."
+    }
+  ]
+}

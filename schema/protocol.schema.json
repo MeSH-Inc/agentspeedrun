@@ -1,0 +1,1072 @@
+{
+  "$defs": {
+    "ActiveRunResponse": {
+      "properties": {
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AppendRequest": {
+      "description": "Append one event to an existing run.",
+      "properties": {
+        "event_id": {
+          "description": "Client idempotency key. Retrying with the same id is a no-op.",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payload": {
+          "$ref": "#/$defs/EventPayload"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "run_id",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "AppendResponse": {
+      "properties": {
+        "derived": {
+          "default": [],
+          "description": "Events the daemon appended as a consequence (verification, completion).",
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "type": "array"
+        },
+        "event": {
+          "$ref": "#/$defs/Event"
+        },
+        "inserted": {
+          "description": "False when the event_id already existed.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "event",
+        "inserted"
+      ],
+      "type": "object"
+    },
+    "CategoriesResponse": {
+      "properties": {
+        "categories": {
+          "items": {
+            "$ref": "#/$defs/Category"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "categories"
+      ],
+      "type": "object"
+    },
+    "Category": {
+      "description": "A versioned ruleset. Runs pin `(id, version)` at start so later edits to\na category never change how an old run is judged.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "milestones": {
+          "description": "The run completes when every one of these counts.",
+          "items": {
+            "$ref": "#/$defs/MilestoneTemplate"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "name",
+        "description",
+        "milestones"
+      ],
+      "type": "object"
+    },
+    "ChainReport": {
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "events": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "events",
+        "ok"
+      ],
+      "type": "object"
+    },
+    "ErrorBody": {
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "type": "object"
+    },
+    "Event": {
+      "description": "A single immutable fact in a run's log, as stored by the daemon.\n\n`seq`, `recorded_at`, `device_id`, `prev_hash` and `hash` are assigned by\nthe daemon at append time; clients only supply `event_id` (their\nidempotency key), `occurred_at` and `payload`.",
+      "properties": {
+        "device_id": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "string"
+        },
+        "hash": {
+          "description": "sha256 over the canonical JSON of this event without `hash`.",
+          "type": "string"
+        },
+        "occurred_at": {
+          "description": "When the fact happened according to the client clock.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/EventPayload"
+        },
+        "prev_hash": {
+          "description": "Hash of the previous event in this run; `None` only for `seq == 1`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recorded_at": {
+          "description": "When the daemon persisted it.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seq": {
+          "description": "Position in the run's log, starting at 1. Gapless.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "schema_version",
+        "run_id",
+        "seq",
+        "device_id",
+        "occurred_at",
+        "recorded_at",
+        "payload",
+        "hash"
+      ],
+      "type": "object"
+    },
+    "EventPayload": {
+      "oneOf": [
+        {
+          "properties": {
+            "category_id": {
+              "type": "string"
+            },
+            "category_version": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "project_root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "run_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "category_id",
+            "category_version"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "host": {
+              "description": "Which tool the prompt came from, e.g. `claude-code`, `opencode`.",
+              "type": "string"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "redacted": {
+              "description": "True when secret redaction changed `content`.",
+              "type": "boolean"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "prompt_submitted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session_id",
+            "host",
+            "content",
+            "redacted"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_turn_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_turn_ended",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "description": "Stable key for category milestones, e.g. `happy-path-demo`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "milestone_id": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/$defs/MilestoneOrigin"
+            },
+            "required_trust": {
+              "$ref": "#/$defs/Trust"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "milestone_proposed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "milestone_id",
+            "origin",
+            "title",
+            "required_trust"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "milestone_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "milestone_accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "milestone_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "milestone_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "milestone_rejected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "milestone_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "evidence": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Evidence"
+              },
+              "type": "array"
+            },
+            "milestone_id": {
+              "type": "string"
+            },
+            "trust": {
+              "$ref": "#/$defs/Trust"
+            },
+            "type": {
+              "const": "milestone_reached",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "milestone_id",
+            "trust"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "evidence": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Evidence"
+              },
+              "type": "array"
+            },
+            "milestone_id": {
+              "type": "string"
+            },
+            "trust": {
+              "$ref": "#/$defs/Trust"
+            },
+            "type": {
+              "const": "milestone_verified",
+              "type": "string"
+            },
+            "verifier": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "milestone_id",
+            "trust",
+            "verifier"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "milestone_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "type": {
+              "const": "milestone_invalidated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "milestone_id",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "run_paused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_resumed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/RunOutcome"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "run_finished",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "outcome"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Evidence": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "git_commit",
+              "type": "string"
+            },
+            "sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sha"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "url",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "ci_run",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "event_id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "stripe_event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "event_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "note",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MilestoneOrigin": {
+      "oneOf": [
+        {
+          "const": "predefined",
+          "description": "Comes from the run's category ruleset.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "Entered by the user.",
+          "type": "string"
+        },
+        {
+          "const": "agent_generated",
+          "description": "Proposed by an agent; must be accepted by the user before it counts.",
+          "type": "string"
+        }
+      ]
+    },
+    "MilestoneState": {
+      "enum": [
+        "proposed",
+        "accepted",
+        "rejected",
+        "reached",
+        "verified"
+      ],
+      "type": "string"
+    },
+    "MilestoneTemplate": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "required_trust": {
+          "$ref": "#/$defs/Trust"
+        },
+        "suggested_evidence": {
+          "default": [],
+          "description": "Evidence kinds that satisfy this milestone, as a hint to users and agents.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "description",
+        "required_trust"
+      ],
+      "type": "object"
+    },
+    "MilestoneView": {
+      "properties": {
+        "counted_at": {
+          "description": "When the milestone first met its required trust. This is the split.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "milestone_id": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/MilestoneOrigin"
+        },
+        "reached_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required_trust": {
+          "$ref": "#/$defs/Trust"
+        },
+        "split": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timing"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MilestoneState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "trust": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Trust"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Highest trust any claim or verification has reached."
+        }
+      },
+      "required": [
+        "milestone_id",
+        "origin",
+        "title",
+        "required_trust",
+        "state",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "ProjectAppendRequest": {
+      "description": "Append one event to whichever run is active for a project. Lets clients\nwrite (and spool while offline) without knowing the run id.",
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payload": {
+          "$ref": "#/$defs/EventPayload"
+        }
+      },
+      "required": [
+        "event_id",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "PromptRequest": {
+      "description": "Record a prompt for a project, starting a run if none is active.",
+      "properties": {
+        "category_id": {
+          "description": "Category for a run started by this prompt.",
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "project_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "starts_turn": {
+          "default": true,
+          "description": "Also mark an agent turn as started for this session.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "event_id",
+        "project_id",
+        "category_id",
+        "session_id",
+        "host",
+        "content"
+      ],
+      "type": "object"
+    },
+    "PromptResponse": {
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/Event"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "run_started": {
+          "description": "True when this prompt started a new run.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "run_id",
+        "run_started",
+        "event"
+      ],
+      "type": "object"
+    },
+    "RunOutcome": {
+      "oneOf": [
+        {
+          "const": "completed",
+          "description": "Every category milestone counts.",
+          "type": "string"
+        },
+        {
+          "const": "abandoned",
+          "description": "The user reset; the next prompt starts a fresh run.",
+          "type": "string"
+        }
+      ]
+    },
+    "RunStatus": {
+      "enum": [
+        "running",
+        "paused",
+        "completed",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "RunView": {
+      "properties": {
+        "category_id": {
+          "type": "string"
+        },
+        "category_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "closed": {
+          "description": "No further prompts go to this run: it was abandoned, or reset after completing.",
+          "type": "boolean"
+        },
+        "finished_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hosts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "last_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "milestones": {
+          "items": {
+            "$ref": "#/$defs/MilestoneView"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "project_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "sessions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "timing": {
+          "$ref": "#/$defs/Timing"
+        }
+      },
+      "required": [
+        "run_id",
+        "project_id",
+        "category_id",
+        "category_version",
+        "status",
+        "started_at",
+        "closed",
+        "prompt_count",
+        "sessions",
+        "hosts",
+        "milestones",
+        "timing",
+        "last_seq"
+      ],
+      "type": "object"
+    },
+    "Timing": {
+      "description": "Elapsed time measured several ways, all in milliseconds since run start.",
+      "properties": {
+        "agent_ms": {
+          "description": "Time at least one agent turn was running (union across sessions), minus pauses.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "human_ms": {
+          "description": "Time between agent turns, each gap capped at the idle threshold, minus pauses.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "timed_ms": {
+          "description": "Real time minus explicit pauses.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "wall_ms": {
+          "description": "Real time: wall clock since the first prompt.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wall_ms",
+        "timed_ms",
+        "agent_ms",
+        "human_ms"
+      ],
+      "type": "object"
+    },
+    "Trust": {
+      "description": "How much a milestone claim can be believed. Ordered weakest → strongest.",
+      "enum": [
+        "self_declared",
+        "agent_claimed",
+        "evidence_verified"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Everything that crosses the plugin ↔ daemon boundary, for schema export.",
+  "properties": {
+    "active_run_response": {
+      "$ref": "#/$defs/ActiveRunResponse"
+    },
+    "append_request": {
+      "$ref": "#/$defs/AppendRequest"
+    },
+    "append_response": {
+      "$ref": "#/$defs/AppendResponse"
+    },
+    "categories_response": {
+      "$ref": "#/$defs/CategoriesResponse"
+    },
+    "chain_report": {
+      "$ref": "#/$defs/ChainReport"
+    },
+    "error_body": {
+      "$ref": "#/$defs/ErrorBody"
+    },
+    "event": {
+      "$ref": "#/$defs/Event"
+    },
+    "project_append_request": {
+      "$ref": "#/$defs/ProjectAppendRequest"
+    },
+    "prompt_request": {
+      "$ref": "#/$defs/PromptRequest"
+    },
+    "prompt_response": {
+      "$ref": "#/$defs/PromptResponse"
+    }
+  },
+  "required": [
+    "event",
+    "append_request",
+    "project_append_request",
+    "append_response",
+    "prompt_request",
+    "prompt_response",
+    "active_run_response",
+    "categories_response",
+    "chain_report",
+    "error_body"
+  ],
+  "title": "Protocol",
+  "type": "object"
+}

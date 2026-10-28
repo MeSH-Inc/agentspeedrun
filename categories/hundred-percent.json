@@ -1,0 +1,50 @@
+{
+  "id": "hundred-percent",
+  "version": 1,
+  "name": "100%",
+  "description": "Complete mini-product. Every core feature really works, is tested and deployed; not yet polished or productized.",
+  "milestones": [
+    {
+      "key": "scaffold-runs",
+      "title": "Scaffold builds and runs",
+      "description": "The project builds and starts locally with no errors.",
+      "required_trust": "self_declared",
+      "suggested_evidence": ["git_commit"]
+    },
+    {
+      "key": "happy-path-demo",
+      "title": "Happy-path demo",
+      "description": "The core concept can be demonstrated end-to-end on the happy path.",
+      "required_trust": "evidence_verified",
+      "suggested_evidence": ["git_commit"]
+    },
+    {
+      "key": "core-features-real",
+      "title": "Core features implemented for real",
+      "description": "No stubs or hardcoded data remain on any core path; errors and edge cases are handled.",
+      "required_trust": "evidence_verified",
+      "suggested_evidence": ["git_commit"]
+    },
+    {
+      "key": "tests-green",
+      "title": "Automated tests pass in CI",
+      "description": "Core behavior is covered by automated tests passing on a CI run.",
+      "required_trust": "evidence_verified",
+      "suggested_evidence": ["ci_run"]
+    },
+    {
+      "key": "deployed",
+      "title": "Deployed and reachable",
+      "description": "Runs somewhere other than the developer's machine and is reachable by its intended users.",
+      "required_trust": "evidence_verified",
+      "suggested_evidence": ["url"]
+    },
+    {
+      "key": "usable-by-stranger",
+      "title": "Usable by a stranger",
+      "description": "Someone who did not build it can install or sign up and complete the core flow using only the docs.",
+      "required_trust": "self_declared",
+      "suggested_evidence": ["note"]
+    }
+  ]
+}

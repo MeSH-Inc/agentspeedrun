@@ -1,0 +1,162 @@
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use crate::Event;
+
+/// Serialize a JSON value with object keys sorted recursively, so the hash
+/// does not depend on serde_json feature flags or field order.
+pub fn canonical_json(v: &Value) -> String {
+    let mut out = String::new();
+    write_canonical(v, &mut out);
+    out
+}
+
+fn write_canonical(v: &Value, out: &mut String) {
+    match v {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, k) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String(k.clone()).to_string());
+                out.push(':');
+                write_canonical(&map[k], out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
+}
+
+/// Hash of an event: sha256 over its canonical JSON with `hash` removed.
+pub fn compute_hash(event: &Event) -> String {
+    let mut v = serde_json::to_value(event).expect("Event always serializes");
+    if let Value::Object(map) = &mut v {
+        map.remove("hash");
+    }
+    hex::encode(Sha256::digest(canonical_json(&v).as_bytes()))
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ChainError {
+    #[error("event seq {seq}: expected seq {expected}")]
+    Gap { seq: u64, expected: u64 },
+    #[error("event seq {seq}: prev_hash does not match previous event")]
+    BrokenLink { seq: u64 },
+    #[error("event seq {seq}: stored hash does not match contents")]
+    Tampered { seq: u64 },
+    #[error("event seq {seq}: belongs to run {found}, expected {expected}")]
+    WrongRun {
+        seq: u64,
+        found: String,
+        expected: String,
+    },
+}
+
+/// Check that `events` (one run, ordered by seq) form an intact chain.
+pub fn verify_chain(events: &[Event]) -> Result<(), ChainError> {
+    let mut prev: Option<&Event> = None;
+    for (i, e) in events.iter().enumerate() {
+        let expected = i as u64 + 1;
+        if e.seq != expected {
+            return Err(ChainError::Gap { seq: e.seq, expected });
+        }
+        if let Some(first) = events.first()
+            && e.run_id != first.run_id
+        {
+            return Err(ChainError::WrongRun {
+                seq: e.seq,
+                found: e.run_id.clone(),
+                expected: first.run_id.clone(),
+            });
+        }
+        if e.prev_hash.as_deref() != prev.map(|p| p.hash.as_str()) {
+            return Err(ChainError::BrokenLink { seq: e.seq });
+        }
+        if compute_hash(e) != e.hash {
+            return Err(ChainError::Tampered { seq: e.seq });
+        }
+        prev = Some(e);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EventPayload, SCHEMA_VERSION};
+    use chrono::Utc;
+
+    fn chain(n: u64) -> Vec<Event> {
+        let mut out: Vec<Event> = Vec::new();
+        for seq in 1..=n {
+            let mut e = Event {
+                event_id: format!("e{seq}"),
+                schema_version: SCHEMA_VERSION,
+                run_id: "r1".into(),
+                seq,
+                device_id: "d1".into(),
+                occurred_at: Utc::now(),
+                recorded_at: Utc::now(),
+                payload: EventPayload::AgentTurnStarted {
+                    session_id: "s".into(),
+                },
+                prev_hash: out.last().map(|p| p.hash.clone()),
+                hash: String::new(),
+            };
+            e.hash = compute_hash(&e);
+            out.push(e);
+        }
+        out
+    }
+
+    #[test]
+    fn canonical_json_sorts_nested_keys() {
+        let v: Value = serde_json::from_str(r#"{"b":1,"a":{"d":[{"z":1,"y":2}],"c":"x"}}"#).unwrap();
+        assert_eq!(canonical_json(&v), r#"{"a":{"c":"x","d":[{"y":2,"z":1}]},"b":1}"#);
+    }
+
+    #[test]
+    fn intact_chain_verifies() {
+        assert_eq!(verify_chain(&chain(5)), Ok(()));
+    }
+
+    #[test]
+    fn hash_survives_json_roundtrip() {
+        let events = chain(3);
+        let back: Vec<Event> = serde_json::from_str(&serde_json::to_string(&events).unwrap()).unwrap();
+        assert_eq!(verify_chain(&back), Ok(()));
+    }
+
+    #[test]
+    fn tampering_is_detected() {
+        let mut events = chain(3);
+        events[1].payload = EventPayload::AgentTurnEnded {
+            session_id: "s".into(),
+        };
+        assert_eq!(verify_chain(&events), Err(ChainError::Tampered { seq: 2 }));
+    }
+
+    #[test]
+    fn deletion_is_detected() {
+        let mut events = chain(3);
+        events.remove(1);
+        assert_eq!(
+            verify_chain(&events),
+            Err(ChainError::Gap { seq: 3, expected: 2 })
+        );
+    }
+}
