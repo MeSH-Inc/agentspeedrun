@@ -115,6 +115,27 @@
       ],
       "type": "object"
     },
+    "CategoryRef": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "name"
+      ],
+      "type": "object"
+    },
     "ChainReport": {
       "properties": {
         "error": {
@@ -617,6 +638,206 @@
         }
       ]
     },
+    "LiveMilestone": {
+      "properties": {
+        "counts": {
+          "description": "Reached at or above the required trust.",
+          "type": "boolean"
+        },
+        "delta_ms": {
+          "description": "`split.timed_ms - pb_split.timed_ms`; negative is ahead of PB.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "milestone_id": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/MilestoneOrigin"
+        },
+        "pb_split": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The personal best's split for the same category milestone."
+        },
+        "required_trust": {
+          "$ref": "#/$defs/Trust"
+        },
+        "split": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timing"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MilestoneState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "trust": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Trust"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "milestone_id",
+        "title",
+        "origin",
+        "state",
+        "required_trust",
+        "counts"
+      ],
+      "type": "object"
+    },
+    "LiveRun": {
+      "properties": {
+        "active_agents": {
+          "description": "Sessions with an agent turn in progress.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "category": {
+          "$ref": "#/$defs/CategoryRef"
+        },
+        "finished_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_event_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "milestones": {
+          "description": "Category milestones first (in category order), then user and agent milestones.",
+          "items": {
+            "$ref": "#/$defs/LiveMilestone"
+          },
+          "type": "array"
+        },
+        "pb": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PersonalBest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Best earlier completed run of the same category and version, by `timed_ms`."
+        },
+        "progress": {
+          "$ref": "#/$defs/Progress",
+          "description": "Category milestones that count, out of all category milestones."
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "project_name": {
+          "description": "Directory name of the project root, for display.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "running": {
+          "$ref": "#/$defs/RunningClocks",
+          "description": "Which clocks are advancing at `as_of`."
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "timing": {
+          "$ref": "#/$defs/Timing",
+          "description": "Clocks at `LiveSnapshot::as_of`."
+        }
+      },
+      "required": [
+        "run_id",
+        "project_id",
+        "category",
+        "status",
+        "started_at",
+        "last_event_at",
+        "timing",
+        "running",
+        "active_agents",
+        "prompt_count",
+        "progress",
+        "milestones"
+      ],
+      "type": "object"
+    },
+    "LiveSnapshot": {
+      "description": "Every live run worth showing, as of one instant.",
+      "properties": {
+        "as_of": {
+          "description": "The instant all `timing` values were computed at.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Monotonic position in the daemon's whole log. Larger means newer;\nignore any snapshot whose cursor is lower than one already shown.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runs": {
+          "description": "Unfinished runs first, then most recently active.",
+          "items": {
+            "$ref": "#/$defs/LiveRun"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "as_of",
+        "cursor",
+        "runs"
+      ],
+      "type": "object"
+    },
     "MilestoneOrigin": {
       "oneOf": [
         {
@@ -756,6 +977,46 @@
         "required_trust",
         "state",
         "evidence"
+      ],
+      "type": "object"
+    },
+    "PersonalBest": {
+      "properties": {
+        "project_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "timing": {
+          "$ref": "#/$defs/Timing"
+        }
+      },
+      "required": [
+        "run_id",
+        "timing"
+      ],
+      "type": "object"
+    },
+    "Progress": {
+      "properties": {
+        "counted": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "counted",
+        "total"
       ],
       "type": "object"
     },
@@ -916,6 +1177,19 @@
           "type": "array",
           "uniqueItems": true
         },
+        "idle_since": {
+          "description": "Start of the current gap between agent turns, if the run is live, unpaused and no turn is open.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_event_at": {
+          "description": "When the daemon recorded the latest event.",
+          "format": "date-time",
+          "type": "string"
+        },
         "last_seq": {
           "format": "uint64",
           "minimum": 0,
@@ -926,6 +1200,20 @@
             "$ref": "#/$defs/MilestoneView"
           },
           "type": "array"
+        },
+        "open_turns": {
+          "description": "Sessions with an agent turn in progress.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "paused_since": {
+          "description": "Start of the current pause, if paused.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "project_id": {
           "type": "string"
@@ -959,7 +1247,8 @@
           "$ref": "#/$defs/RunStatus"
         },
         "timing": {
-          "$ref": "#/$defs/Timing"
+          "$ref": "#/$defs/Timing",
+          "description": "Clocks as of the `now` the view was folded at (or completion)."
         }
       },
       "required": [
@@ -975,7 +1264,40 @@
         "hosts",
         "milestones",
         "timing",
+        "open_turns",
+        "last_event_at",
         "last_seq"
+      ],
+      "type": "object"
+    },
+    "RunningClocks": {
+      "description": "A clock that is running advances 1 ms per ms after `as_of`, except\n`human`, which stops at `human_stops_at` (the idle cap).",
+      "properties": {
+        "agent": {
+          "type": "boolean"
+        },
+        "human": {
+          "type": "boolean"
+        },
+        "human_stops_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timed": {
+          "type": "boolean"
+        },
+        "wall": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "wall",
+        "timed",
+        "agent",
+        "human"
       ],
       "type": "object"
     },
@@ -1045,6 +1367,9 @@
     "event": {
       "$ref": "#/$defs/Event"
     },
+    "live_snapshot": {
+      "$ref": "#/$defs/LiveSnapshot"
+    },
     "project_append_request": {
       "$ref": "#/$defs/ProjectAppendRequest"
     },
@@ -1065,6 +1390,7 @@
     "active_run_response",
     "categories_response",
     "chain_report",
+    "live_snapshot",
     "error_body"
   ],
   "title": "Protocol",

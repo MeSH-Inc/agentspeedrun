@@ -1,12 +1,15 @@
 //! Business rules on top of the store: run lifecycle, validation,
 //! verification and completion.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Duration, Utc};
 use speedrun_core::{
-    Category, Event, EventPayload, MilestoneOrigin, RunOutcome, RunView, Trust,
+    Category, Event, EventPayload, MilestoneOrigin, RunOutcome, RunStatus, RunView, Trust,
     api::{AppendRequest, AppendResponse, ChainReport, ProjectAppendRequest, PromptRequest, PromptResponse},
     category,
     hash::verify_chain,
+    live::{LiveRun, LiveSnapshot},
     redact::redact,
 };
 
@@ -36,6 +39,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Service {
     store: Store,
     categories: Vec<Category>,
+    /// Completed runs per category@version, fastest first by `timed_ms`.
+    /// Cleared whenever any run finishes.
+    pb_cache: HashMap<(String, u32), Vec<RunView>>,
 }
 
 fn clamp_time(t: Option<DateTime<Utc>>) -> DateTime<Utc> {
@@ -59,7 +65,11 @@ fn fold(tx: &Tx<'_>, run_id: &str) -> Result<RunView> {
 
 impl Service {
     pub fn new(store: Store, categories: Vec<Category>) -> Self {
-        Self { store, categories }
+        Self {
+            store,
+            categories,
+            pb_cache: HashMap::new(),
+        }
     }
 
     pub fn categories(&self) -> &[Category] {
@@ -192,6 +202,12 @@ impl Service {
 
         // Derived steps run even on retries; their event ids make them idempotent.
         let derived = self.derive(&event)?;
+        if std::iter::once(&event)
+            .chain(&derived)
+            .any(|e| matches!(e.payload, EventPayload::RunFinished { .. }))
+        {
+            self.pb_cache.clear();
+        }
         Ok(AppendResponse {
             event,
             inserted,
@@ -287,6 +303,56 @@ impl Service {
         })
     }
 
+    /// Snapshot for live displays: the newest open run of every project
+    /// active within `window`.
+    pub fn live(&mut self, window: Duration) -> Result<LiveSnapshot> {
+        let as_of = Utc::now();
+        let reader = self.store.reader();
+        let cursor = reader.cursor()?;
+        let mut views = Vec::new();
+        for run_id in reader.latest_runs()? {
+            let Some(view) = RunView::fold(&reader.run_events(&run_id)?, as_of) else {
+                continue;
+            };
+            if !view.closed && view.last_event_at >= as_of - window {
+                views.push(view);
+            }
+        }
+        let mut runs = Vec::with_capacity(views.len());
+        for view in views {
+            let name = category::find(&self.categories, &view.category_id, Some(view.category_version))
+                .map_or_else(|| view.category_id.clone(), |c| c.name.clone());
+            let pb = self
+                .completed_runs(&view.category_id, view.category_version)?
+                .iter()
+                .find(|r| r.run_id != view.run_id);
+            runs.push(LiveRun::from_view(&view, &name, as_of, pb));
+        }
+        runs.sort_by_key(|r| (r.finished_at.is_some(), std::cmp::Reverse(r.last_event_at)));
+        Ok(LiveSnapshot { as_of, cursor, runs })
+    }
+
+    fn completed_runs(&mut self, category_id: &str, version: u32) -> Result<&[RunView]> {
+        let key = (category_id.to_string(), version);
+        if !self.pb_cache.contains_key(&key) {
+            let reader = self.store.reader();
+            let now = Utc::now();
+            let mut done = Vec::new();
+            for run_id in reader.runs_in_category(category_id, version)? {
+                if let Some(v) = RunView::fold(&reader.run_events(&run_id)?, now)
+                    && v.status == RunStatus::Completed
+                {
+                    done.push(v);
+                }
+            }
+            done.sort_by_key(|v| v.timing.timed_ms);
+            // Two is enough: the best, and the runner-up for when the best is the run being shown.
+            done.truncate(2);
+            self.pb_cache.insert(key.clone(), done);
+        }
+        Ok(&self.pb_cache[&key])
+    }
+
     pub fn active_run(&self, project_id: &str) -> Result<Option<RunView>> {
         let r = self.store.reader();
         let Some(run_id) = r.latest_run(project_id)? else {
@@ -364,7 +430,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use speedrun_core::{Evidence, MilestoneState, RunStatus};
+    use speedrun_core::{Evidence, MilestoneState};
 
     fn svc() -> (Service, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -522,6 +588,66 @@ mod tests {
         let second = s.record_prompt(prompt("p2")).unwrap();
         assert!(second.run_started);
         assert_ne!(second.run_id, first);
+    }
+
+    #[test]
+    fn live_snapshot_compares_against_personal_best() {
+        let (mut s, _d) = svc();
+        let complete = |s: &mut Service, project: &str, n: &str| {
+            let mut p = prompt(&format!("{n}-p"));
+            p.project_id = project.into();
+            let run = s.record_prompt(p).unwrap().run_id;
+            for key in ["scaffold-runs", "happy-path-demo"] {
+                // happy-path-demo needs verified evidence; inject it the way a verifier would.
+                append(
+                    s,
+                    &run,
+                    &format!("{n}-{key}"),
+                    EventPayload::MilestoneReached {
+                        milestone_id: key.into(),
+                        trust: Trust::SelfDeclared,
+                        evidence: vec![],
+                    },
+                )
+                .unwrap();
+                s.insert_derived(
+                    &run,
+                    &format!("{n}-{key}-v"),
+                    Utc::now(),
+                    EventPayload::MilestoneVerified {
+                        milestone_id: key.into(),
+                        trust: Trust::EvidenceVerified,
+                        verifier: "test".into(),
+                        evidence: vec![],
+                    },
+                )
+                .unwrap();
+                s.complete_if_done(&run).unwrap();
+            }
+            s.pb_cache.clear();
+            run
+        };
+        let first = complete(&mut s, "a", "one");
+        let live = s.live(Duration::days(1)).unwrap();
+        assert_eq!(live.runs.len(), 1);
+        assert_eq!(live.runs[0].status, RunStatus::Completed);
+        assert!(live.runs[0].pb.is_none(), "a run is not its own PB");
+
+        s.record_prompt(PromptRequest {
+            project_id: "b".into(),
+            ..prompt("b-p")
+        })
+        .unwrap();
+        let live = s.live(Duration::days(1)).unwrap();
+        assert_eq!(live.runs.len(), 2);
+        assert_eq!(live.runs[0].status, RunStatus::Running, "open runs sort first");
+        assert_eq!(live.runs[0].pb.as_ref().unwrap().run_id, first);
+        assert!(live.runs[0].running.agent);
+        assert!(live.cursor > 0);
+        assert!(
+            s.live(Duration::zero()).unwrap().runs.len() < 2,
+            "window filters stale runs"
+        );
     }
 
     #[test]

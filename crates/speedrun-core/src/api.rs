@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Category, Event, EventPayload, RunView};
+use crate::{Category, Event, EventPayload, RunView, live::LiveSnapshot};
 
 /// Append one event to an existing run.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -102,6 +102,7 @@ pub struct Protocol {
     active_run_response: ActiveRunResponse,
     categories_response: CategoriesResponse,
     chain_report: ChainReport,
+    live_snapshot: LiveSnapshot,
     error_body: ErrorBody,
 }
 

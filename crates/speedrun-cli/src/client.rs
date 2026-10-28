@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use speedrun_core::{api::ErrorBody, paths};
+use speedrun_core::{api::ErrorBody, live::LiveSnapshot, paths};
 
 #[derive(Debug)]
 pub enum CallError {
@@ -97,7 +97,7 @@ impl Client {
 
     /// Make sure the daemon is up (starting it if needed), then deliver any
     /// spooled events first so they keep their order relative to new ones.
-    fn ready(&self) -> Result<(), CallError> {
+    pub fn ready(&self) -> Result<(), CallError> {
         self.with_autostart(|| self.send::<Value>("GET", "/v1/health", None))?;
         self.flush_spool();
         Ok(())
@@ -128,6 +128,58 @@ impl Client {
             }
             Err(e) => Err(e),
         }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
+
+    /// Follow the live stream with the read-only display token, calling
+    /// `on_snapshot` for each snapshot. Returns when the connection ends.
+    pub fn stream_live(
+        &self,
+        since_hours: u32,
+        mut on_snapshot: impl FnMut(LiveSnapshot),
+    ) -> Result<(), CallError> {
+        let token = fs::read_to_string(paths::display_token_path())
+            .map(|t| t.trim().to_string())
+            .map_err(|_| CallError::Unreachable("no display token yet; has speedrund ever run?".into()))?;
+        // No overall timeout: the stream is meant to stay open.
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_millis(500))
+            .build();
+        let resp = agent
+            .get(&format!("{}/v1/live/stream?since_hours={since_hours}", self.base))
+            .set("Authorization", &format!("Bearer {token}"))
+            .call()
+            .map_err(|e| match e {
+                ureq::Error::Status(status, _) => CallError::Api {
+                    status,
+                    message: "stream refused".into(),
+                },
+                ureq::Error::Transport(t) => CallError::Unreachable(t.to_string()),
+            })?;
+        let (mut event, mut data) = (String::new(), String::new());
+        for line in BufReader::new(resp.into_reader()).lines() {
+            let line = line.map_err(|e| CallError::Unreachable(e.to_string()))?;
+            if line.is_empty() {
+                if event == "snapshot"
+                    && let Ok(snap) = serde_json::from_str(&data)
+                {
+                    on_snapshot(snap);
+                }
+                event.clear();
+                data.clear();
+            } else if let Some(v) = line.strip_prefix("event:") {
+                event = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(v.strip_prefix(' ').unwrap_or(v));
+            }
+        }
+        Err(CallError::Unreachable("stream closed".into()))
     }
 
     /// On an unreachable daemon, try to start it once and retry.

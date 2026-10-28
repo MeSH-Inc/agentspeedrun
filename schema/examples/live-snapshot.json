@@ -1,0 +1,105 @@
+{
+  "as_of": "2027-01-15T08:50:00Z",
+  "cursor": 42,
+  "runs": [
+    {
+      "run_id": "01LIVE",
+      "project_id": "proj-recipe-box",
+      "project_name": "recipe-box",
+      "category": {
+        "id": "any-percent",
+        "version": 1,
+        "name": "Any%"
+      },
+      "status": "running",
+      "started_at": "2027-01-15T08:00:00Z",
+      "finished_at": null,
+      "last_event_at": "2027-01-15T08:44:00Z",
+      "timing": {
+        "wall_ms": 3000000,
+        "timed_ms": 3000000,
+        "agent_ms": 2340000,
+        "human_ms": 660000
+      },
+      "running": {
+        "wall": true,
+        "timed": true,
+        "agent": true,
+        "human": false,
+        "human_stops_at": null
+      },
+      "active_agents": 2,
+      "prompt_count": 2,
+      "progress": {
+        "counted": 1,
+        "total": 2
+      },
+      "milestones": [
+        {
+          "milestone_id": "scaffold-runs",
+          "key": "scaffold-runs",
+          "title": "Scaffold builds and runs",
+          "origin": "predefined",
+          "state": "reached",
+          "trust": "self_declared",
+          "required_trust": "self_declared",
+          "counts": true,
+          "split": {
+            "wall_ms": 540000,
+            "timed_ms": 540000,
+            "agent_ms": 540000,
+            "human_ms": 0
+          },
+          "pb_split": {
+            "wall_ms": 720000,
+            "timed_ms": 720000,
+            "agent_ms": 720000,
+            "human_ms": 0
+          },
+          "delta_ms": -180000
+        },
+        {
+          "milestone_id": "happy-path-demo",
+          "key": "happy-path-demo",
+          "title": "Happy-path demo",
+          "origin": "predefined",
+          "state": "reached",
+          "trust": "agent_claimed",
+          "required_trust": "evidence_verified",
+          "counts": false,
+          "split": null,
+          "pb_split": {
+            "wall_ms": 1800000,
+            "timed_ms": 1800000,
+            "agent_ms": 1800000,
+            "human_ms": 0
+          },
+          "delta_ms": null
+        },
+        {
+          "milestone_id": "01AGENT",
+          "key": null,
+          "title": "Recipes persist across restarts",
+          "origin": "agent_generated",
+          "state": "proposed",
+          "trust": null,
+          "required_trust": "agent_claimed",
+          "counts": false,
+          "split": null,
+          "pb_split": null,
+          "delta_ms": null
+        }
+      ],
+      "pb": {
+        "run_id": "01PB",
+        "project_name": "todo-app",
+        "timing": {
+          "wall_ms": 1800000,
+          "timed_ms": 1800000,
+          "agent_ms": 1800000,
+          "human_ms": 0
+        }
+      }
+    }
+  ]
+}

@@ -7,6 +7,7 @@ pub mod api;
 pub mod category;
 pub mod event;
 pub mod hash;
+pub mod live;
 pub mod paths;
 pub mod projection;
 pub mod redact;

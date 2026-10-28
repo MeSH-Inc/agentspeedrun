@@ -18,8 +18,10 @@ speedrun (CLI)
   ├─ finds the project: nearest .speedrun/project.json (untracked dirs record nothing)
   ├─ HTTP client → speedrund, autostarting it if needed
   └─ spool: $SPEEDRUN_HOME/spool/pending.jsonl when the daemon is unreachable
+displays (widgets, PiP, `speedrun watch`)
+  └─ /v1/live + /v1/live/stream (SSE) with the read-only display token — see LIVE_DISPLAY.md
 speedrund (daemon, 127.0.0.1:7477)
-  ├─ HTTP API /v1 (bearer token in $SPEEDRUN_HOME/token, mode 0600)
+  ├─ HTTP API /v1 (full token in $SPEEDRUN_HOME/token; read-only display-token; both 0600)
   ├─ Service: validation, run lifecycle, verifiers, completion
   └─ Store: SQLite (WAL, synchronous=FULL), append-only events table
 ```
@@ -80,10 +82,21 @@ sets `required_trust`. Verifiers (`speedrund/src/verify.rs`):
 Until the planned verifiers exist, milestones that require them cannot reach
 `evidence_verified`.
 
+## Live displays
+
+`LiveSnapshot` (`speedrun-core/src/live.rs`) is the only shape displays
+consume. It is built from `RunView` plus the personal best: the fastest
+earlier completed run of the same `category@version` by `timed_ms`. The
+daemon caches completed runs per category and clears the cache whenever a
+run finishes. Every successful write bumps a `watch` channel, and stream
+subscribers then recompute and send a full snapshot. Details:
+[LIVE_DISPLAY.md](LIVE_DISPLAY.md).
+
 ## Privacy
 
 - Nothing is recorded outside directories with `.speedrun/project.json`.
 - Prompt text passes through `redact()` (API keys, tokens, PEM keys, `*_SECRET=` assignments) before it is stored. `redacted: true` marks changed prompts.
+- Displays get the display token, which cannot read events or prompts.
 - The daemon only listens on loopback (override: `SPEEDRUN_ALLOW_NON_LOOPBACK=1`) and requires the bearer token.
 - Planned: encrypt prompt content at rest with a key in the OS keychain. Make syncing prompt text opt-in and separate from syncing timing metadata.
 

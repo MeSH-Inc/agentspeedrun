@@ -31,7 +31,7 @@ Claude Code / opencode / pi / VS Code / Zed      thin adapters (hooks, MCP)
 - **Trust levels.** A milestone counts only at its category's required trust: `self_declared` < `agent_claimed` < `evidence_verified`. Only daemon verifiers grant `evidence_verified` (today: git commits in the project's history).
 - **Several clocks.** Real time, timed (minus pauses), agent time (turns, unioned across sessions) and human time (gaps between turns, capped at 15 min each).
 
-Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Building a widget, picture-in-picture or phone view? See [docs/LIVE_DISPLAY.md](docs/LIVE_DISPLAY.md).
 
 ## Quick start
 
@@ -57,6 +57,8 @@ speedrun split happy-path-demo --commit HEAD # claim a split with evidence
 speedrun accept <id>                         # accept an agent-proposed milestone
 speedrun pause / speedrun resume
 speedrun verify                              # check the hash chain
+speedrun watch                               # live view of all active runs
+speedrun display                             # read-only token + URLs for widgets
 ```
 
 ## Layout
@@ -67,11 +69,12 @@ speedrun verify                              # check the hash chain
 | `crates/speedrund` | Daemon: SQLite store, rules, verifiers, HTTP API |
 | `crates/speedrun-cli` | `speedrun` CLI, host hook adapters, MCP server, offline spool |
 | `categories/` | Built-in category rulesets (versioned JSON) |
-| `schema/protocol.schema.json` | JSON Schema of the plugin ↔ daemon protocol (CI checks it is current) |
+| `schema/protocol.schema.json` | JSON Schema of the protocol, including `LiveSnapshot` (CI checks it is current) |
+| `schema/examples/` | Generated example payloads for display and design work |
 | `plugins/` | Host adapters. Claude Code works; others are stubs. |
 
 ## Status
 
 Scaffold. Working: daemon, CLI, Claude Code plugin, MCP tools, git verifier,
-offline spool. Not yet: URL/CI/Stripe verifiers, encryption of prompts at
+offline spool, live-display stream with read-only tokens and personal-best comparison. Not yet: URL/CI/Stripe verifiers, encryption of prompts at
 rest, other host adapters, cloud sync and leaderboards.

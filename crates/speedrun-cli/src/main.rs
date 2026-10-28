@@ -5,6 +5,7 @@ mod hook;
 mod mcp;
 mod ops;
 mod project;
+mod watch;
 
 use std::io::Read;
 
@@ -114,6 +115,17 @@ enum Cmd {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Live view of all active runs, ticking locally from the daemon's stream.
+    Watch {
+        /// Only runs active in the last this-many hours.
+        #[arg(long, default_value_t = 168)]
+        since_hours: u32,
+        /// Print one frame and exit.
+        #[arg(long)]
+        once: bool,
+    },
+    /// Print the read-only display token and live endpoints for widgets.
+    Display,
     /// Run the MCP server on stdio.
     Mcp,
     /// Print the JSON Schema of the plugin ↔ daemon protocol.
@@ -294,6 +306,17 @@ fn run(cmd: Cmd) -> Result<()> {
             } else {
                 ops::append(&c, &p, EventPayload::AgentTurnEnded { session_id: session })?;
             }
+        }
+        Cmd::Watch { since_hours, once } => watch::watch(since_hours, once)?,
+        Cmd::Display => {
+            c.ready()?;
+            let token = std::fs::read_to_string(speedrun_core::paths::display_token_path())?;
+            let base = c.base_url();
+            println!("display token (read-only, no prompt text): {}", token.trim());
+            println!("snapshot: GET {base}/v1/live");
+            println!("stream:   GET {base}/v1/live/stream   (server-sent events, event `snapshot`)");
+            println!("auth:     Authorization: Bearer <token>, or ?token=<token> for EventSource");
+            println!("browser pages need SPEEDRUN_CORS_ORIGINS=<origin> set for speedrund");
         }
         Cmd::Mcp => mcp::serve()?,
         Cmd::Schema => println!(

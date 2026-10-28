@@ -8,7 +8,8 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use speedrun_core::{Event, EventPayload, SCHEMA_VERSION, hash::compute_hash, new_id};
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE events (
     event_id    TEXT PRIMARY KEY,
     run_id      TEXT NOT NULL,
@@ -35,7 +36,18 @@ CREATE TABLE runs (
 CREATE INDEX runs_by_project ON runs (project_id, created);
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-"#];
+"#,
+    r#"
+ALTER TABLE runs ADD COLUMN category_id TEXT;
+ALTER TABLE runs ADD COLUMN category_version INTEGER;
+UPDATE runs SET
+    category_id = (SELECT json_extract(body, '$.payload.category_id') FROM events e
+                   WHERE e.run_id = runs.run_id AND e.seq = 1),
+    category_version = (SELECT json_extract(body, '$.payload.category_version') FROM events e
+                        WHERE e.run_id = runs.run_id AND e.seq = 1);
+CREATE INDEX runs_by_category ON runs (category_id, category_version);
+"#,
+];
 
 pub struct Store {
     conn: Connection,
@@ -131,6 +143,36 @@ impl Reader<'_> {
     }
 }
 
+impl Reader<'_> {
+    /// Position of the newest event across all runs. The table is
+    /// append-only, so rowid only grows.
+    pub fn cursor(&self) -> rusqlite::Result<u64> {
+        self.0
+            .query_row("SELECT COALESCE(MAX(rowid), 0) FROM events", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n as u64)
+    }
+
+    /// The newest run of every project.
+    pub fn latest_runs(&self) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.0.prepare_cached(
+            "SELECT run_id FROM runs r
+             WHERE created = (SELECT MAX(created) FROM runs WHERE project_id = r.project_id)",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    pub fn runs_in_category(&self, category_id: &str, version: u32) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT run_id FROM runs WHERE category_id = ?1 AND category_version = ?2")?;
+        let rows = stmt.query_map(params![category_id, version], |r| r.get(0))?;
+        rows.collect()
+    }
+}
+
 fn parse(body: &str) -> rusqlite::Result<Event> {
     serde_json::from_str(body)
         .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
@@ -190,11 +232,23 @@ impl Tx<'_> {
                 body
             ],
         )?;
-        if let EventPayload::RunStarted { project_id, .. } = &event.payload {
+        if let EventPayload::RunStarted {
+            project_id,
+            category_id,
+            category_version,
+            ..
+        } = &event.payload
+        {
             self.tx.execute(
-                "INSERT INTO runs (run_id, project_id, started_at, created)
-                 VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(created), 0) + 1 FROM runs))",
-                params![event.run_id, project_id, event.occurred_at.to_rfc3339()],
+                "INSERT INTO runs (run_id, project_id, started_at, created, category_id, category_version)
+                 VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(created), 0) + 1 FROM runs), ?4, ?5)",
+                params![
+                    event.run_id,
+                    project_id,
+                    event.occurred_at.to_rfc3339(),
+                    category_id,
+                    category_version
+                ],
             )?;
         }
         Ok(event)

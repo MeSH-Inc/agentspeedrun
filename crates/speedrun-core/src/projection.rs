@@ -88,7 +88,16 @@ pub struct RunView {
     pub sessions: BTreeSet<String>,
     pub hosts: BTreeSet<String>,
     pub milestones: Vec<MilestoneView>,
+    /// Clocks as of the `now` the view was folded at (or completion).
     pub timing: Timing,
+    /// Sessions with an agent turn in progress.
+    pub open_turns: u32,
+    /// Start of the current pause, if paused.
+    pub paused_since: Option<DateTime<Utc>>,
+    /// Start of the current gap between agent turns, if the run is live, unpaused and no turn is open.
+    pub idle_since: Option<DateTime<Utc>>,
+    /// When the daemon recorded the latest event.
+    pub last_event_at: DateTime<Utc>,
     pub last_seq: u64,
     pub head_hash: Option<String>,
 }
@@ -237,6 +246,10 @@ impl RunView {
             hosts: BTreeSet::new(),
             milestones: Vec::new(),
             timing: Timing::default(),
+            open_turns: 0,
+            paused_since: None,
+            idle_since: None,
+            last_event_at: first.recorded_at,
             last_seq: 0,
             head_hash: None,
         };
@@ -250,6 +263,7 @@ impl RunView {
         for e in events {
             view.last_seq = e.seq;
             view.head_hash = Some(e.hash.clone());
+            view.last_event_at = view.last_event_at.max(e.recorded_at);
             let t = e.occurred_at.max(start);
             match &e.payload {
                 EventPayload::RunStarted { .. } => {}
@@ -371,6 +385,14 @@ impl RunView {
         }
 
         let end = view.finished_at.unwrap_or(now).max(start);
+        if !view.is_finished() {
+            view.open_turns = open_turns.len() as u32;
+            view.paused_since = pause_open;
+            if open_turns.is_empty() && pause_open.is_none() {
+                let last_busy = agent.iter().chain(pauses.iter()).map(|&(_, b)| b).max();
+                view.idle_since = Some(last_busy.map_or(start, |b| b.max(start)).min(end));
+            }
+        }
         for (_, s) in open_turns {
             agent.push((s, end));
         }

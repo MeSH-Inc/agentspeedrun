@@ -23,6 +23,11 @@ pub fn token_path() -> PathBuf {
     data_dir().join("token")
 }
 
+/// Read-only token for live displays: sees timing and milestones, never prompts.
+pub fn display_token_path() -> PathBuf {
+    data_dir().join("display-token")
+}
+
 pub fn daemon_addr() -> String {
     std::env::var("SPEEDRUN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string())
 }

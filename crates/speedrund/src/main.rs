@@ -48,6 +48,7 @@ async fn main() -> Result<()> {
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
     let token = ensure_token(&paths::token_path())?;
+    let display_token = ensure_token(&paths::display_token_path())?;
 
     let store = store::Store::open(&dir.join("speedrun.sqlite"))?;
     let service = service::Service::new(store, category::builtin());
@@ -63,10 +64,22 @@ async fn main() -> Result<()> {
         .with_context(|| format!("binding {addr} (is another speedrund running?)"))?;
     tracing::info!(%addr, data_dir = %dir.display(), "speedrund listening");
 
-    let app = http::router(http::AppState {
-        service: Arc::new(Mutex::new(service)),
-        token: Arc::new(token),
-    });
+    let cors_origins: Vec<String> = std::env::var("SPEEDRUN_CORS_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .map(str::to_string)
+        .collect();
+    let app = http::router(
+        http::AppState {
+            service: Arc::new(Mutex::new(service)),
+            token: Arc::new(token),
+            display_token: Arc::new(display_token),
+            changes: Arc::new(tokio::sync::watch::channel(0).0),
+        },
+        &cors_origins,
+    );
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let ctrl_c = tokio::signal::ctrl_c();
