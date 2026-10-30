@@ -5,6 +5,7 @@ mod hook;
 mod mcp;
 mod ops;
 mod project;
+mod secret;
 mod setup;
 mod tools;
 mod watch;
@@ -15,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use speedrun_core::{
-    EventPayload, Evidence, MilestoneOrigin, RunOutcome, Trust,
+    EventPayload, MilestoneOrigin, RunOutcome, Trust,
     api::{CategoriesResponse, ChainReport},
     category::DEFAULT_CATEGORY,
 };
@@ -35,6 +36,18 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum SecretCmd {
+    /// Read the value from the terminal (hidden) or stdin.
+    Set {
+        name: secret::Name,
+    },
+    Rm {
+        name: secret::Name,
+    },
+    List,
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Start tracking this repository. The run's timer starts at the next prompt.
     Init {
@@ -51,15 +64,24 @@ enum Cmd {
         #[arg(long)]
         line: bool,
     },
-    /// Mark a milestone as reached. Attach a commit to have it verified.
+    /// Mark a milestone as reached. The daemon checks attached evidence and
+    /// upgrades the claim to evidence_verified when it holds up.
     Split {
         /// Milestone id or category key.
         milestone: String,
         /// Commit that achieves it (SHA or ref such as HEAD).
         #[arg(long)]
         commit: Option<String>,
+        /// Public HTTPS page: the deployment, or a terms/privacy page. Repeatable.
         #[arg(long)]
         url: Vec<String>,
+        /// GitHub Actions run URL that passed on this project's history.
+        #[arg(long)]
+        ci: Option<String>,
+        /// Stripe payment, charge, checkout session, invoice or event id
+        /// (needs `speedrun secret set stripe`).
+        #[arg(long)]
+        stripe: Option<String>,
         #[arg(long)]
         note: Option<String>,
     },
@@ -166,6 +188,11 @@ enum Cmd {
     },
     /// Print the JSON Schema of the plugin ↔ daemon protocol.
     Schema,
+    /// Store credentials the daemon's verifiers use (Stripe, GitHub).
+    Secret {
+        #[command(subcommand)]
+        action: SecretCmd,
+    },
 }
 
 fn main() {
@@ -217,21 +244,23 @@ fn run(cmd: Cmd) -> Result<()> {
             milestone,
             commit,
             url,
+            ci,
+            stripe,
             note,
         } => {
             let p = Project::require(&cwd)?;
             let run = ops::require_run(&c, &p)?;
             let milestone_id = ops::milestone_id(&run, &milestone)?;
-            let mut evidence = Vec::new();
-            if let Some(rev) = commit {
-                evidence.push(Evidence::GitCommit {
-                    sha: p.resolve_commit(&rev)?,
-                });
+            let evidence = ops::Claim {
+                commit,
+                urls: url,
+                ci,
+                stripe,
+                note,
             }
-            evidence.extend(url.into_iter().map(|url| Evidence::Url { url }));
-            evidence.extend(note.map(|text| Evidence::Note { text }));
-            ops::append_now(
-                &c,
+            .evidence(&p)?;
+            let resp = ops::append_now(
+                &Client::patient(),
                 &p,
                 EventPayload::MilestoneReached {
                     milestone_id,
@@ -239,6 +268,9 @@ fn run(cmd: Cmd) -> Result<()> {
                     evidence,
                 },
             )?;
+            if let Some(v) = &resp.verification {
+                println!("{}\n", ops::format_verification(v));
+            }
             print!("{}", ops::format_status(&ops::require_run(&c, &p)?));
         }
         Cmd::Add { title, description } => {
@@ -399,6 +431,11 @@ fn run(cmd: Cmd) -> Result<()> {
             }
             println!("Restart the host to load it. Then run `speedrun init` in each repo you want timed.");
         }
+        Cmd::Secret { action } => match action {
+            SecretCmd::Set { name } => secret::set(name)?,
+            SecretCmd::Rm { name } => secret::remove(name)?,
+            SecretCmd::List => secret::list(),
+        },
         Cmd::Mcp { project_dir } => mcp::serve(project_dir.as_deref())?,
         Cmd::Schema => println!(
             "{}",

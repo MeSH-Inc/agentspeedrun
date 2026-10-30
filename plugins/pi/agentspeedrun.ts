@@ -178,7 +178,7 @@ export default function agentspeedrun(pi: ExtensionAPI) {
     name: "speedrun_claim_milestone",
     label: "Claim milestone",
     description:
-      "Claim that an accepted milestone has been reached. Attach the commit that achieves it (commit it first); the daemon verifies commits and upgrades the claim to evidence_verified.",
+      "Claim that an accepted milestone has been reached, with evidence the daemon checks: the commit that achieves it (commit first), public HTTPS URLs (the deployment; terms and privacy pages), a GitHub Actions run URL, or a Stripe payment id. Verified evidence upgrades the claim to evidence_verified; the result says what failed otherwise.",
     parameters: Type.Object({
       milestone: Type.String({ description: "Milestone id or category key, as shown by speedrun_status." }),
       commit: Type.Optional(Type.String({ description: "Commit SHA or ref, e.g. HEAD." })),

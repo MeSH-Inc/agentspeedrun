@@ -167,12 +167,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
 
   // --- commands ---------------------------------------------------------------
   /** Run a CLI command in the project; show its error text on failure. */
-  async function speedrun(args: string[], cwd = project?.folder.uri.fsPath): Promise<string | undefined> {
+  async function speedrun(
+    args: string[],
+    cwd = project?.folder.uri.fsPath,
+    timeoutMs?: number,
+  ): Promise<string | undefined> {
     if (!cwd) {
       void vscode.window.showWarningMessage("agentspeedrun: open a folder first.");
       return undefined;
     }
-    const r = await cli.run(args, cwd);
+    const r = await cli.run(args, cwd, "", timeoutMs);
     if (r.missing) {
       await warnIfMissing();
       return undefined;
@@ -231,21 +235,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     }
   });
 
+  // Evidence the daemon can check, by the flag `speedrun split` takes it with.
+  const EVIDENCE = [
+    { label: "Attach HEAD commit", detail: "Checked against this repo's history.", flag: "--commit", prompt: "" },
+    { label: "Public URL…", detail: "The deployment, or a terms/privacy page.", flag: "--url", prompt: "https://" },
+    { label: "GitHub Actions run…", detail: "A passing run of this repo.", flag: "--ci", prompt: "https://github.com/" },
+    { label: "Stripe payment…", detail: "pi_, ch_, cs_, in_ or evt_ id; needs `speedrun secret set stripe`.", flag: "--stripe", prompt: "" },
+    { label: "No evidence", detail: "Counts only for milestones that accept self_declared.", flag: "", prompt: "" },
+  ];
+
   register("agentspeedrun.split", async (arg?: unknown, commit?: string) => {
     const id = await chooseMilestone(arg, (m) => (m.state === "accepted" || m.state === "reached") && !m.counts, "Split");
     if (!id) return;
-    if (commit === undefined) {
-      const pick = await vscode.window.showQuickPick(
-        [
-          { label: "Attach HEAD commit", detail: "The daemon verifies it; needed for evidence_verified milestones.", rev: "HEAD" },
-          { label: "No evidence", detail: "Counts only for milestones that accept self_declared.", rev: "" },
-        ],
-        { title: "Evidence" },
-      );
+    let evidence: string[] = [];
+    if (commit !== undefined) {
+      evidence = commit ? ["--commit", commit] : [];
+    } else {
+      const pick = await vscode.window.showQuickPick(EVIDENCE, { title: "Evidence" });
       if (!pick) return;
-      commit = pick.rev;
+      if (pick.flag === "--commit") evidence = ["--commit", "HEAD"];
+      else if (pick.flag) {
+        const value = await vscode.window.showInputBox({ title: pick.label.replace("…", ""), value: pick.prompt });
+        if (!value?.trim()) return;
+        evidence = [pick.flag, value.trim()];
+      }
     }
-    await speedrun(["split", id, ...(commit ? ["--commit", commit] : [])]);
+    // The daemon checks evidence before answering; network checks take a few seconds.
+    const out = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "agentspeedrun: checking evidence…" },
+      () => speedrun(["split", id, ...evidence], undefined, 120_000),
+    );
+    const verdict = out?.split("\n\n")[0];
+    if (verdict?.startsWith("Evidence not verified")) void vscode.window.showWarningMessage(verdict);
   });
 
   register("agentspeedrun.add", async (title?: string) => {

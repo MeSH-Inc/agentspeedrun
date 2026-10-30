@@ -54,16 +54,15 @@ Derived events (verification, completion) use deterministic event ids
 (`<cause>:verify`, `<run>:completed`) and are re-derived on retries, so a
 crash between a claim and its verification heals on the next retry.
 
-## Timing
-
-All clocks are computed by `RunView::fold` (`projection.rs`) from event times:
-
-| Clock     | Definition |
-|-----------|------------|
-| `wall_ms` | First prompt → now (or completion). |
-| `timed_ms`| `wall_ms` minus explicit pauses. |
-| `agent_ms`| Union of agent-turn intervals across all sessions, minus pauses. Concurrent agents count once. |
-| `human_ms`| Gaps outside agent turns and pauses, each capped at 15 min (beyond that, the human is away). |
+Evidence checks can take seconds on the network, so they run outside the
+store lock: `Service::append` returns the claim plus a verification job,
+the HTTP layer runs it on the blocking pool (to completion, even if the
+client hangs up) and `finish_verification` appends `MilestoneVerified`.
+The response's `verification` field says what passed or why not. A failed
+check is not logged; the claim keeps its trust and claiming again re-checks.
+A verification finishing within 10 minutes of its claim is dated at the
+claim; a later one (a spooled claim replayed hours on) is dated when the
+evidence was actually checked.
 
 A milestone's split is the clocks at the moment it first met its required trust.
 
@@ -75,13 +74,28 @@ sets `required_trust`. Verifiers (`speedrund/src/verify.rs`):
 | Evidence       | Verifier |
 |----------------|----------|
 | `git_commit`   | Commit exists and is an ancestor of `HEAD` in the project root. |
-| `url`          | Planned: reachable over TLS, content check. |
-| `ci_run`       | Planned: GitHub Actions run succeeded for a commit in history. |
-| `stripe_event` | Planned: Stripe webhook or API lookup confirming a live-mode payment. |
+| `url`          | `https://` on a public domain (no IP literals, local names or tunnels such as ngrok), resolves only to public addresses, answers 2xx after at most 5 redirects that stay on HTTPS, and is not a placeholder (server default page, parked domain, lorem ipsum). |
+| `ci_run`       | A GitHub Actions run URL of a repo that is a git remote of the project; the run completed with `success`, on a commit in the project's history, and started after the speedrun did. Token: `speedrun secret set github`, `GITHUB_TOKEN`/`GH_TOKEN`, or `gh auth token`. |
+| `stripe_event` | A Stripe event, charge, PaymentIntent, Checkout Session or invoice id, read back with the user's restricted live-mode key (`speedrun secret set stripe`): live mode, succeeded and captured, not refunded or disputed, paid after the speedrun started, and not paid by anyone who has committed to the repo. Events are re-read through their payment object so later refunds count. |
 | `note`         | Context only, never proof. |
 
-Until the planned verifiers exist, milestones that require them cannot reach
-`evidence_verified`.
+Every attached item must pass. Some category keys also require a kind of
+evidence, whatever trust the claim was made with:
+
+| Key | Needs |
+|-----|-------|
+| `deployed` | a `url` |
+| `legal-pages` | `url`s that together cover terms of service and a privacy policy, each with at least 200 words of server-rendered text |
+| `tests-green` | a `ci_run` |
+| `first-payment` | a `stripe_event` |
+
+Verifier fetches go out with a fixed user agent, a 15 s timeout and a 2 MB
+body cap; nothing fetched is stored, only the references the client sent.
+Credentials live in `$SPEEDRUN_HOME/secrets/` (mode 0600), read at check
+time, never logged or sent anywhere but their own API.
+
+Known gaps: a payment from a friend with an email outside the repo still
+counts, and the legal-page check is about presence, not legal adequacy.
 
 ## Host adapters
 
@@ -127,9 +141,7 @@ subscribers then recompute and send a full snapshot. Details:
 
 ## Roadmap
 
-1. URL, CI and Stripe verifiers.
-2. opencode and pi adapters through `speedrun ingest`. VS Code status bar and splits view.
-3. Materialized projections, once loading a full log per write becomes a cost (today O(events in run) per append).
-4. Prompt encryption at rest.
-5. Cloud sync: push events to Postgres with `ON CONFLICT (event_id) DO NOTHING`, verify chains server-side, sign events with a device key, leaderboards per `category@version`.
-6. Multiple simultaneous categories per run: any% ⊂ 100% ⊂ first revenue share a timeline.
+1. Materialized projections, once loading a full log per write becomes a cost (today O(events in run) per append).
+2. Prompt encryption at rest.
+3. Cloud sync: push events to Postgres with `ON CONFLICT (event_id) DO NOTHING`, verify chains server-side, sign events with a device key, leaderboards per `category@version`.
+4. Multiple simultaneous categories per run: any% ⊂ 100% ⊂ first revenue share a timeline.

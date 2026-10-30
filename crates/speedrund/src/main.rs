@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
             service: Arc::new(Mutex::new(service)),
             token: Arc::new(token),
             display_token: Arc::new(display_token),
+            verifier: Arc::new(verify::Verifier::default()),
             changes: Arc::new(tokio::sync::watch::channel(0).0),
         },
         &cors_origins,

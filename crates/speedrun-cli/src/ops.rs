@@ -3,8 +3,8 @@
 use anyhow::{Result, bail};
 use serde_json::json;
 use speedrun_core::{
-    EventPayload, MilestoneState, RunView,
-    api::{ActiveRunResponse, AppendResponse, PromptResponse},
+    EventPayload, Evidence, MilestoneState, RunView,
+    api::{ActiveRunResponse, AppendResponse, PromptResponse, VerificationReport},
 };
 
 use crate::client::Client;
@@ -59,6 +59,46 @@ pub fn active_run(c: &Client, p: &Project) -> Result<Option<RunView>> {
 pub fn require_run(c: &Client, p: &Project) -> Result<RunView> {
     active_run(c, p)?
         .ok_or_else(|| anyhow::anyhow!("no active run yet: the run starts with the first prompt"))
+}
+
+/// Evidence for a milestone claim, as the CLI and the agent tools take it.
+#[derive(Default)]
+pub struct Claim {
+    pub commit: Option<String>,
+    pub urls: Vec<String>,
+    pub ci: Option<String>,
+    pub stripe: Option<String>,
+    pub note: Option<String>,
+}
+
+impl Claim {
+    pub fn evidence(self, p: &Project) -> Result<Vec<Evidence>> {
+        let mut out = Vec::new();
+        if let Some(rev) = self.commit {
+            out.push(Evidence::GitCommit {
+                sha: p.resolve_commit(&rev)?,
+            });
+        }
+        out.extend(self.urls.into_iter().map(|url| Evidence::Url { url }));
+        out.extend(self.ci.map(|url| Evidence::CiRun { url }));
+        out.extend(self.stripe.map(|event_id| Evidence::StripeEvent { event_id }));
+        out.extend(self.note.map(|text| Evidence::Note { text }));
+        Ok(out)
+    }
+}
+
+pub fn format_verification(v: &VerificationReport) -> String {
+    match &v.verifier {
+        Some(by) if v.verified => format!("Evidence verified ({by})."),
+        _ => format!(
+            "Evidence not verified; the claim keeps its trust. Fix and claim again:\n{}",
+            v.problems
+                .iter()
+                .map(|p| format!("  - {p}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
 }
 
 /// Accept a milestone id or a category key.
@@ -121,7 +161,8 @@ pub fn run_started_context(project: &Project, run_id: &str) -> String {
         "[agentspeedrun] This prompt started a timed `{}` run ({run_id}). The category's own milestones are already \
          tracked. Once you understand the user's goal, call the `speedrun_propose_milestones` tool once with 3-8 \
          concrete, checkable milestones specific to this project (the user accepts or rejects them). When you finish \
-         one, call `speedrun_claim_milestone` with the commit that achieves it.",
+         one, call `speedrun_claim_milestone` with the commit that achieves it, plus the URL, GitHub Actions run \
+         or Stripe payment for deployment, CI and revenue milestones; the daemon checks all of them.",
         project.config.category_id
     )
 }
@@ -161,14 +202,14 @@ pub fn session_start_context(project: &Project, run: Option<&RunView>) -> Option
             "[agentspeedrun] This project is in a timed `{}` run ({}). If you have the `speedrun_propose_milestones` \
              tool and no project-specific milestones exist yet, propose 3-8 concrete, checkable ones once you \
              understand the user's goal. When you finish one, call `speedrun_claim_milestone` with the commit \
-             that achieves it.",
+             that achieves it (and the URL, CI run or Stripe payment where the milestone calls for one).",
             r.category_id, r.run_id
         )),
         None => Some(format!(
             "[agentspeedrun] This project is timed as a `{category}` run that starts with the user's first prompt. \
              If you have the `speedrun_propose_milestones` tool, propose 3-8 concrete, checkable milestones once \
-             you understand the user's goal, and call `speedrun_claim_milestone` with the achieving commit as you \
-             finish each one."
+             you understand the user's goal, and call `speedrun_claim_milestone` with the achieving commit (and URL, \
+             CI run or Stripe payment where relevant) as you finish each one."
         )),
     }
 }

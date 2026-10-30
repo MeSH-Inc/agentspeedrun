@@ -620,11 +620,49 @@
             "$ref": "#/$defs/Event"
           },
           "default": []
+        },
+        "verification": {
+          "description": "Result of checking attached evidence, when there was any to check.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerificationReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "event",
         "inserted"
+      ]
+    },
+    "VerificationReport": {
+      "description": "What the daemon's verifiers concluded about a claim's evidence. A failed\ncheck is not recorded in the log: the claim keeps the trust it was made\nwith, and claiming again re-runs the checks.",
+      "type": "object",
+      "properties": {
+        "verified": {
+          "type": "boolean"
+        },
+        "verifier": {
+          "description": "Verifiers that passed, joined with `+` (e.g. `git+url`), when verified.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "problems": {
+          "description": "Why it was not verified.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "verified"
       ]
     },
     "PromptRequest": {

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
 use speedrun_core::{
-    Category, Event, EventPayload, MilestoneOrigin, RunOutcome, RunStatus, RunView, Trust,
+    Category, Event, EventPayload, MilestoneOrigin, MilestoneState, RunOutcome, RunStatus, RunView, Trust,
     api::{AppendRequest, AppendResponse, ChainReport, ProjectAppendRequest, PromptRequest, PromptResponse},
     category,
     hash::verify_chain,
@@ -16,6 +16,11 @@ use speedrun_core::{
 use crate::store::{Store, Tx};
 use crate::verify;
 
+/// A verification that finishes within this long of the claim is dated at
+/// the claim (verifier latency does not count against the runner); later
+/// ones, such as spooled claims replayed hours afterwards, are dated when
+/// the evidence was actually checked.
+const VERIFY_GRACE: Duration = Duration::minutes(10);
 /// Client clocks may run ahead by this much before being clamped.
 const MAX_CLOCK_SKEW: Duration = Duration::minutes(5);
 const MAX_ID_LEN: usize = 128;
@@ -35,6 +40,14 @@ impl From<rusqlite::Error> for Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// An accepted append, plus the evidence check it calls for. The caller
+/// runs `job` without holding the service (it may touch the network) and
+/// hands the outcome to `finish_verification`.
+pub struct Appended {
+    pub response: AppendResponse,
+    pub job: Option<verify::Job>,
+}
 
 pub struct Service {
     store: Store,
@@ -141,9 +154,25 @@ impl Service {
         })
     }
 
-    /// Append a client event to an existing run, then derive any
-    /// verification or completion that follows from it.
-    pub fn append(&mut self, req: AppendRequest) -> Result<AppendResponse> {
+    /// Append, verify inline and finish, as the HTTP layer does across threads.
+    #[cfg(test)]
+    pub fn append_verified(
+        &mut self,
+        req: AppendRequest,
+        verifier: &verify::Verifier,
+    ) -> Result<AppendResponse> {
+        let Appended { mut response, job } = self.append(req)?;
+        if let Some(job) = job {
+            let outcome = verifier.verify(&job);
+            response.derived.extend(self.finish_verification(&job, &outcome)?);
+            response.verification = Some(outcome.report());
+        }
+        Ok(response)
+    }
+
+    /// Append a client event to an existing run, then derive any completion
+    /// that follows from it. Evidence is not checked here: see `Appended`.
+    pub fn append(&mut self, req: AppendRequest) -> Result<Appended> {
         check_id("event_id", &req.event_id)?;
         match &req.payload {
             EventPayload::RunStarted { .. } => {
@@ -200,27 +229,29 @@ impl Service {
             Ok((e, true))
         })?;
 
-        // Derived steps run even on retries; their event ids make them idempotent.
-        let derived = self.derive(&event)?;
+        // Derived steps run even on retries; their event ids make them
+        // idempotent, and a retried claim re-checks its evidence.
+        let job = self.verification_job(&event)?;
+        let derived: Vec<Event> = self.complete_if_done(&event.run_id)?.into_iter().collect();
         if std::iter::once(&event)
             .chain(&derived)
             .any(|e| matches!(e.payload, EventPayload::RunFinished { .. }))
         {
             self.pb_cache.clear();
         }
-        Ok(AppendResponse {
-            event,
-            inserted,
-            derived,
+        Ok(Appended {
+            response: AppendResponse {
+                event,
+                inserted,
+                derived,
+                verification: None,
+            },
+            job,
         })
     }
 
     /// Append to the project's active run.
-    pub fn append_to_project(
-        &mut self,
-        project_id: &str,
-        req: ProjectAppendRequest,
-    ) -> Result<AppendResponse> {
+    pub fn append_to_project(&mut self, project_id: &str, req: ProjectAppendRequest) -> Result<Appended> {
         // A retry must land in the run the original went to, even if a newer run exists.
         let run_id = match self.store.reader().event(&req.event_id)? {
             Some(existing) => existing.run_id,
@@ -238,34 +269,78 @@ impl Service {
         })
     }
 
-    fn derive(&mut self, cause: &Event) -> Result<Vec<Event>> {
-        let mut out = Vec::new();
-        if let EventPayload::MilestoneReached {
+    /// The evidence check a claim calls for, if any.
+    fn verification_job(&self, cause: &Event) -> Result<Option<verify::Job>> {
+        let EventPayload::MilestoneReached {
             milestone_id,
             evidence,
             ..
         } = &cause.payload
-        {
-            let root = {
-                let events = self.store.reader().run_events(&cause.run_id)?;
-                RunView::fold(&events, Utc::now()).and_then(|r| r.project_root)
-            };
-            if let Some(verifiers) = verify::verify(root.as_deref(), evidence) {
-                let payload = EventPayload::MilestoneVerified {
-                    milestone_id: milestone_id.clone(),
-                    trust: Trust::EvidenceVerified,
-                    verifier: verifiers.join("+"),
-                    evidence: evidence.clone(),
-                };
-                out.extend(self.insert_derived(
-                    &cause.run_id,
-                    &format!("{}:verify", cause.event_id),
-                    cause.occurred_at,
-                    payload,
-                )?);
-            }
+        else {
+            return Ok(None);
+        };
+        if !verify::Job::has_checkable_evidence(evidence) {
+            return Ok(None);
         }
-        out.extend(self.complete_if_done(&cause.run_id)?);
+        let events = self.store.reader().run_events(&cause.run_id)?;
+        let Some(run) = RunView::fold(&events, Utc::now()) else {
+            return Ok(None);
+        };
+        let Some(m) = run
+            .milestone(milestone_id)
+            .filter(|m| m.state == MilestoneState::Reached)
+        else {
+            return Ok(None); // Already verified, or invalidated since.
+        };
+        Ok(Some(verify::Job {
+            run_id: cause.run_id.clone(),
+            cause_event_id: cause.event_id.clone(),
+            milestone_id: milestone_id.clone(),
+            key: m.key.clone(),
+            evidence: evidence.clone(),
+            project_root: run.project_root.clone(),
+            run_started_at: run.started_at,
+            claimed_at: cause.occurred_at,
+        }))
+    }
+
+    /// Record a passed verification, and the completion it may cause.
+    pub fn finish_verification(
+        &mut self,
+        job: &verify::Job,
+        outcome: &verify::Outcome,
+    ) -> Result<Vec<Event>> {
+        if !outcome.verified() {
+            return Ok(Vec::new());
+        }
+        let now = Utc::now();
+        let at = if now - job.claimed_at <= VERIFY_GRACE {
+            job.claimed_at
+        } else {
+            now
+        };
+        let payload = EventPayload::MilestoneVerified {
+            milestone_id: job.milestone_id.clone(),
+            trust: Trust::EvidenceVerified,
+            verifier: outcome.verifiers.join("+"),
+            evidence: job.evidence.clone(),
+        };
+        let mut out: Vec<Event> = self
+            .insert_derived(
+                &job.run_id,
+                &format!("{}:verify", job.cause_event_id),
+                at,
+                payload,
+            )?
+            .into_iter()
+            .collect();
+        out.extend(self.complete_if_done(&job.run_id)?);
+        if out
+            .iter()
+            .any(|e| matches!(e.payload, EventPayload::RunFinished { .. }))
+        {
+            self.pb_cache.clear();
+        }
         Ok(out)
     }
 
@@ -430,7 +505,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use speedrun_core::{Evidence, MilestoneState};
+    use speedrun_core::Evidence;
 
     fn svc() -> (Service, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -454,12 +529,13 @@ mod tests {
     }
 
     fn append(s: &mut Service, run: &str, id: &str, payload: EventPayload) -> Result<AppendResponse> {
-        s.append(AppendRequest {
+        let req = AppendRequest {
             event_id: id.into(),
             run_id: run.into(),
             occurred_at: None,
             payload,
-        })
+        };
+        s.append_verified(req, &verify::Verifier::default())
     }
 
     #[test]
@@ -647,6 +723,83 @@ mod tests {
         assert!(
             s.live(Duration::zero()).unwrap().runs.len() < 2,
             "window filters stale runs"
+        );
+    }
+
+    #[test]
+    fn late_verification_is_dated_when_checked() {
+        let (mut s, _d) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        let claim = |s: &mut Service, id: &str, at: DateTime<Utc>| {
+            s.append(AppendRequest {
+                event_id: id.into(),
+                run_id: run.clone(),
+                occurred_at: Some(at),
+                payload: EventPayload::MilestoneReached {
+                    milestone_id: "happy-path-demo".into(),
+                    trust: Trust::SelfDeclared,
+                    evidence: vec![Evidence::Url {
+                        url: "https://demo.acme.dev".into(),
+                    }],
+                },
+            })
+            .unwrap()
+            .job
+            .expect("url evidence needs a check")
+        };
+        let passed = verify::Outcome {
+            verifiers: vec!["url"],
+            problems: vec![],
+        };
+        let failed = verify::Outcome {
+            verifiers: vec![],
+            problems: vec!["down".into()],
+        };
+
+        let late = claim(&mut s, "late", Utc::now() - Duration::hours(1));
+        assert!(s.finish_verification(&late, &failed).unwrap().is_empty());
+        assert!(
+            s.run(&run).unwrap().milestone("happy-path-demo").unwrap().trust < Some(Trust::EvidenceVerified)
+        );
+        let ev = s.finish_verification(&late, &passed).unwrap();
+        assert!(
+            Utc::now() - ev[0].occurred_at < Duration::minutes(1),
+            "dated when checked"
+        );
+    }
+
+    #[test]
+    fn verification_is_dated_at_the_claim() {
+        let (mut s, _d) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        let at = Utc::now() - Duration::minutes(2);
+        let job = s
+            .append(AppendRequest {
+                event_id: "c".into(),
+                run_id: run.clone(),
+                occurred_at: Some(at),
+                payload: EventPayload::MilestoneReached {
+                    milestone_id: "happy-path-demo".into(),
+                    trust: Trust::SelfDeclared,
+                    evidence: vec![Evidence::Url {
+                        url: "https://demo.acme.dev".into(),
+                    }],
+                },
+            })
+            .unwrap()
+            .job
+            .unwrap();
+        assert_eq!(job.key.as_deref(), Some("happy-path-demo"));
+        let passed = verify::Outcome {
+            verifiers: vec!["url"],
+            problems: vec![],
+        };
+        let ev = s.finish_verification(&job, &passed).unwrap();
+        assert_eq!(ev[0].occurred_at, at);
+        assert_eq!(ev.len(), 1, "scaffold-runs still open, so no completion");
+        assert!(
+            s.finish_verification(&job, &passed).unwrap().is_empty(),
+            "idempotent"
         );
     }
 

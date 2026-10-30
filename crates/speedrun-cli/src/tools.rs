@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use speedrun_core::{EventPayload, Evidence, MilestoneOrigin, Trust};
+use speedrun_core::{EventPayload, MilestoneOrigin, Trust};
 
 use crate::client::Client;
 use crate::ops;
@@ -36,13 +36,15 @@ pub fn definitions() -> Value {
         },
         {
             "name": "speedrun_claim_milestone",
-            "description": "Claim that an accepted milestone has been reached. Attach the commit that achieves it (commit it first); the daemon verifies commits and upgrades the claim to evidence_verified.",
+            "description": "Claim that an accepted milestone has been reached, with evidence the daemon checks: the commit that achieves it (commit first), public HTTPS URLs (the deployment; terms and privacy pages), a GitHub Actions run URL, or a Stripe payment id. Verified evidence upgrades the claim to evidence_verified; the result says what failed otherwise.",
             "inputSchema": {
                 "type":"object",
                 "properties":{
                     "milestone":{"type":"string","description":"Milestone id or category key, as shown by speedrun_status."},
                     "commit":{"type":"string","description":"Commit SHA or ref, e.g. HEAD."},
-                    "urls":{"type":"array","items":{"type":"string"}},
+                    "urls":{"type":"array","items":{"type":"string"},"description":"Public HTTPS pages: the production deployment, or the terms of service and privacy policy pages."},
+                    "ci_run":{"type":"string","description":"GitHub Actions run URL that passed, e.g. https://github.com/o/r/actions/runs/123."},
+                    "stripe_payment":{"type":"string","description":"Stripe payment id (pi_, ch_, cs_, in_ or evt_) of a real live-mode customer payment."},
                     "note":{"type":"string"}
                 },
                 "required":["milestone"]
@@ -102,28 +104,24 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
             let run = ops::require_run(&client, &project)?;
             let key = args.get("milestone").and_then(Value::as_str).unwrap_or_default();
             let milestone_id = ops::milestone_id(&run, key)?;
-            let mut evidence = Vec::new();
-            if let Some(rev) = args.get("commit").and_then(Value::as_str) {
-                evidence.push(Evidence::GitCommit {
-                    sha: project.resolve_commit(rev)?,
-                });
+            let text = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
+            let evidence = ops::Claim {
+                commit: text("commit"),
+                urls: args
+                    .get("urls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                ci: text("ci_run"),
+                stripe: text("stripe_payment"),
+                note: text("note"),
             }
-            for url in args
-                .get("urls")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-            {
-                evidence.push(Evidence::Url { url: url.to_string() });
-            }
-            if let Some(text) = args.get("note").and_then(Value::as_str) {
-                evidence.push(Evidence::Note {
-                    text: text.to_string(),
-                });
-            }
+            .evidence(&project)?;
             let resp = ops::append_now(
-                &client,
+                &Client::patient(),
                 &project,
                 EventPayload::MilestoneReached {
                     milestone_id,
@@ -152,7 +150,10 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
                 } else {
                     ""
                 }
-            ))
+            ) + &resp
+                .verification
+                .map(|v| format!("\n{}", ops::format_verification(&v)))
+                .unwrap_or_default())
         }
         other => anyhow::bail!("unknown tool {other}"),
     }

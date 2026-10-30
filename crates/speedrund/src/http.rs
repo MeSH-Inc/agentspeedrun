@@ -25,13 +25,15 @@ use speedrun_core::api::{
 use tokio::sync::watch;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::service::{Error, Service};
+use crate::service::{Appended, Error, Service};
+use crate::verify::Verifier;
 
 #[derive(Clone)]
 pub struct AppState {
     pub service: Arc<Mutex<Service>>,
     pub token: Arc<String>,
     pub display_token: Arc<String>,
+    pub verifier: Arc<Verifier>,
     /// Bumped after every successful write; live streams wake on it.
     pub changes: Arc<watch::Sender<u64>>,
 }
@@ -56,9 +58,9 @@ impl IntoResponse for Error {
 }
 
 /// Run a service call on the blocking pool; SQLite I/O must not stall the runtime.
-async fn call<T, F>(state: &AppState, f: F) -> Result<Json<T>, Error>
+async fn blocking<T, F>(state: &AppState, f: F) -> Result<T, Error>
 where
-    T: Serialize + Send + 'static,
+    T: Send + 'static,
     F: FnOnce(&mut Service) -> Result<T, Error> + Send + 'static,
 {
     let service = state.service.clone();
@@ -68,7 +70,14 @@ where
     })
     .await
     .map_err(|e| Error::Internal(e.into()))?
-    .map(Json)
+}
+
+async fn call<T, F>(state: &AppState, f: F) -> Result<Json<T>, Error>
+where
+    T: Serialize + Send + 'static,
+    F: FnOnce(&mut Service) -> Result<T, Error> + Send + 'static,
+{
+    blocking(state, f).await.map(Json)
 }
 
 pub fn router(state: AppState, cors_origins: &[String]) -> Router {
@@ -163,9 +172,41 @@ async fn record_prompt(State(s): State<AppState>, Json(req): Json<PromptRequest>
 }
 
 async fn append(State(s): State<AppState>, Json(req): Json<AppendRequest>) -> impl IntoResponse {
-    let res = call(&s, move |svc| svc.append(req)).await;
+    let res = blocking(&s, move |svc| svc.append(req)).await;
+    finish_append(s, res).await
+}
+
+/// Notify, then run any evidence check without holding the service (it may
+/// take seconds on the network) and answer with its outcome. The check runs
+/// to completion even if the client hangs up.
+async fn finish_append(
+    s: AppState,
+    res: Result<Appended, Error>,
+) -> Result<Json<speedrun_core::api::AppendResponse>, Error> {
     notify(&s);
-    res
+    let Appended { mut response, job } = res?;
+    let Some(job) = job else {
+        return Ok(Json(response));
+    };
+    let (service, verifier) = (s.service.clone(), s.verifier.clone());
+    let (outcome, derived) = tokio::task::spawn_blocking(move || {
+        let outcome = verifier.verify(&job);
+        let mut guard = service.lock().unwrap_or_else(|p| p.into_inner());
+        let derived = guard.finish_verification(&job, &outcome);
+        (outcome, derived)
+    })
+    .await
+    .map_err(|e| Error::Internal(e.into()))?;
+    let derived = derived?;
+    if !outcome.verified() {
+        tracing::info!(problems = ?outcome.problems, "evidence not verified");
+    }
+    if !derived.is_empty() {
+        notify(&s);
+    }
+    response.derived.extend(derived);
+    response.verification = Some(outcome.report());
+    Ok(Json(response))
 }
 
 async fn active_run(State(s): State<AppState>, Path(project_id): Path<String>) -> impl IntoResponse {
@@ -182,9 +223,8 @@ async fn append_to_project(
     Path(project_id): Path<String>,
     Json(req): Json<ProjectAppendRequest>,
 ) -> impl IntoResponse {
-    let res = call(&s, move |svc| svc.append_to_project(&project_id, req)).await;
-    notify(&s);
-    res
+    let res = blocking(&s, move |svc| svc.append_to_project(&project_id, req)).await;
+    finish_append(s, res).await
 }
 
 #[derive(Deserialize)]

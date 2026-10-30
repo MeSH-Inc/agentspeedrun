@@ -50,11 +50,21 @@ fn spool_dir() -> PathBuf {
 
 impl Client {
     pub fn new() -> Self {
+        Self::with_timeout(Duration::from_secs(5))
+    }
+
+    /// For milestone claims: the daemon checks evidence before answering,
+    /// which can take several network round trips.
+    pub fn patient() -> Self {
+        Self::with_timeout(Duration::from_secs(120))
+    }
+
+    fn with_timeout(timeout: Duration) -> Self {
         Self {
             base: format!("http://{}", paths::daemon_addr()),
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_millis(500))
-                .timeout(Duration::from_secs(5))
+                .timeout(timeout)
                 .build(),
         }
     }

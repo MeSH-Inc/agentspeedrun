@@ -63,6 +63,22 @@ pub struct AppendResponse {
     /// Events the daemon appended as a consequence (verification, completion).
     #[serde(default)]
     pub derived: Vec<Event>,
+    /// Result of checking attached evidence, when there was any to check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<VerificationReport>,
+}
+
+/// What the daemon's verifiers concluded about a claim's evidence. A failed
+/// check is not recorded in the log: the claim keeps the trust it was made
+/// with, and claiming again re-runs the checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VerificationReport {
+    pub verified: bool,
+    /// Verifiers that passed, joined with `+` (e.g. `git+url`), when verified.
+    pub verifier: Option<String>,
+    /// Why it was not verified.
+    #[serde(default)]
+    pub problems: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

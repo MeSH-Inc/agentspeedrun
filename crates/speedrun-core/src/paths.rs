@@ -28,6 +28,11 @@ pub fn display_token_path() -> PathBuf {
     data_dir().join("display-token")
 }
 
+/// Verifier credentials (`stripe`, `github`), one file each, mode 0600.
+pub fn secrets_dir() -> PathBuf {
+    data_dir().join("secrets")
+}
+
 pub fn daemon_addr() -> String {
     std::env::var("SPEEDRUN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string())
 }
