@@ -8,9 +8,11 @@ use serde_json::{Map, Value, json};
 
 const OPENCODE_PLUGIN: &str = include_str!("../../../plugins/opencode/agentspeedrun.ts");
 const PI_EXTENSION: &str = include_str!("../../../plugins/pi/agentspeedrun.ts");
+const COPILOT_HOOKS: &str = include_str!("../../../plugins/copilot/agentspeedrun.json");
 /// Present in every adapter we ship; files without it are not ours to overwrite.
 const MARKER: &str = "mesh-inc/agentspeedrun";
-const FILE_NAME: &str = "agentspeedrun.ts";
+/// JSON has no comments, so the hooks file is recognized by its commands.
+const COPILOT_MARKER: &str = "speedrun hook copilot";
 const OPENCODE_PLUGIN_DEP: (&str, &str) = ("@opencode-ai/plugin", "^1.19.5");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -19,24 +21,34 @@ pub enum Host {
     Pi,
     /// oh-my-pi
     Omp,
+    /// GitHub Copilot agent hooks, read by VS Code's agent and the Copilot CLI.
+    Copilot,
+}
+
+/// The parts of the environment that decide where hosts look.
+pub struct Dirs<'a> {
+    pub home: &'a Path,
+    pub xdg_config: Option<&'a Path>,
+    pub copilot_home: Option<&'a Path>,
 }
 
 /// Where a host loads adapters from, user-wide or for one project.
-pub fn target_dir(
-    host: Host,
-    project_root: Option<&Path>,
-    home: &Path,
-    xdg_config: Option<&Path>,
-) -> PathBuf {
+pub fn target_dir(host: Host, project_root: Option<&Path>, dirs: &Dirs<'_>) -> PathBuf {
+    let home = dirs.home;
     match (host, project_root) {
         (Host::Opencode, Some(p)) => p.join(".opencode"),
-        (Host::Opencode, None) => xdg_config
+        (Host::Opencode, None) => dirs
+            .xdg_config
             .map_or_else(|| home.join(".config"), Path::to_path_buf)
             .join("opencode"),
         (Host::Pi, Some(p)) => p.join(".pi"),
         (Host::Pi, None) => home.join(".pi/agent"),
         (Host::Omp, Some(p)) => p.join(".omp"),
         (Host::Omp, None) => home.join(".omp/agent"),
+        (Host::Copilot, Some(p)) => p.join(".github"),
+        (Host::Copilot, None) => dirs
+            .copilot_home
+            .map_or_else(|| home.join(".copilot"), Path::to_path_buf),
     }
 }
 
@@ -49,14 +61,15 @@ pub enum Outcome {
 
 /// Install the adapter for `host` under its config dir `base`.
 pub fn install(host: Host, base: &Path, force: bool) -> Result<Vec<Outcome>> {
-    let (subdir, source) = match host {
-        Host::Opencode => ("plugins", OPENCODE_PLUGIN),
-        Host::Pi | Host::Omp => ("extensions", PI_EXTENSION),
+    let (subdir, file_name, source, marker) = match host {
+        Host::Opencode => ("plugins", "agentspeedrun.ts", OPENCODE_PLUGIN, MARKER),
+        Host::Pi | Host::Omp => ("extensions", "agentspeedrun.ts", PI_EXTENSION, MARKER),
+        Host::Copilot => ("hooks", "agentspeedrun.json", COPILOT_HOOKS, COPILOT_MARKER),
     };
-    let file = base.join(subdir).join(FILE_NAME);
+    let file = base.join(subdir).join(file_name);
     let outcome = match std::fs::read_to_string(&file) {
         Ok(existing) if existing == source => Outcome::Unchanged(file.clone()),
-        Ok(existing) if !existing.contains(MARKER) && !force => {
+        Ok(existing) if !existing.contains(marker) && !force => {
             bail!(
                 "{} exists and was not written by speedrun; use --force to replace it",
                 file.display()
@@ -123,7 +136,7 @@ mod tests {
     fn installs_upgrades_and_leaves_foreign_files_alone() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("pi");
-        let file = base.join("extensions").join(FILE_NAME);
+        let file = base.join("extensions").join("agentspeedrun.ts");
         assert_eq!(
             install(Host::Pi, &base, false).unwrap(),
             vec![Outcome::Installed(file.clone())]
@@ -174,29 +187,61 @@ mod tests {
 
     #[test]
     fn target_dirs_match_host_conventions() {
-        let home = Path::new("/h");
-        let proj = Path::new("/p");
+        let plain = Dirs {
+            home: Path::new("/h"),
+            xdg_config: None,
+            copilot_home: None,
+        };
+        let custom = Dirs {
+            home: Path::new("/h"),
+            xdg_config: Some(Path::new("/x")),
+            copilot_home: Some(Path::new("/c")),
+        };
+        let proj = Some(Path::new("/p"));
         assert_eq!(
-            target_dir(Host::Opencode, None, home, None),
+            target_dir(Host::Opencode, None, &plain),
             Path::new("/h/.config/opencode")
         );
         assert_eq!(
-            target_dir(Host::Opencode, None, home, Some(Path::new("/x"))),
+            target_dir(Host::Opencode, None, &custom),
             Path::new("/x/opencode")
         );
         assert_eq!(
-            target_dir(Host::Opencode, Some(proj), home, None),
+            target_dir(Host::Opencode, proj, &plain),
             Path::new("/p/.opencode")
         );
-        assert_eq!(target_dir(Host::Pi, None, home, None), Path::new("/h/.pi/agent"));
+        assert_eq!(target_dir(Host::Pi, None, &plain), Path::new("/h/.pi/agent"));
+        assert_eq!(target_dir(Host::Omp, proj, &plain), Path::new("/p/.omp"));
+        assert_eq!(target_dir(Host::Copilot, proj, &plain), Path::new("/p/.github"));
+        assert_eq!(target_dir(Host::Copilot, None, &plain), Path::new("/h/.copilot"));
+        assert_eq!(target_dir(Host::Copilot, None, &custom), Path::new("/c"));
+    }
+
+    #[test]
+    fn copilot_hooks_install_as_json_and_respect_foreign_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hooks/agentspeedrun.json");
         assert_eq!(
-            target_dir(Host::Omp, Some(proj), home, None),
-            Path::new("/p/.omp")
+            install(Host::Copilot, dir.path(), false).unwrap(),
+            vec![Outcome::Installed(file.clone())]
         );
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(v["version"], 1);
+        for event in ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"] {
+            assert!(
+                v["hooks"][event][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(COPILOT_MARKER)
+            );
+        }
+        std::fs::write(&file, r#"{"version":1,"hooks":{}}"#).unwrap();
+        assert!(install(Host::Copilot, dir.path(), false).is_err());
     }
 
     #[test]
     fn shipped_adapters_carry_the_marker() {
         assert!(OPENCODE_PLUGIN.contains(MARKER) && PI_EXTENSION.contains(MARKER));
+        assert!(COPILOT_HOOKS.contains(COPILOT_MARKER));
     }
 }

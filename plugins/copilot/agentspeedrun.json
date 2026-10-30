@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "SessionStart": [
+      { "type": "command", "command": "speedrun hook copilot session-start", "bash": "speedrun hook copilot session-start", "timeoutSec": 10 }
+    ],
+    "UserPromptSubmit": [
+      { "type": "command", "command": "speedrun hook copilot user-prompt-submit", "bash": "speedrun hook copilot user-prompt-submit", "timeoutSec": 10 }
+    ],
+    "Stop": [
+      { "type": "command", "command": "speedrun hook copilot stop", "bash": "speedrun hook copilot stop", "timeoutSec": 10 }
+    ],
+    "SessionEnd": [
+      { "type": "command", "command": "speedrun hook copilot session-end", "bash": "speedrun hook copilot session-end", "timeoutSec": 10 }
+    ]
+  }
+}

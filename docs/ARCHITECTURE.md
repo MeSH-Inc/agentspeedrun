@@ -11,9 +11,10 @@
 ## Components
 
 ```
-host (Claude Code, opencode, pi/omp, VS Code, Zed)
-  └─ adapter: prompts/turns → `speedrun hook claude-code …` / `speedrun ingest …`
+host (Claude Code, opencode, pi/omp, Copilot, VS Code, Zed)
+  └─ adapter: prompts/turns → `speedrun hook claude-code|copilot …` / `speedrun ingest …`
               agent tools   → `speedrun mcp` (stdio) / `speedrun tool <name>`
+              display       → /v1/live/stream (VS Code status bar and splits view)
 speedrun (CLI)
   ├─ finds the project: nearest .speedrun/project.json (untracked dirs record nothing)
   ├─ HTTP client → speedrund, autostarting it if needed
@@ -91,6 +92,12 @@ Adapters only translate host events into CLI calls. They hold no logic of their 
 | Claude Code | `UserPromptSubmit` hook | `Stop`, `SessionEnd` | MCP (`speedrun mcp`) | hook `additionalContext` |
 | opencode | `chat.message` | `session.status` idle | native `tool` → `speedrun tool` | system-prompt transform |
 | pi / omp | `before_agent_start` | `agent_end` | `registerTool` → `speedrun tool` | injected hidden message |
+| Copilot agent (VS Code, CLI) | `UserPromptSubmit` hook | `Stop`, `SessionEnd` | MCP (registered by the VS Code extension) | `SessionStart` `additionalContext` |
+| Zed agent | — (no API) | — | MCP context server extension | — |
+
+The VS Code extension is a display and control surface: a status bar timer and splits view over the live stream, CLI commands, and an MCP server definition provider. VS Code exposes no prompt API; Copilot's prompts come from its hooks.
+
+`speedrun mcp` finds the project from `--project-dir`, then the client's MCP roots, then its working directory, because editors do not always start servers in the project.
 
 Shared rules:
 - **Only human prompts are recorded.** Subagent sessions are skipped: opencode `parentID`, omp `ctx.agent.kind`.
@@ -98,7 +105,7 @@ Shared rules:
 - **Adapters never throw into the host.**
 - **Install from the binary.** `speedrun setup <host>` installs the copy of the adapter embedded in the binary (`include_str!`), so adapter and CLI versions cannot drift.
 
-Tests run each adapter against the real CLI and daemon with a fake host (`plugins/*/test`).
+Tests run each adapter against the real CLI and daemon: opencode and pi with fake hosts, VS Code inside a real VS Code under Xvfb. The Zed extension's command building is unit-tested, and CI builds it to WASM.
 
 ## Live displays
 

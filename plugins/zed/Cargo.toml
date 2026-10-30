@@ -1,0 +1,16 @@
+[package]
+name = "zed-agentspeedrun"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+zed_extension_api = "0.7.0"
+serde_json = "1"
+
+# Built for wasm32-wasip2 by Zed, separately from the root workspace.
+[workspace]

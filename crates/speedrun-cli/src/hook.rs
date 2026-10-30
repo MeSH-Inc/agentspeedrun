@@ -12,11 +12,79 @@ use crate::ops;
 use crate::project::Project;
 
 pub fn claude_code(event: &str) {
-    if let Err(e) = claude_code_inner(event)
+    report(claude_code_inner(event));
+}
+
+pub fn copilot(event: &str) {
+    report(copilot_inner(event));
+}
+
+fn report(result: Result<()>) {
+    if let Err(e) = result
         && std::env::var_os("SPEEDRUN_DEBUG").is_some()
     {
         eprintln!("speedrun hook: {e:#}");
     }
+}
+
+/// Read hook input; fields may be snake_case (Claude-style, Copilot's
+/// PascalCase aliases) or camelCase (Copilot's native event names).
+fn read_input() -> Result<impl Fn(&str, &str) -> Option<String>> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let v: Value = serde_json::from_str(&input)?;
+    Ok(move |snake: &str, camel: &str| {
+        v.get(snake)
+            .or_else(|| v.get(camel))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+fn find_project(cwd: Option<String>) -> Result<Option<Project>> {
+    let cwd = cwd
+        .map(std::path::PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+    Project::find(&cwd)
+}
+
+/// GitHub Copilot agent hooks, used by VS Code's agent and the Copilot CLI.
+/// https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference
+///
+/// Copilot ignores output from prompt hooks, so the run-start nudge goes
+/// out at session start instead.
+fn copilot_inner(event: &str) -> Result<()> {
+    let field = read_input()?;
+    let Some(project) = find_project(field("cwd", "cwd"))? else {
+        return Ok(());
+    };
+    let session = field("session_id", "sessionId").unwrap_or_else(|| "unknown".into());
+    let client = Client::new();
+    match event {
+        "session-start" => {
+            let run = ops::active_run(&client, &project).ok().flatten();
+            if let Some(text) = ops::session_start_context(&project, run.as_ref()) {
+                let out = json!({
+                    "additionalContext": text,
+                    "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": text },
+                });
+                println!("{out}");
+            }
+        }
+        "user-prompt-submit" => {
+            let prompt = field("prompt", "prompt").unwrap_or_default();
+            ops::record_prompt(&client, &project, "copilot", &session, None, &prompt)?;
+        }
+        "stop" | "session-end" => {
+            ops::append(
+                &client,
+                &project,
+                EventPayload::AgentTurnEnded { session_id: session },
+            )?;
+        }
+        other => anyhow::bail!("unknown copilot hook event {other}"),
+    }
+    Ok(())
 }
 
 /// Claude Code passes hook input as JSON on stdin.

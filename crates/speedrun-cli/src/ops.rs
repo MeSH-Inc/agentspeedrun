@@ -144,3 +144,31 @@ pub fn format_line(run: &RunView) -> String {
         fmt_ms(run.timing.timed_ms)
     )
 }
+
+/// Context for hosts that can only inject at session start (Copilot).
+/// Nothing once the agent has already proposed milestones for this run.
+pub fn session_start_context(project: &Project, run: Option<&RunView>) -> Option<String> {
+    let category = &project.config.category_id;
+    match run {
+        Some(r)
+            if r.milestones
+                .iter()
+                .any(|m| m.origin == speedrun_core::MilestoneOrigin::AgentGenerated) =>
+        {
+            None
+        }
+        Some(r) => Some(format!(
+            "[agentspeedrun] This project is in a timed `{}` run ({}). If you have the `speedrun_propose_milestones` \
+             tool and no project-specific milestones exist yet, propose 3-8 concrete, checkable ones once you \
+             understand the user's goal. When you finish one, call `speedrun_claim_milestone` with the commit \
+             that achieves it.",
+            r.category_id, r.run_id
+        )),
+        None => Some(format!(
+            "[agentspeedrun] This project is timed as a `{category}` run that starts with the user's first prompt. \
+             If you have the `speedrun_propose_milestones` tool, propose 3-8 concrete, checkable milestones once \
+             you understand the user's goal, and call `speedrun_claim_milestone` with the achieving commit as you \
+             finish each one."
+        )),
+    }
+}

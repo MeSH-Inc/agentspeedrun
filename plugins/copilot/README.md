@@ -1,0 +1,26 @@
+# GitHub Copilot agent hooks
+
+`agentspeedrun.json` times prompts to Copilot's agent in VS Code and in the
+Copilot CLI, using
+[Copilot hooks](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference).
+It uses the PascalCase event aliases, which receive Claude-style snake_case
+input.
+
+| Event | Effect |
+|---|---|
+| `SessionStart` | Tells the agent the project is timed and to propose milestones (Copilot ignores output from prompt hooks, so this is the only place to say it). Skipped once the agent has proposed some. |
+| `UserPromptSubmit` | Records the prompt and starts a turn; the first prompt starts the run. |
+| `Stop`, `SessionEnd` | End the turn. |
+
+Install:
+
+```bash
+speedrun setup copilot --project  # .github/hooks/agentspeedrun.json; commit it
+```
+
+```bash
+speedrun setup copilot            # ~/.copilot/hooks/ ($COPILOT_HOME/hooks/)
+```
+
+For the milestone tools, the VS Code extension registers the MCP server
+automatically. For the Copilot CLI, add `speedrun mcp` as an MCP server.

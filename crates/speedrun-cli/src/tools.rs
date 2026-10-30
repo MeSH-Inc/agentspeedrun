@@ -2,6 +2,8 @@
 //! (`speedrun mcp`) and as a command (`speedrun tool <name>`) for hosts
 //! that register tools natively, like opencode and pi.
 
+use std::path::Path;
+
 use anyhow::Result;
 use serde_json::{Value, json};
 use speedrun_core::{EventPayload, Evidence, MilestoneOrigin, Trust};
@@ -49,9 +51,9 @@ pub fn definitions() -> Value {
     ])
 }
 
-/// Run a tool against the project enclosing the current directory.
-pub fn call(name: &str, args: &Value) -> Result<String> {
-    let project = Project::require(&std::env::current_dir()?)?;
+/// Run a tool against the project enclosing `dir`.
+pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
+    let project = Project::require(dir)?;
     let client = Client::new();
     match name {
         "speedrun_status" => Ok(match ops::active_run(&client, &project)? {

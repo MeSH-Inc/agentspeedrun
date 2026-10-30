@@ -131,7 +131,11 @@ enum Cmd {
         once: bool,
     },
     /// Print the read-only display token and live endpoints for widgets.
-    Display,
+    Display {
+        /// `{"base_url", "token"}` for programs.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run an agent tool (as exposed over MCP) and print its text result.
     /// Exits 1 if the tool failed. `--list` prints the tool definitions.
     Tool {
@@ -143,8 +147,9 @@ enum Cmd {
         #[arg(long)]
         list: bool,
     },
-    /// Install the adapter for opencode, pi or oh-my-pi (user-wide, or for
-    /// this project with --project). Claude Code uses its plugin marketplace.
+    /// Install the adapter for opencode, pi, oh-my-pi or Copilot agent hooks
+    /// (VS Code agent, Copilot CLI): user-wide, or for this project with
+    /// --project. Claude Code uses its plugin marketplace.
     Setup {
         host: setup::Host,
         #[arg(long)]
@@ -154,7 +159,11 @@ enum Cmd {
         force: bool,
     },
     /// Run the MCP server on stdio.
-    Mcp,
+    Mcp {
+        /// Project to serve. Defaults to the client's MCP roots, then the working directory.
+        #[arg(long)]
+        project_dir: Option<std::path::PathBuf>,
+    },
     /// Print the JSON Schema of the plugin ↔ daemon protocol.
     Schema,
 }
@@ -165,6 +174,7 @@ fn main() {
     if let Cmd::Hook { host, event } = &cli.command {
         match host.as_str() {
             "claude-code" => hook::claude_code(event),
+            "copilot" => hook::copilot(event),
             other => eprintln!("speedrun: unknown hook host {other}"),
         }
         return;
@@ -334,7 +344,7 @@ fn run(cmd: Cmd) -> Result<()> {
         Cmd::Tool { name, args, .. } => {
             let args: Value =
                 serde_json::from_str(&args).map_err(|e| anyhow::anyhow!("--args is not JSON: {e}"))?;
-            match tools::call(name.as_deref().unwrap_or_default(), &args) {
+            match tools::call(name.as_deref().unwrap_or_default(), &args, &cwd) {
                 Ok(text) => println!("{text}"),
                 Err(e) => {
                     println!("{e:#}");
@@ -343,10 +353,17 @@ fn run(cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Watch { since_hours, once } => watch::watch(since_hours, once)?,
-        Cmd::Display => {
+        Cmd::Display { json } => {
             c.ready()?;
             let token = std::fs::read_to_string(speedrun_core::paths::display_token_path())?;
             let base = c.base_url();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "base_url": base, "token": token.trim() })
+                );
+                return Ok(());
+            }
             println!("display token (read-only, no prompt text): {}", token.trim());
             println!("snapshot: GET {base}/v1/live");
             println!("stream:   GET {base}/v1/live/stream   (server-sent events, event `snapshot`)");
@@ -359,11 +376,15 @@ fn run(cmd: Cmd) -> Result<()> {
             } else {
                 None
             };
-            let home = std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .context("HOME is not set")?;
-            let xdg = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from);
-            let base = setup::target_dir(host, root.as_deref(), &home, xdg.as_deref());
+            let var = |k: &str| std::env::var_os(k).map(std::path::PathBuf::from);
+            let home = var("HOME").context("HOME is not set")?;
+            let (xdg, copilot) = (var("XDG_CONFIG_HOME"), var("COPILOT_HOME"));
+            let dirs = setup::Dirs {
+                home: &home,
+                xdg_config: xdg.as_deref(),
+                copilot_home: copilot.as_deref(),
+            };
+            let base = setup::target_dir(host, root.as_deref(), &dirs);
             for outcome in setup::install(host, &base, force)? {
                 match outcome {
                     setup::Outcome::Installed(p) => println!("installed {}", p.display()),
@@ -378,7 +399,7 @@ fn run(cmd: Cmd) -> Result<()> {
             }
             println!("Restart the host to load it. Then run `speedrun init` in each repo you want timed.");
         }
-        Cmd::Mcp => mcp::serve()?,
+        Cmd::Mcp { project_dir } => mcp::serve(project_dir.as_deref())?,
         Cmd::Schema => println!(
             "{}",
             serde_json::to_string_pretty(&speedrun_core::api::protocol_schema())?

@@ -57,6 +57,9 @@ Then connect your agent and start prompting. The daemon starts automatically on 
 | opencode | `speedrun setup opencode` ([details](plugins/opencode)) |
 | pi | `speedrun setup pi` ([details](plugins/pi)) |
 | oh-my-pi | `speedrun setup omp` ([details](plugins/pi)) |
+| Copilot agent (VS Code, Copilot CLI) | `speedrun setup copilot --project` ([details](plugins/copilot)) |
+| VS Code (timer, splits view, MCP tools) | build the `.vsix` in [plugins/vscode](plugins/vscode) |
+| Zed (MCP tools) | dev extension in [plugins/zed](plugins/zed) |
 
 ```bash
 speedrun status                              # timer and splits
@@ -78,11 +81,12 @@ speedrun display                             # read-only token + URLs for widget
 | `categories/` | Built-in category rulesets (versioned JSON) |
 | `schema/protocol.schema.json` | JSON Schema of the protocol, including `LiveSnapshot` (CI checks it is current) |
 | `schema/examples/` | Generated example payloads for display and design work |
-| `plugins/` | Host adapters: Claude Code, opencode, pi/oh-my-pi (working); VS Code, Zed (stubs) |
+| `plugins/` | Host adapters: Claude Code, opencode, pi/oh-my-pi, Copilot hooks, VS Code, Zed |
 
 ## Status
 
 Scaffold. Working: daemon, CLI, Claude Code plugin, MCP tools, git verifier,
-offline spool, live-display stream with read-only tokens and personal-best comparison. Adapters: Claude Code, opencode, pi and oh-my-pi.
-Not yet: URL/CI/Stripe verifiers, encryption of prompts at rest, VS Code and
-Zed adapters, cloud sync and leaderboards.
+offline spool, live-display stream with read-only tokens and personal-best comparison. Adapters: Claude Code, opencode, pi, oh-my-pi, Copilot agent (VS Code and
+CLI), VS Code extension, Zed extension.
+Not yet: URL/CI/Stripe verifiers, encryption of prompts at rest, prompt
+capture for Zed's native agent (no API), cloud sync and leaderboards.

@@ -1,0 +1,9 @@
+id = "agentspeedrun"
+name = "agentspeedrun"
+version = "0.1.0"
+schema_version = 1
+authors = ["mesh-inc"]
+description = "Speedrun timing for agentic coding: milestone tools for Zed's agent, backed by the speedrun CLI."
+repository = "https://github.com/mesh-inc/agentspeedrun"
+
+[context_servers.agentspeedrun]
