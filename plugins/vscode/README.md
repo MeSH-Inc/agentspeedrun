@@ -22,16 +22,14 @@ The same hooks time the Copilot CLI. For user-wide hooks, drop `--project`
 
 ## Install
 
-1. Install the `speedrun` and `speedrund` binaries. The extension uses `speedrun` from `PATH`; set `agentspeedrun.speedrunPath` to override.
-2. Build and install the extension:
-
-```bash
-npm ci --ignore-scripts && npm run package
-```
+1. Install the `speedrun` and `speedrund` binaries ([install.sh](../../README.md#quick-start)). The extension uses `speedrun` from `PATH`; set `agentspeedrun.speedrunPath` to override.
+2. Download `agentspeedrun-<version>.vsix` from the GitHub release (`gh release download -R mesh-inc/agentspeedrun -p '*.vsix'`) and install it:
 
 ```bash
 code --install-extension agentspeedrun-0.1.0.vsix
 ```
+
+To build it yourself instead: `npm ci --ignore-scripts && npm run package`.
 
 ## Develop
 

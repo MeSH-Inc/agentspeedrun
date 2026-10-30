@@ -1,0 +1,126 @@
+name: release
+# Push a tag vX.Y.Z (matching scripts/version.py) to publish a GitHub release.
+# Run it by hand (workflow_dispatch) for a dry run that builds and tests
+# every artifact without publishing anything.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/version.py check ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+  binaries:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
+          # Cross-built with zig, smoke-tested under QEMU.
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04, zig: true }
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - if: runner.os == 'Linux' && !matrix.zig
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - if: matrix.zig
+        run: pip install cargo-zigbuild
+      - if: matrix.zig
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: build
+        run: |
+          cargo ${{ matrix.zig && 'zigbuild' || 'build' }} --release --locked \
+            --target ${{ matrix.target }} --bin speedrun --bin speedrund
+      - run: scripts/smoke.sh target/${{ matrix.target }}/release
+      - run: scripts/package.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  vscode:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - run: cargo build --locked
+      - working-directory: plugins/vscode
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+          xvfb-run -a npm run test:vscode
+          npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode
+          path: plugins/vscode/*.vsix
+          if-no-files-found: error
+
+  zed:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      # Zed builds extensions from source; this only proves the tag builds.
+      - working-directory: plugins/zed
+        run: cargo test --locked && cargo build --locked --release --target wasm32-wasip2
+
+  publish:
+    needs: [binaries, vscode, zed]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        working-directory: dist
+        run: |
+          sha256sum -- *.tar.gz *.vsix > SHA256SUMS
+          cat SHA256SUMS
+      - name: installer works against these artifacts
+        run: |
+          (cd dist && python3 -m http.server 8765 >/dev/null 2>&1 &)
+          sleep 1
+          version="v$(scripts/version.py get)"
+          SPEEDRUN_VERSION="$version" SPEEDRUN_DOWNLOAD_URL=http://127.0.0.1:8765 \
+            SPEEDRUN_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          scripts/smoke.sh "$RUNNER_TEMP/bin"
+      - if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "${GITHUB_REF_NAME}" in *-*) flags="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" $flags --verify-tag --generate-notes \
+            --title "agentspeedrun $GITHUB_REF_NAME" dist/*
+      - if: github.ref_type != 'tag'
+        run: echo "dry run; would publish:" && ls -l dist

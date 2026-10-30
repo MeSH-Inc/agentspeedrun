@@ -13,7 +13,7 @@ futures-util = "0.3.34"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-speedrun-core = { version = "0.1.0", path = "../speedrun-core" }
+speedrun-core = { path = "../speedrun-core" }
 tokio = { version = "1.54.1", features = ["full"] }
 tower-http = { version = "0.7.1", features = ["cors"] }
 tracing = "0.1.44"

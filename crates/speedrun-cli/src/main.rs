@@ -196,6 +196,20 @@ enum Cmd {
 }
 
 fn main() {
+    // `speedrun status | head` closes stdout early; stop quietly instead of panicking.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if msg.starts_with("failed printing to stdout") && msg.contains("Broken pipe") {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
     let cli = Cli::parse();
     // Hooks must never fail the host.
     if let Cmd::Hook { host, event } = &cli.command {

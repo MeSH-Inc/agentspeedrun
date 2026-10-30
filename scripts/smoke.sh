@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Smoke-test installed or packaged binaries end to end, in a throwaway
+# data dir and repo: daemon autostart from the CLI's own directory, a
+# prompt starting a run, a verified split, the hash chain, embedded adapters.
+#   scripts/smoke.sh <dir containing speedrun and speedrund>
+set -euo pipefail
+
+bin=$(cd "${1:?usage: scripts/smoke.sh <bindir>}" && pwd)
+work=$(mktemp -d)
+export SPEEDRUN_HOME="$work/home"
+export SPEEDRUN_ADDR="127.0.0.1:$((20000 + RANDOM % 20000))"
+unset SPEEDRUN_NO_AUTOSTART SPEEDRUN_BIN
+cleanup() {
+  pkill -f "$bin/speedrund" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+fail() {
+  echo "smoke: FAIL: $*" >&2
+  cat "$SPEEDRUN_HOME/speedrund.log" >&2 2>/dev/null || true
+  exit 1
+}
+sr() { "$bin/speedrun" "$@"; }
+
+# Capture before matching: `| grep -q` would close the pipe early.
+has() { grep -q -- "$2" <<<"$1"; }
+
+has "$(sr --version)" "speedrun" || fail "--version"
+
+mkdir "$work/repo" && cd "$work/repo"
+git init -q
+git -c user.name=smoke -c user.email=smoke@example.com commit -q --allow-empty -m init
+sr init --category any-percent >/dev/null
+
+out=$(echo "build a todo app" | sr ingest prompt --host smoke --session s1)
+has "$out" '"run_started":true' || fail "prompt did not start a run: $out"
+
+sr split scaffold-runs --commit HEAD >/dev/null || fail "split"
+has "$(sr status)" "✔ scaffold-runs" || fail "split did not count: $(sr status)"
+has "$(sr split happy-path-demo --commit HEAD)" "Evidence verified (git)" || fail "git verification"
+has "$(sr status)" "completed" || fail "run did not complete: $(sr status)"
+has "$(sr verify)" "^ok" || fail "hash chain"
+
+sr setup opencode --project >/dev/null || fail "setup opencode"
+find .opencode -name agentspeedrun.ts | grep -q . || fail "opencode adapter not written"
+
+echo "smoke: ok ($("$bin/speedrun" --version))"

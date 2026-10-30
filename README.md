@@ -35,12 +35,22 @@ Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Building a widget,
 
 ## Quick start
 
-```bash
-cargo install --path crates/speedrund
-```
+Prebuilt binaries for Linux (x86_64, arm64; static) and macOS (Apple silicon, Intel):
 
 ```bash
-cargo install --path crates/speedrun-cli
+curl -fsSL https://raw.githubusercontent.com/mesh-inc/agentspeedrun/main/install.sh | sh
+```
+
+While the repository is private, go through an authenticated GitHub CLI instead:
+
+```bash
+gh api repos/mesh-inc/agentspeedrun/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
+```
+
+The installer checks the release's `SHA256SUMS` and puts `speedrun` and `speedrund` in `~/.local/bin` (`SPEEDRUN_INSTALL_DIR` to change, `SPEEDRUN_VERSION=v0.1.0` to pin). Or build from source:
+
+```bash
+cargo install --path crates/speedrund && cargo install --path crates/speedrun-cli
 ```
 
 In the repo you want to time:
@@ -58,7 +68,7 @@ Then connect your agent and start prompting. The daemon starts automatically on 
 | pi | `speedrun setup pi` ([details](plugins/pi)) |
 | oh-my-pi | `speedrun setup omp` ([details](plugins/pi)) |
 | Copilot agent (VS Code, Copilot CLI) | `speedrun setup copilot --project` ([details](plugins/copilot)) |
-| VS Code (timer, splits view, MCP tools) | build the `.vsix` in [plugins/vscode](plugins/vscode) |
+| VS Code (timer, splits view, MCP tools) | `code --install-extension agentspeedrun-<version>.vsix` from the release ([details](plugins/vscode)) |
 | Zed (MCP tools) | dev extension in [plugins/zed](plugins/zed) |
 
 ```bash

@@ -65,3 +65,26 @@ jobs:
       - run: cargo test --locked
       - run: cargo clippy --locked --target wasm32-wasip2 -- -D warnings
       - run: cargo build --locked --release --target wasm32-wasip2
+
+  # The release path on every push: static build, archive, installer, smoke test.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl
+      - run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools shellcheck
+      - run: shellcheck install.sh scripts/*.sh
+      - run: python3 scripts/version.py check
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl --bin speedrun --bin speedrund
+      - run: scripts/package.sh x86_64-unknown-linux-musl
+      - run: |
+          (cd dist && sha256sum -- *.tar.gz > SHA256SUMS && python3 -m http.server 8765 >/dev/null 2>&1 &)
+          sleep 1
+          SPEEDRUN_VERSION="v$(scripts/version.py get)" SPEEDRUN_DOWNLOAD_URL=http://127.0.0.1:8765 \
+            SPEEDRUN_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          scripts/smoke.sh "$RUNNER_TEMP/bin"
