@@ -1,0 +1,874 @@
+{
+ "commit": "cdf98f1",
+ "findings": [
+  {
+   "title": "CLI never authenticates the daemon: whoever binds 127.0.0.1:7477 first gets the full bearer token and every raw, unredacted prompt",
+   "severity": "medium",
+   "area": "daemon HTTP API / client trust (shared hosts)",
+   "evidence": "crates/speedrun-cli/src/client.rs:84-87 attaches `Authorization: Bearer <full token>` to every request, including the unauthenticated GET /v1/health used by ready() at :111. Nothing checks that the server is the real speedrund. Redaction runs only on the daemon side (crates/speedrund/src/service.rs:126), so the client sends prompt text exactly as typed (crates/speedrun-cli/src/ops.rs:21-33). The port is fixed and shared by every user (crates/speedrun-core/src/paths.rs:4). VERIFIED: I ran a 20-line python HTTP server on a port and pointed SPEEDRUN_ADDR at it, then ran `speedrun hook claude-code user-prompt-submit`. The server received `GET /v1/health AUTH=Bearer 01M65X...` and then `POST /v1/prompts` with the full token and a prompt still containing `sk_live_abcdefghijklmnop1234`. The hook exited 0 and showed nothing wrong.",
+   "failure_scenario": "On a multi-user machine (shared dev box, university server, CI runner with several tenants), user B listens on 127.0.0.1:7477 before user A's daemon is up (after a reboot, or before A has ever run speedrun). A's hooks see a reachable server, so autostart never runs. B receives A's bearer token and every prompt A types, including secrets that redaction would have removed, while A sees no error. A second legitimate user on the same machine also cannot run a daemon at all, because the default port is global.",
+   "fix": "Use a per-user Unix domain socket in the 0700 data dir (or a port written to a 0600 file there). Failing that, add server authentication: the client sends a nonce and the daemon answers HMAC(token, nonce) on /v1/health before the client sends the token or a body. Stop sending the token on /v1/health. Also run redact() on the client before sending or spooling, as defense in depth.",
+   "confidence": "verified",
+   "id": "A1-1",
+   "by": "security",
+   "critic": {
+    "id": "A1-1",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "Code matches: client.rs sends the bearer token on /v1/health (ready() at client.rs:110-111, send() at :84-87), and the address is fixed (paths.rs:4). But it needs a hostile local user who binds 7477 first. That does not apply to v0.1's single-developer machine. The real v0.1 impact is the data-dir/port coupling, which A5-3 covers better. I did not rerun the fake-server experiment."
+   }
+  },
+  {
+   "title": "Prompt redaction misses JSON-style secrets despite claiming to cover them, plus Bearer headers, credentialed DB URLs, camelCase keys and *_PASS",
+   "severity": "medium",
+   "area": "prompt redaction (redact.rs)",
+   "evidence": "crates/speedrun-core/src/redact.rs:18-19: the comment says it covers `\"secret\": \"value\" style assignments`, but the regex requires `\\s*[:=]` immediately after the key, so the closing quote of a JSON key breaks the match. docs/ARCHITECTURE.md:137 makes the same promise. VERIFIED by linking speedrun-core in a scratch crate: redact() returned changed=false for `{\"api_key\": \"abcdefghijkl1234\"}`, `{\"password\": \"hunter2hunter2\"}`, `apiKey=...`, `Authorization: Bearer abcdefghijklmnop1234`, `DATABASE_URL=postgres://app:hunter2hunter2@db.prod:5432/x`, `export DB_PASS=...`, `sk_test_...`, `whsec_...`, and a truncated `-----BEGIN OPENSSH PRIVATE KEY-----` paste with no END line. VERIFIED end to end: a prompt containing `{\"api_key\": \"abcdefghijkl1234\"}` sent through the hook to a temp daemon came back unredacted from GET /v1/runs/{id}/events.",
+   "failure_scenario": "A user pastes a config snippet or a curl command into the agent prompt, such as `fix this: {\"stripe_secret\": \"...\"}`, `curl -H 'Authorization: Bearer eyJ...'` or a DATABASE_URL with a password. The secret is stored permanently in the immutable event log with redacted=false, and the log cannot be rewritten.",
+   "fix": "Allow optional quotes around the key, e.g. `[\"']?\\b[\\w.-]*(secret|token|passw(or)?d|pass|pwd|api[_-]?key|apikey|private[_-]?key|credential)[\\w.-]*[\"']?\\s*[:=]`, case-insensitive. Add patterns for `Bearer\\s+[A-Za-z0-9._~+/=-]{16,}`, `[a-z][a-z0-9+.-]*://[^\\s/:@]+:[^\\s/@]+@` (credentialed URLs), `(sk|rk|pk)_test_`, `whsec_`, JWTs (`eyJ[\\w-]+\\.[\\w-]+\\.`) and a BEGIN PRIVATE KEY header with no END. Fix the doc comment and add tests for each case.",
+   "confidence": "verified",
+   "id": "A1-2",
+   "by": "security",
+   "critic": {
+    "id": "A1-2",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "The regex at redact.rs:19 is `[A-Z0-9_]*(?:SECRET|...)[A-Z0-9_]*\\s*[:=]`. A closing quote after the key cannot match, so `\"api_key\": \"...\"` is not redacted, even though the comment at :18 says that style is covered. Bearer headers, credentialed URLs, PASS and camelCase keys have no patterns either. The miss lands in an immutable log and breaks the README/ARCHITECTURE:9,137 promise, so medium stands."
+   }
+  },
+  {
+   "title": "Unredacted prompts are written to the on-disk spool and kept forever in rejected.jsonl",
+   "severity": "low",
+   "area": "prompt redaction / CLI spool",
+   "evidence": "crates/speedrun-cli/src/client.rs:135-136 and :261-267 spool the raw request body. :252 appends daemon-refused entries to spool/rejected.jsonl, and nothing ever deletes that file. Redaction happens only in the daemon (crates/speedrund/src/service.rs:126). VERIFIED: with the daemon unreachable (SPEEDRUN_NO_AUTOSTART=1), a hook run left `sk_live_abcdefghijklmnop1234` in plain text in $SPEEDRUN_HOME/spool/pending.jsonl. The file is 0600, but the spool dir was created 0755.",
+   "failure_scenario": "The daemon is down, or rejects a prompt (unknown category, bad id), and the prompt contains a secret. The secret sits in plain text in spool files, in rejected.jsonl indefinitely, so it can end up in backups and dotfile syncs. This breaks the 'redacted before it is stored' promise in ARCHITECTURE.md:137.",
+   "fix": "Redact on the client before spooling (redact lives in speedrun-core, which has no I/O). Cap or expire rejected.jsonl, and create the spool dir with 0700.",
+   "confidence": "verified",
+   "id": "A1-3",
+   "by": "security",
+   "critic": {
+    "id": "A1-3",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "spool() at client.rs:261-267 writes the raw body. Line :252 appends refused entries to rejected.jsonl and nothing deletes it. The dispute is correct: speedrund chmods the data dir to 0700 (main.rs:48-49), so the 0755 spool dir hardly matters. Plaintext in rejected.jsonl that persists is the real issue."
+   }
+  },
+  {
+   "title": "Agent-supplied milestone titles reach the terminal raw: escape-sequence injection (OSC 52 clipboard write, screen spoofing) in `speedrun status`/`watch`",
+   "severity": "low",
+   "area": "untrusted input from agents/MCP to terminal",
+   "evidence": "The MCP tool speedrun_propose_milestones takes a free-form `title` (crates/speedrun-cli/src/tools.rs:76-95). The daemon validates only milestone_id (crates/speedrund/src/service.rs:207-209 via check_id), not title. watch.rs:59 and :122 print `m.title` straight to stdout. VERIFIED: I proposed a milestone titled `ok\\u001b]52;c;cHduZWQ=\\u0007\\u001b[2Kfake line` over `speedrun mcp`, and `speedrun status | od -c` showed literal `033 ] 5 2 ; c ; ...` and `033 [ 2 K` bytes.",
+   "failure_scenario": "A prompt-injected or misbehaving agent proposes a milestone whose title holds terminal escapes. When the user runs `speedrun status` or keeps `speedrun watch` open, the escapes run in their terminal. OSC 52 silently overwrites the clipboard on terminals that allow it (kitty, WezTerm, iTerm2 with the option on, tmux set-clipboard), so the user may paste attacker-chosen text. CSI cursor and erase sequences can draw fake verified lines over real ones, so a timed agent can make a forged result look legitimate on the user's own scoreboard.",
+   "fix": "In the daemon, reject or strip control characters (char::is_control, including ESC and C1) in title, description and other free-text payload fields. Also escape or filter control characters when rendering in watch.rs and format_status, since older events may already contain them.",
+   "confidence": "verified",
+   "id": "A1-4",
+   "by": "security",
+   "critic": {
+    "id": "A1-4",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "The daemon checks only that the title is non-empty (projection.rs check, MilestoneProposed arm), and watch.rs prints it. I did not rerun the OSC test. It needs a malicious agent, and terminal escape injection from the agent you are timing is a minor issue."
+   }
+  },
+  {
+   "title": "SSRF address filter has IPv6/IPv4 gaps and is disabled entirely whenever a proxy env var is set",
+   "severity": "low",
+   "area": "verifiers SSRF (verify.rs)",
+   "evidence": "crates/speedrund/src/verify.rs:732-758 is_public() unwraps only ::ffff:-mapped IPv6 (to_ipv4_mapped). It treats NAT64 64:ff9b::/96 (e.g. 64:ff9b::a00:1 maps to 10.0.0.1), 6to4 2002::/16, IPv4-compatible ::/96, site-local fec0::/10, 2001:db8::/32 and IPv4 198.18.0.0/15 and 192.0.0.0/24 as public. Separately, verify.rs:780-782 returns every resolved address unfiltered once HTTPS_PROXY, https_proxy, ALL_PROXY or all_proxy is set, and NO_PROXY is ignored, so the proxy resolves and connects to whatever internal host a public DNS name points at. Agents can supply URLs through the MCP claim tool (tools.rs:110-119). Impact is limited: https_only(true) plus certificate validation for the attacker's domain mean an internal service cannot complete the TLS handshake, so the leak is mostly a reachability and port oracle through differing error strings (verify.rs:785, 813-817). NOT verified by running against a NAT64 network or a proxy.",
+   "failure_scenario": "On a DNS64/NAT64 network, or a corporate host with HTTPS_PROXY set, an agent claims `deployed --url https://probe.attacker.tld` where the name resolves to 64:ff9b::a9fe:a9fe or to an internal RFC1918 host. The daemon connects, and the problem text it returns tells the agent whether the internal host:port is open.",
+   "fix": "Normalize NAT64, 6to4 and IPv4-compatible addresses to their embedded IPv4 and test that. Reject fec0::/10, 2001:db8::/32, 198.18.0.0/15 and 192.0.0.0/24, or use a maintained 'is_global' list. When proxied, still resolve the target locally and refuse non-public answers, or honor NO_PROXY. Return a generic error for connect and TLS failures.",
+   "confidence": "likely",
+   "id": "A1-5",
+   "by": "security",
+   "critic": {
+    "id": "A1-5",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "I did not verify it. The auditor admits impact is limited to a reachability oracle behind TLS and https_only. On a single dev machine the agent can already make arbitrary network requests itself, so the SSRF via the daemon adds almost nothing."
+   }
+  },
+  {
+   "title": "Release supply chain: same-origin checksums only, no provenance; tag-pinned third-party actions and unpinned pip in the jobs whose output is published; ref_name interpolated into shell",
+   "severity": "low",
+   "area": "install.sh / release workflow",
+   "evidence": "install.sh:38-45 and :55-58 download SHA256SUMS from the same release, origin and credentials as the archive, so the check at :63-71 catches corruption but not a tampered release or account. The workflow has no signature or attestation step (.github/workflows/release.yml:104-114). The binaries job, whose tarballs are published verbatim, uses mutable refs dtolnay/rust-toolchain@stable, Swatinem/rust-cache@v2 and docker/setup-qemu-action@v3, and runs `pip install cargo-zigbuild` with no version (release.yml:34-45). Tag builds restore rust-cache caches written by main pushes. release.yml:18 expands `${{ github.ref_name }}` directly into a run: shell line (needs tag-push rights; the job has contents:read). The documented install pipes install.sh from `main`, not from the tag being installed (install.sh:4,9).",
+   "failure_scenario": "A compromised upstream action tag or PyPI release of cargo-zigbuild injects code into the aarch64 or darwin build. publish then computes SHA256SUMS over the tampered tarballs, and install.sh accepts them. Users cannot detect this because nothing ties the artifact to the repository's source.",
+   "fix": "Add `actions/attest-build-provenance` (or cosign/minisign signatures) in publish, and have install.sh run `gh attestation verify` when gh is available or check a signature with a pinned public key. Pin all third-party actions by commit SHA and pin cargo-zigbuild to a version. Pass ref_name through `env:` instead of `${{ }}` in run:. Document installing from the tagged install.sh.",
+   "confidence": "verified",
+   "id": "A1-6",
+   "by": "security",
+   "critic": {
+    "id": "A1-6",
+    "verdict": "overstated",
+    "severity": "low",
+    "reason": "Install.sh using same-origin checksums is standard for v0.1 and is not a defect. Mutable action tags and unpinned cargo-zigbuild are real hygiene gaps. The rust-cache poisoning claim is downgraded by the release auditor's dispute, since the job id is part of the cache key. ref_name in run: needs tag-push rights, which already equals full compromise. It belongs on a hardening list, not a bug list."
+   }
+  },
+  {
+   "title": "Full-access token is accepted in ?token= query strings",
+   "severity": "low",
+   "area": "daemon HTTP API auth scope",
+   "evidence": "crates/speedrund/src/http.rs:149-159 display_auth accepts either token from the query string. VERIFIED: GET /v1/live?token=<full token> returned 200, while /v1/runs/x?token=<full> returned 401. docs/LIVE_DISPLAY.md:81 only advises against using it this way.",
+   "failure_scenario": "A user wires a browser widget or OBS overlay with the token they find first ($SPEEDRUN_HOME/token). The full token then appears in page URLs, browser history, proxy and extension logs and screenshots. Anyone who gets it can POST events and read every prompt through /v1/runs/{id}/events.",
+   "fix": "Accept only the display token in the query string. Keep the full token header-only on all routes.",
+   "confidence": "verified",
+   "id": "A1-7",
+   "by": "security",
+   "critic": {
+    "id": "A1-7",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "display_auth (http.rs:148-160) accepts the full token from the query string. The fix is trivial, but exposure needs the user to choose to paste the full token into a URL."
+   }
+  },
+  {
+   "title": "Committed .speedrun/project.json turns on prompt recording for every collaborator, and Project::find walks every ancestor directory",
+   "severity": "low",
+   "area": "hooks in shared repos / consent",
+   "evidence": "crates/speedrun-cli/src/project.rs:9-10 says to commit project.json, and :26-38 walks start.ancestors() with no stop at the git root or $HOME. The Claude Code plugin hooks (plugins/claude-code/hooks/hooks.json) and user-wide Copilot hooks (setup.rs:49-51) run in every directory, and hook.rs:97-101 records whenever any ancestor holds .speedrun/project.json. The comment at project.rs:24-25 says nothing is recorded until `speedrun init`, but init is done by the repo author, not the user. The repo-controlled path then becomes project_root, which the daemon passes to `git -C` (verify.rs:504-512). Not run end to end in a cloned repo.",
+   "failure_scenario": "A developer with the plugin installed user-wide clones a teammate's or stranger's repo that has .speedrun/project.json committed, or unpacks an archive under a directory with a stray project.json in a parent. From then on every prompt they type there is recorded into their local log, joined to the repo author's project_id, without them ever opting in. The data stays local, so the impact is privacy and consent rather than exfiltration.",
+   "fix": "Require per-user opt-in per project, e.g. a local allowlist in $SPEEDRUN_HOME keyed by project_id and root and confirmed on the first run with a context message. Stop the ancestor walk at the git toplevel and never above $HOME.",
+   "confidence": "likely",
+   "id": "A1-8",
+   "by": "security",
+   "critic": {
+    "id": "A1-8",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "Project::find (project.rs:26-38) walks every ancestor with no git or HOME stop. The data stays local, so this is a consent and UX issue, which makes low right."
+   }
+  },
+  {
+   "title": "Concurrent first start of two daemons leaves the running daemon with a token that differs from the token file. The hooks then get 401 on every call, and prompts are silently dropped instead of spooled.",
+   "severity": "medium",
+   "area": "daemon startup / CLI spool durability",
+   "evidence": "crates/speedrund/src/main.rs:50-51 calls ensure_token, and :53 runs Store::open/migrate, both before the single-instance check, which is the port bind at :62. ensure_token (main.rs:19-36) does read-or-generate with no lock. It opens the file with truncate(true) and then writes, so a racer that reads in between sees an empty file and generates its own token (:20-24). The daemon that wins the bind keeps its own token in memory (main.rs:77). The loser may already have overwritten the file. On the client, post_durable spools only on CallError::Unreachable (crates/speedrun-cli/src/client.rs:133-139). A 401, or any other Api error including 500, is returned as an error and the hook swallows it (hook.rs:22-28). flush_spool also moves any Api error, including transient 500s, to rejected.jsonl for good (client.rs:252). VERIFIED: I started two speedrund processes at the same moment on a fresh temp SPEEDRUN_HOME, using ports 31001-31020. In 3 of 20 trials, a request with the token from the file got 401 from the live daemon. In a second batch I reproduced the mismatch on trial 3 and ran `speedrun hook claude-code user-prompt-submit` against it. Output: 'speedrund error 401: missing or invalid bearer token', exit 0, and no spool directory was created. The prompt was lost. The losing daemon's log also showed that concurrent migration crashes it: 'Error: migration 2 ... duplicate column name: category_id'. migrate() reads user_version outside its transaction (store.rs:102-108).",
+   "failure_scenario": "First use on a machine, or after the token file is deleted. Two clients autostart at the same time, for example the `speedrun mcp` server and the first UserPromptSubmit hook when Claude Code starts, or two hosts open after install. Each spawns speedrund. One binds 7477 holding token A, and the file ends up holding token B. From then on every hook prompt, turn end and claim gets 401. Nothing is spooled and nothing is shown to the user, and the state lasts until the daemon restarts, which nothing triggers because the daemon is reachable. All splits for that period are gone, against ARCHITECTURE.md goal 1. The same ordering problem means a new daemon version run by hand while an old one is still serving applies its migrations to the live database and then fails to bind.",
+   "fix": "Take a single-instance lock before any stateful work: flock a lockfile in the data dir, or bind the listener first, then write tokens and migrate. Create the token atomically: write a temp file and link()/rename with O_EXCL semantics, then re-read the file. Spool on any failure that is not a definitive 4xx validation error, including 401, 5xx and timeouts. On 401, the client should re-read the token once and retry, then spool.",
+   "confidence": "verified",
+   "id": "A2-1",
+   "by": "integrity",
+   "critic": {
+    "id": "A2-1",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "main.rs:50-53 runs ensure_token and Store::open/migrate before bind at :62, and migrate reads user_version outside its transaction (store.rs:102-104). post_durable spools only on Unreachable (client.rs:133-139), so a 401 drops the prompt silently. A concurrent first start (the MCP server plus the first hook at Claude Code launch) is realistic on one machine. The auditor reports 3/20 reproduction. Medium and v0.2-priority, because the fix (bind or flock first, spool on 401/5xx) also fixes A5-3."
+   }
+  },
+  {
+   "title": "An off-lock verification job for an invalidated claim still verifies the milestone after a re-claim. The rejected evidence counts, and the split is dated at the old claim.",
+   "severity": "medium",
+   "area": "off-lock verification (http.rs finish_append / service.rs finish_verification)",
+   "evidence": "http.rs:191-197 runs verifier.verify(&job) without the lock, then calls finish_verification. finish_verification (service.rs:308-345) checks only that the payload is legal now, through insert_derived -> check (service.rs:374). For MilestoneVerified, check accepts any state of Reached|Verified (projection.rs:523-526). It never checks that job.cause_event_id is still the claim the milestone is based on, or that no MilestoneInvalidated came after it. The event is dated job.claimed_at when within VERIFY_GRACE (service.rs:317-321), and fold sets counted_at to that time (projection.rs:347-349). VERIFIED with a test added to a scratch copy of service.rs. Sequence: claim c1 with url old.example.com and get job1; append MilestoneInvalidated; claim c2 with url new.example.com; then finish_verification(job1, passed). Result: event 'c1:verify' inserted, milestone state=Verified, trust=EvidenceVerified, evidence=[new.example.com, old.example.com]. The new claim's evidence was never checked.",
+   "failure_scenario": "An agent claims `deployed` with URL A. The URL check takes several seconds (15 s timeout, up to 5 redirects). Meanwhile the user sees the claim is wrong and runs invalidate, and the agent re-claims with URL B, which does not work. Job A finishes and records MilestoneVerified, so the milestone counts as evidence_verified even though the user rejected the evidence and B was never valid. If it is the last category milestone, the run completes, dated at claim A, which was before the invalidation. Completed runs are frozen, so the result cannot be fixed.",
+   "fix": "In finish_verification, re-fold inside the transaction and require that no MilestoneInvalidated for the milestone has seq greater than the cause event's seq, or keep a 'current claim event id' in MilestoneView and require it to equal job.cause_event_id. Also never date a verification earlier than the latest invalidation of that milestone.",
+   "confidence": "verified",
+   "id": "A2-2",
+   "by": "integrity",
+   "critic": {
+    "id": "A2-2",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "http.rs:191-197 runs verify off-lock. MilestoneInvalidated resets state to Accepted (projection.rs:352-359). A re-claim makes it Reached, and check() for MilestoneVerified accepts Reached|Verified (projection.rs:523-526). finish_verification (service.rs:308-345) never compares cause_event_id with the current claim. The window is only as long as the URL check, so it rarely happens in practice. Medium only because a run that completes this way is frozen and cannot be corrected."
+   }
+  },
+  {
+   "title": "Turns that end without a turn-end event (interrupt, API error, crash, a hook cancelled by Esc) keep the agent clock running. A new prompt in the same session silently converts the whole idle gap into agent time.",
+   "severity": "medium",
+   "area": "projection clocks (RunView::fold)",
+   "evidence": "projection.rs:275-279: on AgentTurnStarted for a session that already has an open turn, fold closes the old turn at the new start time (`agent.push((prev, t))`), so the entire gap counts as agent time. Turns open in any other session are closed only by the run's end (projection.rs:396-398), so an abandoned session's turn runs until the run finishes. The Claude Code plugin registers only UserPromptSubmit, Stop and SessionEnd (plugins/claude-code/hooks/hooks.json). The Claude Code hooks docs list a separate `StopFailure` event 'When the turn ends due to an API error', which is not hooked. The docs also say that pressing Esc while UserPromptSubmit hooks are checking a prompt means 'the prompt doesn't reach Claude', yet record_prompt has already written PromptSubmitted plus AgentTurnStarted (ops.rs:31, service.rs:139-148). Nothing expires stale turns. VERIFIED the fold arithmetic with a scratch test: turns start@0 then start@60 in one session give agent_ms=60min. NOT verified: that Stop is skipped on a user Esc interrupt. I believe it is, but could not confirm from the docs page.",
+   "failure_scenario": "The user starts a prompt at 10:00, the turn fails with an API error, or the user presses Esc, at 10:02, and no Stop fires. The user thinks or goes to lunch and prompts again in the same session at 11:00. agent_ms gains 60 minutes and human_ms gains 0 instead of 15. The live display shows the agent running the whole time (live.rs:123), with active_agents=1 and no idle clock. If the user quits and starts a new Claude session after a crash with no SessionEnd, the old session's turn stays open until the run finishes, so agent_ms is close to wall_ms and human_ms stops accruing for the rest of the run. That corrupts every later split and the PB comparison.",
+   "fix": "Hook StopFailure (and the equivalent events in other hosts) to send AgentTurnEnded. In fold, when a session gets a second AgentTurnStarted while a turn is open, end the previous turn at the last activity seen for that session, or cap it at a maximum turn length, instead of at the new start. Add a stale-turn rule, such as treating open turns with no activity for N minutes as ended at their last activity, and record it as a derived event or apply it as a projection rule.",
+   "confidence": "likely",
+   "id": "A2-3",
+   "by": "integrity",
+   "critic": {
+    "id": "A2-3",
+    "verdict": "plausible",
+    "severity": "medium",
+    "reason": "The fold code is as described: projection.rs:275-279 closes the previous open turn at the new start. hooks.json registers only UserPromptSubmit, Stop and SessionEnd, with no StopFailure. Whether Stop fires on Esc is unverified. API errors and crashes alone make this hit ordinary single-user use, and it corrupts agent_ms and human_ms for the run."
+   }
+  },
+  {
+   "title": "Turn intervals are paired in seq order but measured with occurred_at, and the spool can deliver events out of order, so delayed turn-ends are dropped and agent time is miscounted",
+   "severity": "low",
+   "area": "CLI spool ordering / projection",
+   "evidence": "fold pairs start and end per session in seq order (projection.rs:275-285). An end whose occurred_at is earlier than the open start makes an inverted interval, which merge() discards (projection.rs:109). The spool can reorder in two ways. (1) When delivery becomes unreachable mid-flush, the remaining old lines are appended to the live pending.jsonl (client.rs:244-249), after any lines other processes spooled in the meantime. (2) The rule for picking up abandoned files treats a `flushing-*` file as stale by mtime (client.rs:224-229). rename() keeps the mtime of the original pending.jsonl, so a file that was just claimed but spooled more than 120 s earlier is picked up and delivered concurrently by every other hook process. That contradicts the comment at :212-213 ('never deliver the same file twice'). A second process also sends its own fresh event while the first is still replaying the old ones. VERIFIED with a scratch fold test: events in seq order start@0, start@60, end@30 (late), end@80 give agent=60min, while the true value is 30+20=50, and the end@80 is ignored. The spool interleaving was reasoned from the code and NOT reproduced with real concurrent hooks.",
+   "failure_scenario": "The daemon was down for a few minutes, so pending.jsonl holds turn-end events with old mtimes. When it comes back, two hook processes (two sessions, or opencode plus Claude) run at the same time. Both deliver the same claimed file, and one session's fresh AgentTurnStarted lands between older spooled events for the same session. A late spooled AgentTurnEnded then closes the new turn with an earlier timestamp, and the interval is dropped. The real turn-end is later ignored, and agent and human time are wrong for the rest of the run. RunPaused and RunResumed delivered in the wrong order get a 409 'run is not paused', go to rejected.jsonl, and leave the run paused.",
+   "fix": "Use flock on the spool, not rename plus mtime staleness. Touch the claimed file after rename, or put a timestamp in its name. When re-spooling, prepend instead of appending. In fold, pair turn starts and ends by occurred_at within a session, or ignore an AgentTurnEnded whose occurred_at is earlier than the open turn's start instead of consuming the open turn.",
+   "confidence": "likely",
+   "id": "A2-4",
+   "by": "integrity",
+   "critic": {
+    "id": "A2-4",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "The code supports it: re-spool appends to the live file (client.rs:244-249), and staleness uses the renamed file's preserved mtime (:224-229), which contradicts the comment at :212-213. It needs a daemon outage plus concurrent hooks, and the interleaving was not reproduced."
+   }
+  },
+  {
+   "title": "The chain hash is computed over the re-serialized typed struct, not the stored JSON, so the documented 'additive changes keep the version' policy breaks verify_chain for every old event, and an unknown or unparseable row breaks /v1/live for every run",
+   "severity": "medium",
+   "area": "hash chain / schema evolution (hash.rs, store.rs)",
+   "evidence": "verify_chain (hash.rs:331-356) recomputes compute_hash(e) from the parsed Event, using serde_json::to_value(event) (hash.rs:306-311). The events come from Reader::run_events, which deserializes the stored body into the typed Event (store.rs:127-133, 176-179). ARCHITECTURE.md:43 says 'Additive changes keep the version'. Once a v0.2 adds a field such as `foo: Option<String>` or a `#[serde(default)]` field without skip_serializing_if, every v0.1 event deserializes with the default and re-serializes with an extra key ('foo':null), so every existing run reports ChainError::Tampered at seq 1. The reverse also fails: a downgraded binary drops unknown fields, giving a mismatch, and an unknown payload `type` fails parse(). That error propagates through `?` in Service::live (service.rs:388-389), so one such row turns the whole live snapshot and stream into 500s, and record_prompt for that project returns 500. A 500 is not spooled (client.rs:133-139), so the prompt is lost. Reasoned from the code; not run, because it needs a schema change.",
+   "failure_scenario": "v0.2 adds an optional payload field the way the docs allow. After the upgrade, `speedrun verify` reports every pre-v0.2 run as 'stored hash does not match contents', which destroys the credibility guarantee for all history. Or the user tries v0.2 and goes back to v0.1. The first event with a new type then makes /v1/live and that project's prompts fail with 500 until they upgrade again.",
+   "fix": "Hash, and verify against, the stored body: parse it as serde_json::Value, remove 'hash', canonicalize, and compare. Keep the typed parse only for folding. Make fold and live skip and report rows they cannot parse instead of failing the whole request. Document that every additive field needs skip_serializing_if, and add a regression test that verifies a frozen v0.1 fixture DB.",
+   "confidence": "likely",
+   "id": "A2-5",
+   "by": "integrity",
+   "critic": {
+    "id": "A2-5",
+    "verdict": "plausible",
+    "severity": "medium",
+    "reason": "The mechanism is real: compute_hash serializes the typed Event (hash.rs:45-51). No payload field in event.rs uses skip_serializing_if, so adding any field changes the hash of every old event. Service::live propagates fold/parse errors with `?` (service.rs:384-389). The cited lines hash.rs:306-311 and :331-356 do not exist (the file has 162 lines; verify_chain is at :70). Nothing breaks in v0.1, but it constrains every v0.2 schema change, so it must be handled before any additive change."
+   }
+  },
+  {
+   "title": "occurred_at has no lower bound, so any token holder can backdate a claim and set a self_declared or agent_claimed split, or the run's completion, to 0:00:00, and verified claims get up to 10 minutes of free credit",
+   "severity": "low",
+   "area": "clock clamping (service.rs clamp_time) / completion",
+   "evidence": "clamp_time (service.rs:60-63) clamps only future times. fold raises times only up to run start (projection.rs:267). counted_at is the claim's t (projection.rs:347-349), and the completion RunFinished is dated at max(counted_at) (service.rs:352-359). finish_verification dates a verified claim at the client-supplied claimed_at whenever now - claimed_at <= 10 min (service.rs:317-321), so occurred_at = now-9m59s backdates an evidence_verified split by about 10 minutes. VERIFIED with a scratch test: MilestoneReached for scaffold-runs with occurred_at = started_at - 365 days gave split {wall:0, timed:0, agent:0, human:0}. The timed agent runs as the same user and can read $SPEEDRUN_HOME/token, so it can POST /v1/events directly.",
+   "failure_scenario": "An agent, or a user curling the API, posts claims with old occurred_at values. Every self_declared category milestone shows a split of 0:00:00, and for first-revenue or hundred-percent the completion time is pulled earlier, so it beats every honest PB. Nothing in the log marks those times as client-asserted.",
+   "fix": "Bound occurred_at from below: no earlier than the run's latest recorded event minus a small slack, or no earlier than recorded_at minus how long the event could have been spooled. Better, have the spool record its own enqueue time and let the daemon accept old times only for replays. Use the time of the evidence check, or recorded_at, for split credit on milestone claims, and never the client time beyond a small skew.",
+   "confidence": "verified",
+   "id": "A2-6",
+   "by": "integrity",
+   "critic": {
+    "id": "A2-6",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "clamp_time (service.rs:60-63) has no lower bound. Exploiting it needs deliberate API calls with the token, which A3-7 already shows lets the owner forge anything. Without leaderboards this is self-cheating. The anticheat dispute (backdated RunPaused) is valid but is the same class."
+   }
+  },
+  {
+   "title": "happy-path-demo and core-features-real reach evidence_verified from any commit in HEAD's history, including empty commits made before the run started. The agent alone completed any% 11 s after the first prompt.",
+   "severity": "high",
+   "confidence": "verified",
+   "area": "verifiers / categories (git evidence)",
+   "evidence": "verify.rs:144-152: required_kind has no entry for happy-path-demo or core-features-real, so a lone git_commit is enough. verify.rs:189-195 and :531-536: git_commit_in_history checks only that the commit exists and is an ancestor of HEAD. There is no date check and no comparison with the repo state at run start. RunStarted does not record HEAD (service.rs:472-477). categories/any-percent.json and hundred-percent.json set required_trust evidence_verified for these keys with suggested_evidence [git_commit]. README.md:31 presents 'git commits in the project's history' as evidence_verified proof. VERIFIED end to end with a temp daemon on 127.0.0.1:34571. I made an empty repo with one --allow-empty commit, ran `speedrun init`, sent one hook prompt, then ran `speedrun tool speedrun_claim_milestone` for scaffold-runs and then for happy-path-demo with commit=<pre-run sha>. Output: 'Trust now EvidenceVerified ... The run is complete! Evidence verified (git).' status: completed at real 0:00:11.",
+   "failure_scenario": "A runner writes the whole project before the timer starts (in an untracked dir, or before `speedrun init`), commits it, then sends one prompt and claims happy-path-demo with HEAD. any% completes in seconds, and the first two hundred-percent milestones count the same way. The PB and the 'evidence_verified' label say the demo was checked, but the only thing checked is that a commit exists. An honest agent that makes a trivial commit and claims the milestone too early also gets a 'verified' split.",
+   "fix": "Now: record the HEAD sha (and its committer time) in RunStarted. The field is additive, so use skip_serializing_if (see A2-5). Reject git_commit and ci_run head_sha evidence that is an ancestor of the start HEAD, or whose committer date is before run start. Publish new category versions in which a commit alone cannot satisfy evidence_verified for demo or feature milestones (require a url or ci_run), or lower them honestly to self_declared. Document that commit evidence proves the commit exists, not what it does. Not preventable locally: squashing pre-written code into a fresh post-start commit with a forged date. That needs external timestamps (sync).",
+   "id": "A3-1",
+   "by": "anticheat",
+   "critic": {
+    "id": "A3-1",
+    "verdict": "confirmed",
+    "severity": "high",
+    "reason": "required_kind (verify.rs:144-152) has no entry for happy-path-demo or core-features-real, and git_commit_in_history (:531-536) checks only ancestry of HEAD. RunStarted records no HEAD. An honest agent that claims early with any pre-existing commit gets 'evidence_verified', not just a cheater. This undermines the README:31 trust label, which is the product's core claim. The product dispute is correct: a new category version cannot fix this because verifier dispatch ignores the version."
+   }
+  },
+  {
+   "title": "first-payment passes with no money moved: an invoice marked paid out of band, or any invoice or session with no linked charge, skips every refund, dispute and capture check. Stripe-Version is not pinned, so on current API versions card-paid invoices also skip them.",
+   "severity": "high",
+   "confidence": "likely",
+   "area": "verifiers (Stripe)",
+   "evidence": "verify.rs:662-676: an in_ id needs only status=='paid', amount_paid>0, a non-founder customer_email and paid_at>=since. Then `match linked(\"charge\") { None => Ok(()) }`. paid_out_of_band is never read. verify.rs:651-660: a cs_ id with neither payment_intent nor invoice returns Ok without a charge check. verify.rs:575-577: Stripe requests send only Authorization, no Stripe-Version header, so the response shape follows the account's default API version. In recent versions the invoice no longer has a top-level charge field, so linked(\"charge\") is None even for card-paid invoices, and refunds and disputes on them are never checked. VERIFIED against the verifier with a mocked Stripe in a scratch copy of verify.rs tests: invoices/in_oob = {livemode:true,status:'paid',amount_paid:5000,paid_out_of_band:true,customer_email:'anyone@x.com'} -> verified=true. NOT verified against the live Stripe API: that amount_paid is non-zero for an out-of-band invoice, or which API version drops invoice.charge.",
+   "failure_scenario": "In live mode the runner creates an invoice for a fake customer, finalizes it and marks it paid out of band. No card is charged and no fee is paid. They claim first-payment --stripe in_..., which passes, and the first-revenue run completes and is frozen. Variant: a real invoice paid by card on an account with a current default API version, refunded before the claim, still verifies because the charge is never looked up.",
+   "fix": "Reject invoices with paid_out_of_band==true or amount_paid==0. Always resolve an invoice or checkout session to a real charge: send Stripe-Version pinned to a known version and follow invoice.payments, payment_intent or latest_charge. Fail closed when no charge is found. Add tests for both paths.",
+   "id": "A3-2",
+   "by": "anticheat",
+   "critic": {
+    "id": "A3-2",
+    "verdict": "plausible",
+    "severity": "medium",
+    "reason": "The code at verify.rs:662-676 confirms the invoice path, which ignores paid_out_of_band and returns Ok when no charge is linked. No Stripe-Version header is sent. The Stripe API behavior (invoice.charge removed in newer versions, amount_paid for out-of-band invoices) is unverified. Exploiting it is deliberate self-cheating, and with no leaderboard in v0.1 that makes it medium rather than high. The refunded card-invoice case is the more honest-path concern."
+   }
+  },
+  {
+   "title": "The Stripe self-payment and refund checks are trivially bypassed, and ARCHITECTURE.md overstates them. Founder detection is an exact email match. Partial refunds of up to 99.9% pass. A refund made right after verification is never seen.",
+   "severity": "medium",
+   "confidence": "verified",
+   "area": "verifiers (Stripe) / docs overclaim",
+   "evidence": "verify.rs:713-720: not_founder rejects only an exact, case-folded email match against git log and config (verify.rs:539-554). None or null emails pass. Plus-aliases and any other address pass. verify.rs:695: a charge is refunded only if amount_refunded >= captured. Verification runs once, at claim time (service.rs:308-345), and completed runs are frozen (projection.rs:481-489), so a later refund is never seen. ARCHITECTURE.md:79 claims 'not paid by anyone who has committed to the repo ... later refunds count', but only refunds before the claim count. Nothing ties the Stripe account to this project (verify.rs:300-317): any live key the runner stores is accepted. VERIFIED with the mocked verifier: ch_alias (founder+1@example.com while the founder is founder@example.com) -> verified; ch_noemail (no billing or receipt email) -> verified; ch_partial (amount 900, refunded 899) -> verified.",
+   "failure_scenario": "The founder pays $0.50 through their own Payment Link as me+x@gmail.com or with no email, claims first-payment (verified, run completes and freezes), then refunds in full. The cost is the Stripe fee, about $0.32. Alternatively, a sale from an unrelated product on the same Stripe account after run start counts. The board shows 'First revenue: evidence_verified' with no customer money.",
+   "fix": "Normalize emails (strip +tags, Gmail dots), and compare customer ids and card fingerprints with any earlier payment by a committer. Reject charges with no customer email. Treat a refund over a small fraction as refunded. Re-check payments at completion and again N days later, and record a derived 'result revoked' event. Tie the payment to the project: business_profile.url must match the deployed domain, or the PaymentIntent must carry a run nonce in its metadata. Fix the ARCHITECTURE.md:79/:100 wording.",
+   "id": "A3-3",
+   "by": "anticheat",
+   "critic": {
+    "id": "A3-3",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "The refund check at verify.rs:695 is `amount_refunded >= captured`, so a partial refund passes. Founder detection is an exact email match. Bypassing either takes the founder's deliberate action, so it is self-cheating with no v0.1 leaderboard. The docs overclaim, so fix the wording."
+   }
+  },
+  {
+   "title": "legal-pages passes with one ordinary landing page whose footer links read 'Terms of Service' and 'Privacy Policy', or with a big company's legal pages on another domain",
+   "severity": "medium",
+   "confidence": "verified",
+   "area": "verifiers (legal-page heuristic)",
+   "evidence": "verify.rs:426-449: LegalCoverage::add classifies a page as terms or privacy if the phrase appears anywhere in the visible text, and sets both flags from one page. visible_text (verify.rs:391-417) keeps anchor and footer text. There is no rule that terms and privacy come from different URLs, and no rule that the URLs share the deployed site's domain. VERIFIED with the mocked verifier: a single URL with '<h1>Buy our widget</h1>', about 240 marketing words and footer links 'Terms of Service' and 'Privacy Policy' -> legal-pages verified=true. https://stripe.com/legal/ssa plus https://policies.google.com/privacy (mocked bodies) -> verified=true.",
+   "failure_scenario": "An agent claims legal-pages with the app's home page, since most SaaS templates have those footer links, or with Stripe's and Google's legal pages. The compliance milestone counts as evidence_verified when the product has no terms or privacy policy at all.",
+   "fix": "Require at least two distinct URLs on the same registrable domain as the verified deployed URL. Classify only from <title>/<h1>, or ignore text inside <a>, <nav> and <footer>. Count words outside nav and footer. Ship this as a new first-revenue category version.",
+   "id": "A3-4",
+   "by": "anticheat",
+   "critic": {
+    "id": "A3-4",
+    "verdict": "plausible",
+    "severity": "medium",
+    "reason": "I did not rerun it. The heuristic is described from verify.rs:426-449. The plausible failure is an honest but over-eager agent submitting the home page, which matters more than deliberate cheating."
+   }
+  },
+  {
+   "title": "A milestone claim made by the agent counts for every self_declared milestone with no human confirmation, and the daemon accepts the claimed trust level from any client",
+   "severity": "medium",
+   "confidence": "verified",
+   "area": "trust model (projection counts / MCP tools)",
+   "evidence": "projection.rs:69-72: counts() is trust >= required_trust, and agent_claimed > self_declared. tools.rs:131-137: speedrun_claim_milestone appends MilestoneReached{trust: AgentClaimed} to any predefined milestone. service.rs:184-188 rejects only trust >= EvidenceVerified, so a token holder chooses the trust, although ARCHITECTURE.md:49 presents it as provenance. Self_declared predefined milestones include auth-and-data-protection, payments-live, tax-compliance and usable-by-stranger. VERIFIED: the agent's claim of scaffold-runs printed 'Trust now AgentClaimed (needs SelfDeclared); it counts' with no user action.",
+   "failure_scenario": "An over-eager or prompt-injected agent claims 'auth done, tax set up, a stranger completed the flow'. Those milestones count at once and can complete and freeze the run. The record reads as the human's attestation, but the human declared nothing.",
+   "fix": "Keep provenance separate from strength. Agent claims on predefined milestones should stay pending until the user confirms them, or self_declared should require a user-origin claim. Give MCP and tools a separate agent token and derive trust from the token, not the payload.",
+   "id": "A3-5",
+   "by": "anticheat",
+   "critic": {
+    "id": "A3-5",
+    "verdict": "overstated",
+    "severity": "low",
+    "reason": "This is the documented design: ARCHITECTURE.md:49 and :71 define self_declared < agent_claimed, and service.rs:184-188 caps client trust below evidence_verified. The finding critiques the design more than it reports a bug. The product strengthening point (a user's split, SelfDeclared at main.rs:279-282, can never satisfy an AgentClaimed requirement set at tools.rs:92) is a real UX defect and should be tracked under A6-5."
+   }
+  },
+  {
+   "title": "deployed and tests-green are not tied to the project: any public 2xx page counts as the deployment, and any successful workflow of any repo the user adds as a remote counts as tests passing",
+   "severity": "medium",
+   "confidence": "likely",
+   "area": "verifiers (URL / GitHub Actions)",
+   "evidence": "check_url (verify.rs:217-234) checks only HTTPS, a public name, 2xx and a short placeholder list (verify.rs:324-332). Nothing proves control or links the URL to the project; the example.com page is not in PLACEHOLDER_SIGNS (only the .example TLD is blocked at :361). check_ci (verify.rs:238-296) accepts any repo for which git_remote_matches finds a remote (:516-528), and the user can add one freely. It requires success on a commit in local history, created after run start, but does not check which workflow ran or who triggered it. Reasoned from code; no network test.",
+   "failure_scenario": "The runner claims deployed with a GitHub page. For tests-green they add an upstream remote for a busy OSS project, check out its main and pick any green run after run start. Or, in their own repo, a workflow_dispatch workflow that runs `true` passes. Both show evidence_verified.",
+   "fix": "deployed: the daemon issues a per-run nonce that the site must serve at /.well-known/speedrun/<run_id>. This proves control and shows the site was live after start. CI: require the token user to have repo push permission, triggering_actor == the token's user, a configured test-workflow path, and head_sha being a post-start commit.",
+   "id": "A3-6",
+   "by": "anticheat",
+   "critic": {
+    "id": "A3-6",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "Reasoned from code only, and it needs deliberate gaming such as adding a foreign remote. An honest agent would not do this, so it is a v0.2 hardening item."
+   }
+  },
+  {
+   "title": "The hash chain can be forged from the user's own account. Editing SQLite and recomputing the unkeyed SHA-256 chain passes `speedrun verify`, so 'history cannot be silently edited' and 'Tamper-evident' overclaim",
+   "severity": "medium",
+   "confidence": "verified",
+   "area": "integrity / docs overclaim (hash.rs, store.rs)",
+   "evidence": "hash.rs:45-51: an unkeyed sha256 over canonical JSON, with no signature or external anchor. The store.rs:24-27 triggers can be dropped by whoever can write the 0600 file, which is the user. VERIFIED: with the temp daemon running, a python script dropped events_no_update, set every event's occurred_at and recorded_at in a completed run to the run start, recomputed hash and prev_hash, and recreated the trigger. GET /v1/runs/<id>/verify then returned {ok:true, events:12}, and the run showed completed with all timings 0. The live daemon picked up the change with no restart. Overclaims: ARCHITECTURE.md:6, README.md:29.",
+   "failure_scenario": "A runner rewrites a finished run, or fabricates a complete run including MilestoneVerified and RunFinished{completed}, and `speedrun verify` reports the chain intact. A planned device-key signature would not help, because the key sits on the cheater's machine.",
+   "fix": "Local-only design cannot prevent this. Reword the docs: the chain detects corruption and edits that bypass the daemon, not deliberate rewriting by the owner. v0.2: anchor head hashes with a sync or transparency service that returns server-timestamped receipts at each split and at completion. This also bounds backdating. Only anchored runs should be eligible for leaderboards.",
+   "id": "A3-7",
+   "by": "anticheat",
+   "critic": {
+    "id": "A3-7",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "An unkeyed hash chain on the owner's machine can obviously be recomputed (hash.rs:45-51). It is a documentation overclaim (README:29) and an inherent limit of a local design, not a fixable bug. Reword the docs."
+   }
+  },
+  {
+   "title": "Any CLI argument-parse failure in a hook exits 2, which is Claude Code's blocking exit code: a plugin/binary version mismatch blocks and erases every user prompt in every directory",
+   "severity": "medium",
+   "area": "hooks exit-0 rule / version drift (main.rs, hooks.json)",
+   "evidence": "crates/speedrun-cli/src/main.rs:213 runs Cli::parse() before the hook special case at :215-222, so clap errors exit with clap's default code 2. VERIFIED: `speedrun hook claude-code stop --new-flag` -> exit=2; `speedrun hook claude-code` (no event) -> exit=2; `speedrun ingest turn-start ...` -> exit=2, although the Ingest doc comment (main.rs:133-135) says 'Always exits 0'. The Claude Code hooks docs say exit 2 is a 'Blocking error ... On events that can block, Claude Code stops the action', and UserPromptSubmit can block. The Claude plugin is installed from the repo's default branch through .claude-plugin/marketplace.json ('source': './plugins/claude-code'), separately from the release binary on PATH (plugins/claude-code/README.md install steps 1-2), so nothing keeps hooks.json and the binary's CLI in sync. By contrast, an unknown event string is swallowed with exit 0 (`speedrun hook claude-code stop-failure` -> exit=0).",
+   "failure_scenario": "v0.2 changes hooks.json, for example adding a flag such as `speedrun hook claude-code user-prompt-submit --v2` or a new positional argument. A user who updates the marketplace plugin but still has the v0.1 binary on PATH, or the reverse, gets clap 'unexpected argument' with exit 2 on every UserPromptSubmit. The hooks are user-wide, so Claude Code refuses every prompt in every repo, tracked or not, until the user finds the cause.",
+   "fix": "In main(), detect argv[1]=='hook' or 'ingest' before Cli::parse() and use Cli::try_parse(). On any parse error in hook or ingest mode, print a debug message only and exit 0. Make hook parsing lenient: ignore unknown trailing args and keep the event as a free string. Add a test that `speedrun hook x y --bogus` exits 0. Pin the marketplace plugin to release tags, or have the plugin check `speedrun --version` compatibility.",
+   "confidence": "verified",
+   "id": "A4-1",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-1",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "Verified: `speedrun hook claude-code` and `speedrun hook claude-code stop --x` both exit 2 (Cli::parse at main.rs:213 runs before the hook branch at :215). On UserPromptSubmit, exit 2 is Claude Code's blocking code. The plugin comes from the default branch (marketplace), independent of the binary, so any v0.2 change to hooks.json breaks v0.1 binaries user-wide. This must be fixed before v0.2 changes any hook command line, and ideally in a v0.1.1."
+   }
+  },
+  {
+   "title": "opencode and pi claim tools leave out ci_run and stripe_payment, so agents on those hosts can never verify tests-green or first-payment, even though the tool description and run-start context tell them to",
+   "severity": "medium",
+   "area": "host adapters (opencode, pi) tool schema drift from tools.rs",
+   "evidence": "The canonical schema has ci_run and stripe_payment (crates/speedrun-cli/src/tools.rs:46-47, read at :118-119). plugins/opencode/agentspeedrun.ts:169-174 declares only milestone, commit, urls and note. plugins/pi/agentspeedrun.ts:182-187 is the same. Both descriptions (opencode :168, pi :181) still say 'a GitHub Actions run URL, or a Stripe payment id', and ops.rs:161-165 tells the agent to pass them. opencode's zod object strips unknown keys, and in both hosts the LLM is never shown the fields. verify.rs:147-148 requires kind ci_run for tests-green and stripe_event for first-payment, so a CI URL passed in `urls` is checked as a plain URL and the 'this milestone is verified by a GitHub Actions run URL' problem is always reported. Neither adapter's tests cover claims with CI or Stripe evidence (opencode/test, pi/test; 5 and 6 tests pass).",
+   "failure_scenario": "In opencode or pi, an agent finishing hundred-percent calls speedrun_claim_milestone for tests-green and puts the Actions URL in urls, the only field it can see. The claim stays agent_claimed, which does not count for evidence_verified. first-revenue's first-payment can never be verified by the agent either. The same flow works over MCP in Claude Code, VS Code and Zed, so behavior differs by host without any sign of it.",
+   "fix": "Generate the native tool schemas from `speedrun tool --list` (tools::definitions) at plugin load, or add ci_run and stripe_payment to both adapters. Add a test that compares adapter args with the definitions() output so the schemas cannot drift again.",
+   "confidence": "verified",
+   "id": "A4-2",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-2",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "Confirmed by reading: plugins/opencode/agentspeedrun.ts:169-174 and plugins/pi/agentspeedrun.ts:182-187 lack ci_run and stripe_payment, while the description advertises both. tests-green and first-payment can never be evidence_verified from those hosts."
+   }
+  },
+  {
+   "title": "Claude Code fires UserPromptSubmit for non-human input (background subagent reports, /loop and scheduled-task firings, cross-session messages), and the hook records each one as a human prompt that can also start the run",
+   "severity": "medium",
+   "area": "prompt capture fidelity / turn accounting (claude-code hooks)",
+   "evidence": "hook.rs:106-112 records every UserPromptSubmit as a PromptSubmitted from host claude-code, with starts_turn true (ops.rs:21-33), and run_started can fire. The Claude Code hooks docs say: 'UserPromptSubmit hooks don't fire only on prompts you type. Claude Code also runs them on: A session-scoped scheduled task firing, including a /loop iteration; A background subagent reporting back to the session that started it; A message another session sends to your main conversation'. The documented input has no origin field, so the hook cannot tell these apart. Stop fires when the main turn ends while a background subagent keeps working, so that work counts as human time (capped gap). Docs read via WebFetch; NOT run end to end in Claude Code.",
+   "failure_scenario": "The user starts a background subagent and the main turn ends (Stop). The subagent works for 20 minutes, which counts as human or idle time. Its report then arrives as a UserPromptSubmit: the subagent's full output, possibly with file contents and secrets that redaction misses, is stored permanently as a user prompt, prompt_count goes up, and a new turn opens. A `/loop 5m` running overnight records about 100 'human prompts'. A scheduled task or another session's message to a tracked but idle project starts the timed run with no human present.",
+   "fix": "Record these with a distinct marker, for example starts_turn true but a `source` such as 'agent' or 'scheduled' when the hook can detect it (prompt_id or transcript inspection, or a SessionStart/SubagentStart pairing), and never let them start a run. Hook SubagentStart and SubagentStop to keep a turn open while background subagents run. Ask upstream for an origin field.",
+   "confidence": "likely",
+   "id": "A4-3",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-3",
+    "verdict": "plausible",
+    "severity": "medium",
+    "reason": "Rests on Claude Code docs that I did not re-fetch. hook.rs records every UserPromptSubmit as a human prompt. /loop and background subagents are mainstream features, so the accounting distortion is likely."
+   }
+  },
+  {
+   "title": "The Stop hook ends the turn even when another Stop hook blocks the stop and Claude keeps working, so long Stop-hook loops (e.g. ralph-style plugins) count as human time",
+   "severity": "medium",
+   "area": "turn accounting (claude-code Stop, copilot Stop)",
+   "evidence": "hook.rs:114-121 sends AgentTurnEnded on every Stop without looking at stop_hook_active or knowing whether another hook blocked. Claude Code docs: Stop exit 2 or decision:block 'Prevents Claude from stopping, continues the conversation'. Hooks run in parallel, so ours has already ended the turn. The continuation does not go through UserPromptSubmit, so no AgentTurnStarted follows, and fold (projection.rs:281-285) records no agent interval until the next real prompt. The work in between is a human gap, capped by HUMAN_IDLE_CAP (projection.rs:14-15). The Copilot agentStop input also carries stop_hook_active (Copilot hooks reference). Reasoned from docs and code; NOT run with a blocking Stop hook.",
+   "failure_scenario": "A user runs a plugin whose Stop hook re-feeds the task until tests pass, for example 30 iterations over 2 hours. Our hook ends the turn at the first Stop. The next 2 hours of autonomous agent work are recorded as 0 agent time and at most 15 minutes of human time, so agent_ms, human_ms and the agent/human split shown on every split are badly wrong.",
+   "fix": "Track turns from activity rather than Stop alone. Re-open the turn on PreToolUse or PostToolUse (cheap hooks, or a debounced `speedrun hook ... activity`), or treat a Stop as tentative and confirm it only if no tool activity follows within N seconds. At minimum, when stop_hook_active is true, send AgentTurnStarted again on the next tool-use hook.",
+   "confidence": "likely",
+   "id": "A4-4",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-4",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "Real only when another plugin's Stop hook blocks. That is a niche setup, and the effect was not reproduced."
+   }
+  },
+  {
+   "title": "speedrun_propose_milestones is not atomic and reports failure after spooling: on a daemon outage each retry spools a duplicate of only the first milestone, and the rest are never proposed",
+   "severity": "low",
+   "area": "MCP tools (tools.rs propose)",
+   "evidence": "tools.rs:75-96 appends one MilestoneProposed per item through append_now, which spools and then bails on an unreachable daemon (ops.rs:47-51). The loop stops after item 1 and returns isError, while item 1 is already durably spooled with a fresh milestone_id (new_id, tools.rs:82), so a retry is not idempotent. An Api error part way through leaves items 1..k-1 committed. VERIFIED with a temp daemon on 127.0.0.1:34871: daemon stopped, SPEEDRUN_NO_AUTOSTART=1, then two `speedrun mcp` tools/call proposals of [A,B,C]. Each returned isError 'speedrund is not reachable; the change was spooled'. pending.jsonl held 2 lines. After the daemon restarted, `speedrun status` showed two proposed milestones titled 'A' and none for B or C.",
+   "failure_scenario": "The daemon is briefly down when the agent proposes milestones after the first prompt. The agent sees an error and retries, as prompted. The user later sees duplicate proposals of the first milestone and is missing the others. A 500 or 401 part way through (A2-1) likewise leaves a partial set that the agent then re-proposes in full.",
+   "fix": "Send all proposals in one request (a batch endpoint or a single multi-milestone event), or derive milestone ids from a hash of run id plus title so retries are idempotent. Return success with a 'queued' note when the request was spooled, not isError.",
+   "confidence": "verified",
+   "id": "A4-5",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-5",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "Consistent with the code: one append per item, with a fresh new_id. It needs a daemon outage, and the impact is only cosmetic duplicates."
+   }
+  },
+  {
+   "title": "pi adapter records only prompts that start an agent loop: steering and follow-up messages typed while the agent runs are never recorded",
+   "severity": "low",
+   "area": "prompt capture fidelity (plugins/pi)",
+   "evidence": "plugins/pi/agentspeedrun.ts:116-133 records only on before_agent_start. In the installed pi 0.73.1, AgentSession.prompt routes input made while streaming to _queueSteer or _queueFollowUp and returns before emitBeforeAgentStart (node_modules/@mariozechner/pi-coding-agent/dist/core/agent-session.js:726-737 vs :777), and _queueSteer (:906-918) emits no extension event. The 'input' event, which carries every typed input with source 'interactive'|'rpc'|'extension' (dist/core/extensions/types.d.ts:567-576), is not used. Prompts that extensions inject (source 'extension') do reach before_agent_start and are recorded as human prompts.",
+   "failure_scenario": "In pi, the user types corrections such as 'no, use Postgres' while the agent is working, which pi's UI encourages. None are logged, so the recorded prompt history and prompt_count understate the human's steering, and the log no longer shows how the result was reached.",
+   "fix": "Record prompts from pi.on('input') when source==='interactive' or 'rpc', and start or keep the turn there. Keep before_agent_start only for injecting context, and skip source==='extension' inputs or mark them.",
+   "confidence": "verified",
+   "id": "A4-6",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-6",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "Based on reading pi's dist code, which I did not re-check. The fidelity gap is real but minor."
+   }
+  },
+  {
+   "title": "MCP initialize echoes any client protocolVersion, so the server claims support for versions it does not implement",
+   "severity": "low",
+   "area": "MCP protocol (mcp.rs)",
+   "evidence": "mcp.rs:338-343 returns params.protocolVersion verbatim. The MCP lifecycle spec says a server that does not support the requested version must reply with a version it does support. VERIFIED: initialize with protocolVersion '2099-01-01' returned {\"protocolVersion\":\"2099-01-01\",...}. An unknown tool name is also returned as a successful result with isError (mcp.rs:353-360) instead of JSON-RPC -32602.",
+   "failure_scenario": "A client that negotiates a newer revision with different required behavior (structured tool output, a changed tool result shape, required capabilities) believes the server agreed to it and may send requests or expect fields the server never provides, failing in hard-to-diagnose ways rather than falling back to 2025-06-18.",
+   "fix": "Keep a list of supported versions. Echo the client's version only if it is in that list, otherwise reply with PROTOCOL_VERSION. Return -32602 for unknown tool names.",
+   "confidence": "verified",
+   "id": "A4-7",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-7",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "A spec-conformance nit. Current clients send versions the server accepts, and I know of no real breakage."
+   }
+  },
+  {
+   "title": "Claude Code prompts never record the model: the hook reads a `model` field that UserPromptSubmit does not provide",
+   "severity": "low",
+   "area": "prompt capture fidelity (hook.rs)",
+   "evidence": "hook.rs:109 passes str_of(\"model\") from the UserPromptSubmit input. The Claude Code hooks docs: 'Only SessionStart hooks can receive a model field, and Claude Code doesn't always include it.' The plugin does not register SessionStart (plugins/claude-code/hooks/hooks.json). Docs-based; not run in Claude Code.",
+   "failure_scenario": "Every claude-code PromptSubmitted has model=null. Runs cannot be compared or filtered by model, which matters for a speedrun leaderboard (Opus vs Sonnet runs are indistinguishable), while opencode and pi do record the model.",
+   "fix": "Hook SessionStart, cache the model per session_id in the daemon or a small state file, and attach it to later prompts. Or read it from transcript_path. Track PostModelSwitch if it is available.",
+   "confidence": "likely",
+   "id": "A4-8",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-8",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "Docs-based. The model is metadata, so missing it has low impact for v0.1."
+   }
+  },
+  {
+   "title": "No uninstall, and installed opencode, pi and Copilot adapters silently go stale when the binary is upgraded",
+   "severity": "low",
+   "area": "setup idempotence / version drift (setup.rs)",
+   "evidence": "setup.rs:63-94 installs or upgrades only when `speedrun setup <host>` is run again. Nothing compares the installed file with the embedded one at hook or ingest time, and there is no remove or uninstall command (setup.rs has no Host-removal path, and README.md has no uninstall section). The opencode setup also adds @opencode-ai/plugin to the user's opencode package.json (setup.rs:86-91, 98-122), and nothing ever removes it. Separately, the CLAUDE.md check `(cd plugins/vscode && bun test)` fails (2 errors: Cannot find package 'vscode' from out/test/suite and src/test/suite). The working command is `npm test` (bun test test/unit, 6 pass).",
+   "failure_scenario": "The user upgrades speedrun to v0.2, which fixes the claim-tool schema or adds turn-end handling, but ~/.config/opencode/plugins/agentspeedrun.ts is still v0.1 and keeps the old behavior with no warning. A user who wants to stop using speedrun has to find and delete files in 4 or more host directories and edit package.json by hand. If they delete only the binary, every Copilot prompt logs a hook failure.",
+   "fix": "Add `speedrun setup <host> --uninstall` that removes marker-bearing files. Write an embedded-version stamp into installed adapters and have `speedrun ingest` or `speedrun doctor` warn when the stamp differs from the binary. Fix the CLAUDE.md VS Code test command.",
+   "confidence": "verified",
+   "id": "A4-9",
+   "by": "adapters",
+   "critic": {
+    "id": "A4-9",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "There is no uninstall path in setup.rs. The stale-adapter point is real but low. The CLAUDE.md VS Code test-command mismatch is a doc fix."
+   }
+  },
+  {
+   "title": "SIGTERM from the documented upgrade step leaves a zombie daemon while any live stream is open. The VS Code timer and `speedrun watch` then freeze on stale data, and two daemons share one DB.",
+   "severity": "medium",
+   "area": "daemon lifecycle / upgrade path (main.rs graceful shutdown, install.sh restart hint)",
+   "evidence": "crates/speedrund/src/main.rs:84-92 uses axum with_graceful_shutdown, which stops accepting connections and then waits for every open connection to finish. /v1/live/stream (http.rs:86) is an SSE stream that never ends and sends ':' keepalives. The VS Code extension holds it open permanently and reconnects only when it closes (plugins/vscode/src/live.ts:113-163); `speedrun watch` does the same (watch.rs:35-47). install.sh:89-91 tells users to upgrade with `pkill -x speedrund (the CLI starts it again)`. VERIFIED with a temp daemon on 127.0.0.1:34612: I opened `curl -N /v1/live/stream` with the display token, sent SIGTERM to the daemon, and waited 3 s. The process was still alive (STAT Sl) but the listener was gone (health connect refused). The next `speedrun ingest prompt` autostarted a second daemon on the same SQLite file and started a run. The open stream still showed the old daemon's last snapshot `{\"runs\":[]}` with keepalives, so it never reconnected. Both PIDs stayed alive.",
+   "failure_scenario": "The user upgrades to v0.2 with install.sh while VS Code (or `speedrun watch`) is open and follows the printed `pkill -x speedrund` hint. The old v0.1 daemon stops listening but never exits. A new v0.2 daemon autostarts and may run migrations on a DB the old process still has open. The VS Code status-bar timer and splits view stay on the old process forever and show no run or a frozen clock, while the new daemon records the real run. Nothing reports an error. The zombie lasts until the editor is closed.",
+   "fix": "Close SSE streams when shutdown starts: hand the shutdown signal to live_stream and end the stream, or put a timeout on graceful shutdown (e.g. 2 s, then exit). Add `speedrun daemon stop|restart|status`, which waits until the old PID has actually exited and the port is free, and have install.sh call it instead of suggesting pkill.",
+   "confidence": "verified",
+   "id": "A5-1",
+   "by": "release",
+   "critic": {
+    "id": "A5-1",
+    "verdict": "plausible",
+    "severity": "medium",
+    "reason": "main.rs:84-92 uses with_graceful_shutdown with no timeout, and /v1/live/stream never ends. axum waits on open connections, so SIGTERM leaves the process alive with its listener closed. That matches the auditor's run, which I did not repeat. The documented upgrade path (install.sh pkill hint) triggers it whenever VS Code or watch is open, which is common."
+   }
+  },
+  {
+   "title": "Daemon tracing output goes to stdout, which autostart sends to /dev/null. speedrund.log only ever holds fatal startup errors, so every 500 and every unverified claim is invisible.",
+   "severity": "medium",
+   "area": "operations / diagnosability (main.rs logging, client.rs start_daemon)",
+   "evidence": "crates/speedrund/src/main.rs:41-45 uses tracing_subscriber::fmt() with the default writer, which is stdout. crates/speedrun-cli/src/client.rs:302-306 spawns the daemon with stdout(Stdio::null()) and points only stderr at speedrund.log. Everything the daemon logs goes through tracing: 'speedrund listening' (main.rs:65), the internal-error log behind every 500 (http.rs:52), and 'evidence not verified' (http.rs:202). VERIFIED: after an autostart and normal use, $SPEEDRUN_HOME/speedrund.log was 0 bytes. The only text I ever saw in the log was anyhow's `Error: binding ... Address already in use` from a main() that failed. scripts/smoke.sh:20 prints this log on failure, so CI diagnostics are empty too.",
+   "failure_scenario": "A user hits any of the 500 paths earlier auditors found, such as A2-5 (an unparseable row breaks /v1/live and record_prompt) or a SQLite busy error. Hooks swallow the error and exit 0, and the daemon's error message is discarded. The user, or a maintainer triaging a bug report, opens speedrund.log, the one log file there is, and finds it empty. No log of the failure exists anywhere.",
+   "fix": "Use .with_writer(std::io::stderr) in main.rs, or write to the log file directly with a size-capped rolling appender (the log is currently append-forever). Log the version and data_dir at startup. Add a `speedrun doctor` that prints the log tail, the daemon version, the token and data-dir match, and the spool and rejected counts.",
+   "confidence": "verified",
+   "id": "A5-2",
+   "by": "release",
+   "critic": {
+    "id": "A5-2",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "tracing_subscriber::fmt() writes to stdout (main.rs:41-45), and start_daemon sets stdout to Stdio::null() (client.rs:302-303). Every internal-error log is lost. This is a one-line fix that makes every other v0.2 bug diagnosable, so it should be prioritized."
+   }
+  },
+  {
+   "title": "Same port, different data dir: hooks from a host with another SPEEDRUN_HOME/XDG_DATA_HOME get 401 forever and drop prompts silently, and the failed autostart leaves a stray token and DB behind",
+   "severity": "medium",
+   "area": "daemon lifecycle / data dir layout (paths.rs, main.rs ordering, client.rs)",
+   "evidence": "paths.rs:9-20 derives the data dir from SPEEDRUN_HOME, then XDG_DATA_HOME, then HOME. paths.rs:4 fixes the address at 127.0.0.1:7477 no matter which data dir is used. When the token file is missing, client.rs:72-75 reports Unreachable and triggers autostart (client.rs:196-210). The spawned daemon writes token, display-token and speedrun.sqlite (main.rs:50-53) before it tries to bind (main.rs:62), then dies. The client's retry now finds the new token, sends it to the other daemon, and gets 401. post_durable spools only on Unreachable (client.rs:133-139). VERIFIED with port 34511: daemon A ran with SPEEDRUN_HOME=homeA. `echo ... | SPEEDRUN_HOME=homeB speedrun ingest prompt` printed {\"recorded\":false,\"error\":\"speedrund error 401: missing or invalid bearer token\"} and exited 0, with no spool. homeB now held token, display-token, a 40 KB speedrun.sqlite, and a log with 'Address already in use'. Unlike A2-1, no race is needed: the mismatch persists.",
+   "failure_scenario": "On Linux, a user exports XDG_DATA_HOME in ~/.bashrc. Claude Code runs from that terminal, while VS Code or Zed (and the Copilot hooks they run) launch from the desktop session without it. A container or devcontainer that shares the host network namespace has the same problem. Whichever host starts first owns 7477. Every prompt and claim from the other host is dropped with exit 0, its `speedrun status` reports 401, and a second empty database builds up in the other dir. On a multi-user host this is also what happens to the second user once A1-1's port contention occurs: their data is dropped, not spooled.",
+   "fix": "Bind the address to the data dir: use a Unix socket at $DATA_DIR/speedrund.sock, or write the chosen port to $DATA_DIR/addr (0600) and have clients read it. Have /v1/health return a data-dir fingerprint (e.g. a hash of device_id) so the client can tell 'this is not my daemon' from a bad token. Bind before writing tokens or opening the DB (this also fixes A2-1). Spool on 401.",
+   "confidence": "verified",
+   "id": "A5-3",
+   "by": "release",
+   "critic": {
+    "id": "A5-3",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "The fixed address (paths.rs:4) and the per-data-dir token, plus writing token and DB before bind (main.rs:50-62) and no spool on 401, produce a persistent silent drop. The XDG_DATA_HOME split between terminal and GUI on Linux is realistic for a single user. It is the same root cause as A2-1, so fix both together."
+   }
+  },
+  {
+   "title": "No version handshake between CLI, daemon and DB: after an upgrade the old daemon keeps serving the new CLI indefinitely, unknown routes and payloads are silently dropped, and a downgrade runs an old binary against a newer schema without checking",
+   "severity": "medium",
+   "area": "upgrade path / protocol and schema skew (client.rs ready, store.rs migrate, install.sh)",
+   "evidence": "/v1/health returns {ok, version} (http.rs:110), but Client::ready (client.rs:110-114) discards the body and never compares versions. The only restart mechanism is a hint printed by install.sh when `pgrep -x speedrund` matches (install.sh:89-91). README.md:53 `cargo install` and any future package manager print nothing. The CLI has no stop or restart subcommand (main.rs Cmd enum, lines 51-191). VERIFIED: an unknown route gets 404 from the daemon. That is CallError::Api, which post_durable does not spool (client.rs:139), and hooks exit 0. store.rs:101-111 migrate() skips to user_version and never checks `current > MIGRATIONS.len()`, so a v0.1 binary opening a v0.2 DB starts normally and writes into a schema it does not know. The version-skew end-to-end case was not run (it needs a v0.2).",
+   "failure_scenario": "v0.2 adds a route (say /v1/turns/activity, to fix A4-4) or a new payload type. A user installs v0.2 while v0.1 speedrund is still running, which is the normal case since it never exits on its own, and ignores or never sees the hint. Each new-style hook call gets a 404 or 400, is not spooled, and is lost silently until the daemon is restarted for some unrelated reason. In the other direction, the user tries v0.2 (migration 3 adds a NOT NULL column or table), then reinstalls v0.1. The old daemon accepts the DB and fails on inserts with 500s, which are also not spooled.",
+   "fix": "Add a protocol_version (and the binary version) to /v1/health. In ready(), if the daemon is older than the CLI, ask it to exit (an authenticated POST /v1/shutdown) and autostart the sibling speedrund. If it is newer, warn and keep going. In migrate(), refuse to start when user_version > MIGRATIONS.len(), with a clear log line, and back up the DB file (VACUUM INTO) before applying any migration. Add `speedrun daemon stop|restart|status`.",
+   "confidence": "likely",
+   "id": "A5-4",
+   "by": "release",
+   "critic": {
+    "id": "A5-4",
+    "verdict": "plausible",
+    "severity": "medium",
+    "reason": "ready() discards the health body. migrate() skips to user_version with no 'newer than me' check (store.rs:101-111). There is no restart command. It becomes live at the first v0.2 upgrade, so it is a v0.2 prerequisite."
+   }
+  },
+  {
+   "title": "The DB runs in WAL mode under a daemon that never exits, so a file-level backup or dotfile sync of speedrun.sqlite alone holds little or nothing. Docs give no backup or export story, and the store.rs 'rebuilt from RunStarted if lost' claim has no code behind it.",
+   "severity": "low",
+   "area": "data dir layout / backups (store.rs)",
+   "evidence": "store.rs:59 sets journal_mode=WAL. The daemon runs until killed, so the WAL is only checkpointed automatically at about 1000 pages (around 4 MB). VERIFIED: after init and a few requests on a fresh home, speedrun.sqlite was 4096 bytes (empty schema), speedrun.sqlite-wal was 53592 bytes, and -shm was 32768. store.rs:29 says the runs table is 'rebuilt from RunStarted events if lost', but no code rebuilds it: grep finds only the INSERT at store.rs:243. README and docs never mention backups, export, or moving to a new machine. The device_id in meta (store.rs:65-75) is also copied with the DB, so a restored copy on a second machine shares device_id with the original, which matters for the planned sync (ARCHITECTURE.md:146).",
+   "failure_scenario": "A user backs up ~/.local/share/agentspeedrun/speedrun.sqlite, or copies it to a new laptop, while the daemon runs. The copy lacks most or all of the event log, including recent completed runs and PBs. If the backup tool captures -wal and the main file at different moments, the restored DB can be inconsistent.",
+   "fix": "Add `speedrun export` / `speedrun backup <file>` using `VACUUM INTO` or the SQLite online backup API. Document that only that output is a safe backup. Checkpoint (wal_checkpoint(TRUNCATE)) on graceful shutdown and periodically. Either implement the runs-index rebuild or delete the comment. Regenerate device_id on import.",
+   "confidence": "verified",
+   "id": "A5-5",
+   "by": "release",
+   "critic": {
+    "id": "A5-5",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "WAL plus a long-lived daemon, and the 'rebuilt' comment has no code behind it. This is ordinary SQLite behavior and needs documentation plus an export command."
+   }
+  },
+  {
+   "title": "package.sh claims rebuilds of a tag 'compare equal', but two packagings of the same binaries give different archives, and the toolchain floats",
+   "severity": "low",
+   "area": "release reproducibility (scripts/package.sh, release.yml)",
+   "evidence": "scripts/package.sh:19-21 says 'Stable archives: fixed owner and order, so rebuilds of a tag compare equal'. The files are staged with plain cp into a mktemp dir (:13-17), so mtimes are the packaging time. There is no --mtime or --sort=name, and no `gzip -n`. The BSD tar fallback on macOS drops even --owner. VERIFIED: running package.sh twice, 2 s apart, on identical binaries gave sha256 2b0576be... and then f24c0d26..., and tar -tv showed mtimes of the packaging time. The binaries are not pinned either: dtolnay/rust-toolchain@stable (release.yml:33), so a later rebuild of the tag uses a different rustc.",
+   "failure_scenario": "Someone checks a published release by rebuilding the tag (the comment invites this) and gets different SHA256SUMS every time, so a tampered artifact cannot be told apart from normal non-determinism. A2/A1-6's provenance gap therefore cannot be closed by reproducing the build.",
+   "fix": "Pin the toolchain with a rust-toolchain.toml. Set SOURCE_DATE_EPOCH from the tag's commit time. On GNU tar use `--sort=name --mtime=@$SOURCE_DATE_EPOCH --owner=0 --group=0 --numeric-owner` and pipe through `gzip -n`; on macOS install gnu-tar (gtar) rather than falling back. Or drop the claim.",
+   "confidence": "verified",
+   "id": "A5-6",
+   "by": "release",
+   "critic": {
+    "id": "A5-6",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "package.sh:19-21 claims stable archives but sets no --mtime, no --sort, and no gzip -n. Either drop the comment or make the archives reproducible."
+   }
+  },
+  {
+   "title": "Windows and build-from-source: install.sh's fallback command is invalid, the crates cannot compile on Windows, and the docs never say Windows is unsupported while the universal .vsix installs there",
+   "severity": "low",
+   "area": "platforms / docs accuracy (install.sh, client.rs, main.rs)",
+   "evidence": "install.sh:30 prints `cargo install --path crates/speedrun-cli --path crates/speedrund`. VERIFIED: cargo rejects it with \"the argument '--path <PATH>' cannot be used multiple times\". The message also assumes the user has a clone, which an installer run through curl|sh does not have. std::os::unix is imported unconditionally in crates/speedrun-cli/src/client.rs:7-8, secret.rs:7 and crates/speedrund/src/main.rs:12 (also tokio::signal::unix at main.rs:87), so neither binary builds on Windows. README.md:38 lists only Linux and macOS but never says Windows is unsupported. The VS Code .vsix is published for every platform (no `os` restriction in plugins/vscode/package.json), and `speedrun setup copilot` docs do not mention it either, so Windows users get as far as 'speedrun was not found' (extension.ts:114) with nothing to install. WSL works only if the editor runs inside WSL.",
+   "failure_scenario": "A Windows user installs the release .vsix, or runs install.sh in Git Bash (uname -s is MINGW64_NT...). They get a cargo command that fails, and after cloning, a compile error in client.rs. A macOS or Linux user on an unsupported arch, or whose download failed, copies the printed command and it fails too.",
+   "fix": "Print the README's working form (`cargo install --git https://github.com/mesh-inc/agentspeedrun --locked speedrun-cli speedrund`, or two --path invocations). State 'Windows: unsupported (use WSL)' in README and in the VS Code extension description, or gate the unix imports with cfg(unix) and add a Windows target later.",
+   "confidence": "verified",
+   "id": "A5-7",
+   "by": "release",
+   "critic": {
+    "id": "A5-7",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "The install.sh:30 fallback passes --path twice, which cargo rejects. Windows being unsupported is undocumented. The fixes are cosmetic."
+   }
+  },
+  {
+   "title": "Workflow hygiene: release does not run the test suite, ci.yml relies on default token permissions, and every action runs on Node 20",
+   "severity": "low",
+   "area": "CI/release workflows",
+   "evidence": "release.yml runs only version check, build, smoke.sh and the vscode/zed builds. There is no cargo test or clippy (release.yml:13-83). docs/RELEASING.md:14-17 says to commit, tag and push main plus the tag in one command, so the tag build races CI on the same commit, and nothing requires CI to be green. ci.yml has no `permissions:` key, so it gets the repository or org default token, which is write-all on older repos. actions/checkout@v4, upload-artifact@v4 and download-artifact@v4 (ci.yml, release.yml throughout) run on the node20 runtime, which GitHub has deprecated in favor of node24. NOT verified: whether the runner currently warns, forces node24, or has removed node20.",
+   "failure_scenario": "A release commit that breaks a unit test (e.g. fold arithmetic), but still passes the narrow smoke path, is tagged and published at once as v0.1.x. Users get it via `releases/latest` before CI on main turns red. Separately, once node20 is removed from runners, the pinned v4 actions may fail or behave differently in the publish job.",
+   "fix": "Add `needs` on a test job in release.yml (cargo test --all --locked, clippy), or have the check job require a green ci run on the tagged sha. Add `permissions: contents: read` at the top of ci.yml. Move to actions/checkout@v5, upload/download-artifact@v5+ (node24), pinned by SHA (see A1-6).",
+   "confidence": "likely",
+   "id": "A5-8",
+   "by": "release",
+   "critic": {
+    "id": "A5-8",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "The only `cargo test` in release.yml is the Zed one at :91, and no tests run on the main workspace. ci.yml has no permissions key. The Node 20 point is unverified."
+   }
+  },
+  {
+   "title": "Pauses do not stop or require an idle agent, so a paused run can hide hours of agent work from timed_ms, which is the PB ranking key, and from agent_ms",
+   "severity": "high",
+   "area": "clock rules / run comparability (projection.rs Clock, check)",
+   "evidence": "projection.rs:531-533: check() allows RunPaused whatever open_turns is, and :491-493 accepts PromptSubmitted and AgentTurnStarted while paused. Nothing auto-resumes. projection.rs:171-177 removes paused stretches from agent time, and :186-193 gives timed_ms = wall - paused. service.rs:423 ranks PBs by timed_ms. LIVE_DISPLAY.md calls timed_ms 'the primary clock: PBs and deltas use it'. VERIFIED with a scratch test in a copy of projection.rs: RunPaused@0, prompt plus AgentTurnStarted@1, AgentTurnEnded@480, RunResumed@481, then a milestone reached@483. The split was {wall:8h03m, timed:2m, agent:0, human:2m}, and check(AgentTurnStarted) while paused returned Ok.",
+   "failure_scenario": "An honest-looking runner types `speedrun pause`, gives the agent the whole task, and lets it work overnight. They resume in the morning and claim the milestones. The any% or 100% result shows timed 0:02 and agent 0:00, it beats every real PB, and it would rank first on a per-category@version leaderboard. Users have no malicious intent and backdating is not needed (this differs from the A2-6 dispute). The pause button is itself the exploit, and the agent/human breakdown it reports is false.",
+   "fix": "v0.2: a pause is legal only when open_turns==0, and any PromptSubmitted or AgentTurnStarted ends the pause, either as a derived RunResumed or as a fold rule. Agent intervals during a pause should count toward agent_ms and timed_ms, not be removed. Make wall_ms (RTA) the leaderboard key, show timed_ms as personal-only, or cap total pause per run. This is a projection rule change, so it can be applied to old runs by re-folding, but v0.1 PBs should be recomputed and labeled.",
+   "confidence": "verified",
+   "id": "A6-1",
+   "by": "product",
+   "critic": {
+    "id": "A6-1",
+    "verdict": "confirmed",
+    "severity": "high",
+    "reason": "projection.rs:491-493 and :531-533 allow turns while paused and pauses with open turns. Clock::new subtracts paused stretches from agent time (projection.rs:171-177), and timed_ms = wall - paused. 'Pause while the agent keeps working' is a natural honest workflow, and it produces false timed and agent numbers on the PB key. It is a fold rule, so re-folding fixes old runs."
+   }
+  },
+  {
+   "title": "Verification rules are not part of the versioned category: required evidence is hard-coded by milestone key in the binary, and verifications record no verifier version, so 'rules evolve without invalidating old runs' does not hold",
+   "severity": "medium",
+   "area": "category versioning / event model (verify.rs required_kind, category.rs, MilestoneVerified)",
+   "evidence": "verify.rs:144-152: required_kind matches only the bare key ('deployed', 'legal-pages', 'tests-green', 'first-payment') and ignores category id and version. Job carries key but not category version (service.rs:296-304). The category schema has only a hint, suggested_evidence (category.rs:181-183, 'as a hint'), so a category JSON cannot say that a commit alone is not enough. MilestoneProposed copies title, description and required_trust into the log (service.rs:484-491) but not the evidence requirement, so ARCHITECTURE.md's 'The log is self-contained: it never needs the category file' is false for how a milestone is judged. MilestoneVerified.verifier is just 'git+url' (service.rs:325), with no rule version.",
+   "failure_scenario": "v0.2 tightens verifiers as A3-1, A3-3 and A3-4 require, for example demanding a url for happy-path-demo or two same-domain legal pages. (1) Runs still open under any-percent@1 or first-revenue@1 are judged by the new code mid-run, although they are pinned to v1. (2) Completed v1 runs verified under the lax rules stay in the same PB pool (category@version) as v1 runs verified under strict rules, so v1 PBs are not comparable. (3) Publishing any-percent@2 with the same keys does not change verification at all unless code is added that branches on version, which nothing passes through. A future cloud verifier cannot tell from the log which rule a MilestoneVerified satisfied.",
+   "fix": "Move evidence requirements into the category JSON, e.g. `requires: {all_of:[\"url\"], rule:\"legal-pages@2\"}`. Copy them into MilestoneProposed as an additive field (skip_serializing_if, see A2-5). Dispatch verifiers on (category_id, version, key) via Job. Add `rule_version` to MilestoneVerified. Keep v1 rule implementations frozen for v1 runs, or tag v1 results as 'legacy rules' so they are excluded from leaderboards.",
+   "confidence": "verified",
+   "id": "A6-2",
+   "by": "product",
+   "critic": {
+    "id": "A6-2",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "required_kind keys on the bare milestone key only (verify.rs:144-152), and Job carries no category version. This is the structural prerequisite for fixing A3-1, A3-3 and A3-4 without silently changing v1 runs."
+   }
+  },
+  {
+   "title": "first-revenue is not 'taken soundly': checkpoints are unordered, so the payment can count before the site, legal pages or tax setup exist, and payments-live and tax are self-declared although Stripe can verify them",
+   "severity": "medium",
+   "area": "category definitions (categories/first-revenue.json, completion rules)",
+   "evidence": "check() allows MilestoneReached on any Accepted milestone at any time (projection.rs:519-522). completion_time is just max(counted_at) over predefined milestones (projection.rs:439-448), and no template field expresses dependencies (category.rs:176-184). Stripe's after_start only compares with run start (verify.rs:701-706), not with when deployed or legal-pages counted. first-revenue.json sets payments-live and tax-compliance to required_trust self_declared with suggested_evidence note only, and auth-and-data-protection to self_declared. The verifier reads a payment's own fields but never the account (charges_enabled or details_submitted) or tax state (automatic_tax on the session or invoice). No amount floor (n('amount_total') > 0, verify.rs:651; captured > 0, :690). No refund or cancellation policy or pricing page milestone.",
+   "failure_scenario": "The runner sends a Stripe Payment Link to a contact in the first hour, before any product, terms or privacy policy exists, and then deploys a landing page and adds legal pages. The run completes as 'Time to first revenue', dated by the last milestone, and the record says the money was taken compliantly. In fact the customer paid with no terms, no privacy policy and no tax collection. The 'compliance checkpoints' are a checklist that can be ticked afterwards, and three of six can be ticked by the agent alone (A3-5).",
+   "fix": "first-revenue@2: add `after: [\"deployed\",\"legal-pages\",\"payments-live\",\"tax-compliance\"]` to first-payment, and have the verifier require payment.created >= those milestones' counted_at. Verify payments-live through GET /v1/account (charges_enabled, details_submitted, and business_profile.url on the deployed domain). Verify tax-compliance through automatic_tax.enabled on the paying session or invoice, or through tax registrations, keeping self_declared plus a note as an explicit lower-trust path. Add a refund/cancellation-policy page to legal-pages and a minimum amount such as 1 USD equivalent. Not verified: the exact Stripe fields, which come from memory of the API.",
+   "confidence": "likely",
+   "id": "A6-3",
+   "by": "product",
+   "critic": {
+    "id": "A6-3",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "This is category design, not a bug. Unordered checkpoints are a product choice to make in first-revenue@2. The Stripe field names are from memory."
+   }
+  },
+  {
+   "title": "The time-to-first-revenue split is dated when the claim is made, not when the money moved, and no verified fact (amount, currency, paid_at) is kept, so revenue runs cannot be compared, displayed or re-verified off-device",
+   "severity": "medium",
+   "area": "event model / verifiers (MilestoneVerified, Stripe)",
+   "evidence": "verify.rs reads created and status_transitions.paid_at (:666-670, :700) only to compare with run start, then discards them. The Outcome has only verifiers and problems (verify.rs:50-62). finish_verification dates MilestoneVerified at job.claimed_at, or at now beyond 10 min (service.rs:316-321), and the split is that time (projection.rs:347-349). ARCHITECTURE.md: 'nothing fetched is stored, only the references the client sent'. Evidence::StripeEvent stores only the id (event.rs:146).",
+   "failure_scenario": "A customer pays at 10:05 and the agent notices and claims at 16:40, or the claim is spooled: the 'time to first revenue' is 6.5 h too long. The reverse case is that the result shows nothing about what was earned, so a $0.50 test purchase and a $500 sale look the same on a PB or leaderboard. A future sync server cannot re-check the payment without the user's Stripe secret, so cloud results must trust the device's 'stripe' verifier string entirely.",
+   "fix": "Add an additive `observed` object to MilestoneVerified, e.g. {paid_at, amount, currency, object_id, livemode} for Stripe, {completed_at, head_sha, workflow_path} for CI, and {fetched_at, final_url, status} for URLs. For first-payment, date the split at paid_at, clamped to [run start, claim time]. Show amount and currency in LiveMilestone. Decide now whether leaderboards need a server-side check (e.g. Stripe Connect read access) and design the evidence shape for it.",
+   "confidence": "verified",
+   "id": "A6-4",
+   "by": "product",
+   "critic": {
+    "id": "A6-4",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "The split is dated at the claim (service.rs:316-321), and paid_at is discarded. This is a design improvement for revenue runs, not a v0.1 defect."
+   }
+  },
+  {
+   "title": "Agent-generated milestones are decorative and the human cannot complete them: they are fixed at agent_claimed, the user's own `speedrun split` never counts for them, and they have no link to the prompt they were derived from or any comparable identity",
+   "severity": "medium",
+   "area": "milestone flow (tools.rs propose, main.rs Add/Split, live.rs PB splits)",
+   "evidence": "tools.rs:88-92: every agent proposal gets key None and required_trust AgentClaimed, and the user cannot change either (accept takes no options, main.rs Accept). main.rs:279-282: the user's split always claims Trust::SelfDeclared, which is below AgentClaimed (event.rs:132-137), so counts() (projection.rs:69-72) is false when the user marks an agent milestone done without verifiable evidence. Only the agent's own claim satisfies it. Completion considers only Predefined milestones (projection.rs:429-436), so accepted agent and user milestones never define when a run is finished. pb_split is computed only for Predefined with a key (live.rs:127-142). MilestoneProposed has no reference to the initial prompt or goal (event.rs:56-64), and the propose tool can be called at any point in the run, so 'derived from the initial prompt' is neither recorded nor enforced.",
+   "failure_scenario": "The user starts a run, the agent proposes 5 project-specific milestones and the user accepts them. The user does a step themselves and runs `speedrun split <id>`, and status shows it as reached but not counting ('◐'), permanently. Meanwhile the agent can mark any of them done on its own word. The milestones the original intent asked for (user-entered or agent-generated from the prompt) never affect the finish line, carry no splits comparable across runs, and cannot be traced back to the goal they were derived from.",
+   "fix": "v0.2: add additive fields to MilestoneProposed: `derived_from` (prompt event_id), suggested_evidence, and an optional stable slug. Let accept set required_trust and required evidence. Separate claimant (user|agent) from trust strength (see A3-5) so a user claim counts for a user-confirmed milestone. Add a `custom` category, or a per-run 'goal set' frozen at accept time, in which the accepted agent and user milestones are the finish line. Mark such runs as not leaderboard-comparable.",
+   "confidence": "verified",
+   "id": "A6-5",
+   "by": "product",
+   "critic": {
+    "id": "A6-5",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "tools.rs:92 fixes required_trust at AgentClaimed, and main.rs:279-282 always claims SelfDeclared, so the user's own split never counts for an agent milestone. This user-facing flow is visibly broken on first use."
+   }
+  },
+  {
+   "title": "PBs are not comparable: the PB is the fastest run of the category in any project, and every category version bump (which the v0.2 verifier fixes need) silently moves new runs to an empty PB pool",
+   "severity": "medium",
+   "area": "run comparability / PB (service.rs completed_runs, project.rs)",
+   "evidence": "service.rs:410-428 selects PBs from reader.runs_in_category(category_id, version), across all projects, sorted by timed_ms. live.rs:48 describes it as 'Best earlier completed run of the same category and version'. Nothing records what was built: no goal, prompt-derived task or seed (event.rs:35-40). project.json stores only category_id, with no version (project.rs:12-16), and a new run takes the newest built-in version (service.rs:121, category::find(.., None)). CLAUDE.md requires changing categories by adding versions.",
+   "failure_scenario": "A user's 40-minute any% for a CLI todo tool becomes the PB shown with a red delta on every later any% run, including a 2-day multiplayer game, so the deltas mean nothing. When v0.2 adds any-percent@2 to close A3-1, the binary upgrade moves the next run in every project to @2 without saying so, and all PBs and per-split deltas vanish. Leaderboards inherit both problems: rankings across unrelated products, and a split at each rules version.",
+   "fix": "Scope PBs to the project by default (same project_id), with category-wide as an option. Record a goal or seed on RunStarted (additive), from the initial prompt summary or a user-chosen 'challenge' id, so public boards can compare like with like. Pin category_version in project.json at init and make upgrades explicit (`speedrun init --upgrade-category`). Add category metadata such as `comparable_with: [1]` for versions that only tighten verification.",
+   "confidence": "verified",
+   "id": "A6-6",
+   "by": "product",
+   "critic": {
+    "id": "A6-6",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "completed_runs (service.rs:409-428) selects across all projects for a category@version, so PB deltas compare unrelated products. project.json does not pin the category version. The auditor's version-bump point is valid and matters for v0.2 planning."
+   }
+  },
+  {
+   "title": "The chain hash commits to plaintext prompt text, so the planned timing-only sync and prompt encryption at rest cannot coexist with chain verification for any v0.1 event",
+   "severity": "medium",
+   "area": "data model / cloud sync and privacy roadmap (hash.rs, PromptSubmitted)",
+   "evidence": "hash.rs:45-51 hashes the whole serialized Event, including payload.content of PromptSubmitted (event.rs:41-49). ARCHITECTURE.md Privacy: 'Planned: encrypt prompt content at rest ... Make syncing prompt text opt-in and separate from syncing timing metadata'. Roadmap item 3: 'verify chains server-side'. Payloads are immutable once written (CLAUDE.md).",
+   "failure_scenario": "v0.3 ships sync without prompt text, as promised. The server receives PromptSubmitted events with content stripped, cannot recompute any hash from that seq onward, and therefore cannot verify any run's chain. That defeats server-side chain verification and leaderboard eligibility for all v0.1/v0.2 history, unless users upload every prompt. Likewise, encrypting content in place at rest changes the stored body and breaks verify_chain (made worse by A2-5's re-serialization). Every run recorded from v0.1 on is locked into one of these choices, and it gets more expensive with every release that keeps the format.",
+   "fix": "Fix it in v0.2 before sync: PromptSubmitted v2 (SCHEMA_VERSION bump) carries `content_digest` = HMAC-SHA256(per-device secret, content) plus length and redacted. The text goes in a separate prompts table keyed by event_id, outside the chain, where it can be encrypted or synced on its own. Use a salted or keyed hash because short prompts are guessable. Old v0.1 events stay verifiable only locally or with their text, and the docs should say so.",
+   "confidence": "verified",
+   "id": "A6-7",
+   "by": "product",
+   "critic": {
+    "id": "A6-7",
+    "verdict": "confirmed",
+    "severity": "medium",
+    "reason": "compute_hash covers the whole payload, including the prompt content. Encryption at rest or timing-only sync would break the chain, and this design decision must be made before more data accumulates. It is a roadmap constraint, not a v0.1 bug."
+   }
+  },
+  {
+   "title": "Run and milestone identity is single-device and single-category, which blocks the roadmap's sync (one project on two machines) and its 'any% inside 100% inside first revenue' timeline",
+   "severity": "medium",
+   "area": "data model / sync readiness (store.rs chain, service.rs start_run, project.rs)",
+   "evidence": "Each run is one gapless seq plus prev_hash chain written by one daemon (event.rs:18-27, ARCHITECTURE.md Event log), and run_id is minted locally at the first prompt (service.rs:466). project_id is committed so that it is 'stable across clones and machines' (project.rs:9-10), and latest_run(project_id) decides which run receives prompts (service.rs:114-119). Predefined milestone_id equals the bare key (service.rs:481-485). any-percent and hundred-percent both use 'scaffold-runs' and 'happy-path-demo', with different descriptions ('Stubs and fakes are allowed' only in any%).",
+   "failure_scenario": "A user works on the same repo from a laptop and a desktop. Each daemon starts its own run for the same project_id, and after sync the server has two concurrent 'latest' runs with independent chains and no way to merge them, so the 'run' is split across two partial timelines. Forks and clones of a public repo share the committed project_id, so different people's runs look like one project. Multi-category runs (roadmap 4) cannot hold any% and 100% 'happy-path-demo' at once because milestone_id is the bare key, and existing v0.1 events already use that id.",
+   "fix": "Before v0.2 freezes more data: namespace predefined ids as `<category>@<version>/<key>` in new runs, keeping fold reading bare keys. Decide the multi-device model now. Either runs belong to one device and the server picks or merges per project explicitly, or chains become per (run, device) with a run-level merge order defined by the server. Record device/account ownership in RunStarted. Detect forks by storing the repo's root commit in project.json, and give a fork a new project_id on `speedrun init`.",
+   "confidence": "likely",
+   "id": "A6-8",
+   "by": "product",
+   "critic": {
+    "id": "A6-8",
+    "verdict": "plausible",
+    "severity": "low",
+    "reason": "Design analysis against a sync feature that does not exist yet. Namespacing predefined ids is cheap to do now. The rest is speculative."
+   }
+  },
+  {
+   "title": "The live-display contract is not ready for remote clients: no protocol version, a cursor only meaningful within one local DB, no source identity, and a documented 'abandoned' status that never appears",
+   "severity": "low",
+   "area": "live-display contract (live.rs, LIVE_DISPLAY.md, store.rs cursor)",
+   "evidence": "LiveSnapshot has only as_of, cursor and runs (live.rs:16-24). LIVE_DISPLAY.md 'Compatibility' promises 'a protocol version bump', but no version field exists in the snapshot or in /v1/health's {ok, version} (http.rs:110). cursor = MAX(rowid) of the local events table (store.rs:149-155), and displays are told to 'Drop any snapshot whose cursor is lower' while treating the transport as swappable (local SSE, cloud, static file). Service::live drops closed runs (service.rs:392), so status 'abandoned', listed in the contract, is never sent. LiveMilestone carries no description, evidence summary or counted_at timestamp, so a display cannot show what a split was or animate 'just split' without diffing.",
+   "failure_scenario": "A phone or PiP client built from another team's design system follows the contract. It shows local SSE (cursor 9,812), then switches to the cloud source, whose cursor space starts lower, or the local DB is restored or the data dir changes (A5-3). It then drops every new snapshot as stale and freezes with no error. When v0.2 changes a field's meaning, as several fixes above require, existing widgets cannot detect the version and render wrong clocks.",
+   "fix": "Add `protocol: 1` and `source: {kind: local|cloud, id: device_or_account}` to LiveSnapshot. Define the cursor as comparable only within one source, and require clients to reset when the source changes. Add counted_at, description and a short evidence summary to LiveMilestone. Either stop listing 'abandoned' or show recently abandoned runs. Generate and publish a versioned TS/Swift package from the schema so design-system teams do not hand-copy types.",
+   "confidence": "verified",
+   "id": "A6-9",
+   "by": "product",
+   "critic": {
+    "id": "A6-9",
+    "verdict": "confirmed",
+    "severity": "low",
+    "reason": "LiveSnapshot has no protocol version, and 'abandoned' is never emitted because closed runs are filtered out (service.rs:390-392). Fix the contract now; nothing breaks for local-only v0.1."
+   }
+  }
+ ],
+ "critic_missed": [
+  "crates/speedrun-cli/src/client.rs:110-112 + :214-258: every hook (Client::new, 5 s timeout, hook.rs:62/104) calls ready(), which synchronously flushes the whole spool before it records the fresh event. Each spooled POST can take up to 5 s, and the Claude Code hook timeout is 10 s (hooks.json). A backlog of 2 or more slow items therefore gets the hook killed mid-flush. The fresh prompt is never recorded, and the claimed flushing-*.jsonl file is only picked up again after the 120 s staleness window (:224). Reasoned from code, not reproduced.",
+  "crates/speedrun-cli/src/client.rs:104 + :244-249 with service.rs:233: a ureq timeout is a Transport error, which maps to CallError::Unreachable. A spooled MilestoneReached whose replay triggers network verification (up to 15 s, verify.rs) exceeds the 5 s hook client timeout and is re-spooled as 'unreachable', even though the daemon finished the work. Retried claims 're-check evidence' (service.rs:233), so every later hook pays the full 5 s timeout again, and the entry can loop in the spool. Not reproduced.",
+  "crates/speedrun-core/src/event.rs (no skip_serializing_if on any payload field; only api.rs:67 has one) + hash.rs:45-51: the 'additive changes keep the version' rule (ARCHITECTURE.md:43) cannot be followed today without breaking verify_chain for all history. A regression fixture of a frozen v0.1 DB should be added before any v0.2 schema edit. Relates to A2-5, whose line citations are wrong (hash.rs has 162 lines; verify_chain is at :70).",
+  ".github/workflows/release.yml: no job runs `cargo test`/clippy on the workspace (the only cargo test is the Zed one at :91). Together with A4-1 and the marketplace plugin tracking main, a hooks.json change merged to main reaches users immediately, without a release and without any compatibility test against the last released binary."
+ ],
+ "disputes": [
+  {
+   "id": "A1-3",
+   "stance": "downgrade",
+   "reason": "The '0755 spool dir' point is weaker than stated. The spool dir sits inside the data dir, and speedrund sets the data dir to 0700 on every start (crates/speedrund/src/main.rs:48-49), so other users cannot traverse into spool/ once the daemon has run, whatever the spool dir's own mode is. The exposure is real only when the daemon never started (SPEEDRUN_NO_AUTOSTART, or a missing binary) and the client's create_dir_all (client.rs:272, :296) made the data dir with the umask default. The plaintext-in-rejected.jsonl point stands.",
+   "by": "integrity"
+  },
+  {
+   "id": "A2-6",
+   "stance": "strengthen",
+   "reason": "Backdating a RunPaused zeroes timed_ms for whole runs in every category, evidence_verified splits included, and timed_ms is the PB ranking key (service.rs:423). Pause intervals use the client's occurred_at, raised only to run start (projection.rs:267, :361-371), and clamp_time has no lower bound (service.rs:60-63). VERIFIED with the temp daemon: POST /v1/projects/<id>/events with {type:'run_paused'} and occurred_at=<run started_at}, then run_resumed, then claims. The run completed with 'timed 0:00:00 agent 0:00:00' while real time was 0:00:04. Agent time inside the pause is subtracted too (projection.rs:175-177). The fix must also bound RunPaused and RunResumed times from below.",
+   "by": "anticheat"
+  },
+  {
+   "id": "A2-3",
+   "stance": "strengthen",
+   "reason": "The issue applies to Claude Code and Copilot only. opencode ends turns on session.status idle and session.idle, which fire on abort too (plugins/opencode/agentspeedrun.ts:129-132). pi ends turns on agent_end and session_shutdown (plugins/pi/agentspeedrun.ts:135-151). The Claude Code docs list StopFailure among the per-turn events ('per turn: UserPromptSubmit, Stop, and StopFailure') with output ignored, so hooking it is safe, and the plugin does not. For Copilot, the CLI reference documents agentStop only as 'the main agent finishes a turn'. Its sessionEnd has a reason 'abort', and hook.rs:78 maps session-end to a turn end only at session close. A second, separate path also inflates or deflates agent time (see my Stop-block finding): a Stop that another hook blocks ends the turn early.",
+   "by": "adapters"
+  },
+  {
+   "id": "A1-6",
+   "stance": "downgrade",
+   "reason": "'Tag builds restore rust-cache caches written by main pushes' is overstated for the published binaries. Swatinem/rust-cache@v2 includes the job id ($GITHUB_JOB) in its cache key by default. The release `binaries` job (key = matrix.target) shares no job id with any ci.yml job (rust, adapters, vscode, zed, package), so main-push CI caches cannot be restored into the job that builds the published tarballs. The caches it can restore come from earlier release runs of the same job, including workflow_dispatch dry runs on main (release.yml:7). Release `vscode` does share the job id 'vscode' with ci.yml and has no key, so it can restore ci's main cache, but that cache only holds the debug cargo build used for tests, not the .vsix contents. The supply-chain point about mutable action tags and unpinned cargo-zigbuild still stands. Reasoned from rust-cache's documented key scheme; not checked against a live Actions cache listing.",
+   "by": "release"
+  },
+  {
+   "id": "A2-1",
+   "stance": "strengthen",
+   "reason": "The silent-401 loss does not need a race. Any persistent mismatch between the client's data dir and the running daemon's data dir causes it, because the address is global (paths.rs:4) while the token lives in the data dir. VERIFIED with daemon A on homeA and a hook with SPEEDRUN_HOME=homeB on the same port: the hook printed 'speedrund error 401', exited 0 and spooled nothing. The failed autostart had already written a token, display-token and a fresh speedrun.sqlite into homeB before failing to bind (main.rs:50-53 vs :62), so the mismatch then persists. This is reachable on Linux whenever XDG_DATA_HOME differs between the terminal and the GUI-launched editor environments (see my data-dir finding).",
+   "by": "release"
+  },
+  {
+   "id": "A1-1",
+   "stance": "strengthen",
+   "reason": "For the second, legitimate user on a shared host, the consequence is silent data loss, not just 'cannot run a daemon'. Their hooks reach user A's real speedrund (health is unauthenticated), send their own token, get 401 (not spooled, client.rs:133-139), and exit 0. I reproduced the same mechanism with two data dirs on one port.",
+   "by": "release"
+  },
+  {
+   "id": "A3-1",
+   "stance": "strengthen",
+   "reason": "The proposed fix, 'Publish new category versions in which a commit alone cannot satisfy evidence_verified', cannot be done through category JSON. Required evidence is hard-coded by bare key in verify.rs:144-152, with no category version in Job (service.rs:296-304), and the category schema has only a suggested_evidence hint (category.rs:181-183). A new any-percent@2 with the same keys gets exactly the v1 verification unless verifier dispatch gains a version. Code changes that tighten 'happy-path-demo' would also apply mid-run to open @1 runs.",
+   "by": "product"
+  },
+  {
+   "id": "A3-5",
+   "stance": "strengthen",
+   "reason": "The trust ordering also stops the human from completing agent-proposed milestones. tools.rs:92 fixes their required_trust at AgentClaimed, while `speedrun split` always claims SelfDeclared (main.rs:279-282), so a user's split of an accepted agent milestone never counts. Only the agent can satisfy it on its own word. Provenance is inverted in both directions.",
+   "by": "product"
+  },
+  {
+   "id": "A2-5",
+   "stance": "strengthen",
+   "reason": "Besides additive fields, the roadmap's prompt encryption at rest and timing-only sync both change or remove payload.content. The hash covers it (hash.rs:45-51 over the full Event), so either feature breaks verify_chain for every v0.1 run. Hashing the stored body does not fix this. A content digest separate from the text is needed (see the hash-commits-to-plaintext finding).",
+   "by": "product"
+  }
+ ],
+ "gaps": [
+  "security: Checked and found sound, by code reading plus a live temp daemon on 127.0.0.1:34571:\n- Route coverage: every route except /v1/health is behind auth or display_auth (http.rs:84-114).\n- Token handling: tokens are compared in constant time. They come from two ULIDs (Ulid::new uses thread_rng; 160 random bits). Token files are 0600 and the data dir is chmod 0700 at daemon start.\n- Display token scope: it got 401 on /v1/runs/*. LiveRun/LiveMilestone carry no prompt or evidence fields.\n- CORS: it is applied only to the display router, GET only.\n- DNS rebinding: Host is not validated, but every data route needs a bearer token, so a rebinding page only reaches /v1/health.\n- Non-loopback guard: binding outside loopback is refused unless SPEEDRUN_ALLOW_NON_LOOPBACK is set (main.rs:357). Any value, even 0, enables it; that is minor.\n- API credentials: the API agent has redirects(0). GitHub and Stripe credentials only go to fixed hosts (api.github.com, api.stripe.com). Stripe ids and GitHub owner/repo/run id are strictly validated, including ids chained from Stripe responses.\n- Git argument injection: git SHAs (including GitHub's head_sha) are hex-validated before any git call, so no argument injection.\n- Page fetches: redirects are re-resolved through the filtering resolver and https_only is enforced.\n- Secrets: `speedrun secret set` writes 0600 files into a 0700 dir via atomic rename.\n\nNot done:\n- No real SSRF probing against NAT64 or a proxy.\n- No check of whether a malicious repo's .git/config (e.g. log.showSignature + gpg.program) can make the daemon's `git -C project_root log` run a command. That only matters for repos that ship their own .git dir (archives, embedded bare repos).\n- The VS Code, Zed, opencode and pi adapters were not audited beyond confirming VS Code uses `speedrun display --json` (the display token).\n- No check of MCP stdin parsing robustness.\n- ARCHITECTURE's trust model is not treated as a finding: the timed agent runs as the same user and can read $SPEEDRUN_HOME/token, so it can forge self-declared events by design.\n\nProcess note:\n- While testing, a daemon with my temp SPEEDRUN_HOME but no SPEEDRUN_ADDR was autostarted (pid 16010, apparently by `speedrun init` or an early CLI call in my temp project), so it probably bound the default 127.0.0.1:7477 briefly.\n- I killed it and my 34571 daemon by pid, after checking each one's /proc environ. No other processes were touched.\n- A scratch build dir /home/user/agentspeedrun/target/rt was created and removed; the git tree is clean.",
+  "integrity: I did not run real concurrent hook processes against a live daemon to reproduce the spool reorder or double-delivery; that finding rests on code reading plus a fold unit test. I could not confirm from the Claude Code docs that Stop is skipped on an Esc interrupt; StopFailure and the 'Esc during a UserPromptSubmit hook' behaviour are documented. The schema-evolution hash finding is reasoned from the code because demonstrating it needs a payload change. I did not audit verify.rs verifier logic beyond the job and finish race, or live.rs timing_at extrapolation edge cases in depth. I found nothing wrong in the append-only triggers, the IMMEDIATE-transaction seq allocation (safe even with two daemon processes on one DB), idempotent prompt retries, pause and finish interaction, or PB cache invalidation. The experiment tests are in the scratch copy at /tmp/claude-0/-home-user-agentspeedrun/e0badb32-2eb8-57b5-8f19-091d8f87b764/scratchpad/copy (service.rs and projection.rs tests named audit_*). The repo was not modified. All daemons I started used temp SPEEDRUN_HOME and ports 31001-32040 and were killed by environment match.",
+  "anticheat: No call was made to the real Stripe or GitHub APIs. The Stripe findings were tested against mocked responses in a scratch copy of the verify.rs tests (since deleted). Two points rest on my knowledge of Stripe, not on a test: amount_paid for out-of-band invoices, and invoice.charge being removed in newer API versions. The URL and CI 'not tied to project' finding was reasoned from code. I did not separately test backdating through spool replay, because A2-6 covers it. The any% completion, the pause backdating and the hash-chain forgery were run against a temp daemon on 127.0.0.1:34571 with SPEEDRUN_HOME in the scratchpad; it has been stopped. The repo working tree is unmodified.",
+  "adapters: Not run inside real Claude Code, Copilot CLI, VS Code, opencode or Zed. Claude Code and Copilot behavior comes from docs read with WebFetch, and the Stop/interrupt section of the Claude hooks page was truncated, so I could not confirm whether Stop runs on Esc. I did not check Zed's MCP client: whether it advertises roots or which cwd it starts context servers in. If neither works, the server falls back to a global project_dir setting that cannot serve several projects. I did not run the VS Code electron tests (xvfb) or the Zed wasm build. The adapter bun tests passed: opencode 5/5, pi 6/6, vscode unit 6/6. I did not measure hook latency when spooling with a large backlog or a daemon that accepts connections but does not answer; reasoned worst case is about 10 s, or 5 s health plus 5 s POST, which hits Claude's 10 s hook timeout. Experiments used a temp SPEEDRUN_HOME under the scratchpad with ports 34871 and 34872, and I killed only the daemons I started.",
+  "release: I could not run the GitHub Actions workflows, so the tag publish, gh release create --verify-tag, the macOS runners and the QEMU smoke test were checked by reading only. The release artifact names do match install.sh: package.sh produces agentspeedrun-v<ver>-<target>.tar.gz with a matching top-level dir. SHA256SUMS lists the tarballs and the .vsix in `sha256sum` two-space format, which the install.sh grep matches. Tags without the v prefix (SPEEDRUN_VERSION=0.1.0) fail with a 'has no archive' error. I had no macOS host, so I did not check Gatekeeper or quarantine. curl and gh downloads do not set com.apple.quarantine, and the arm64 smoke test on macos-15 would catch a broken ad-hoc signature, so the curl|sh path is probably fine; tarballs downloaded in a browser would be blocked as unsigned, and that is undocumented. I did not fetch GitHub's current Node 20 removal status. I did not check daemon behavior under many simultaneous autostarts beyond A2-1, the spool format's compatibility across versions (it needs a v0.2), or TLS root loading in the static musl build (smoke.sh exercises only git verification, so the URL, CI and Stripe verifiers are never tested in the shipped static binaries). All daemons I started used scratchpad SPEEDRUN_HOME dirs on ports 34511 and 34612. I killed them by PID after matching their environment.",
+  "product: I did not run the daemon end to end for these findings. The pause exploit was verified with a scratch fold test in a copy of projection.rs (/tmp/claude-0/-home-user-agentspeedrun/e0badb32-2eb8-57b5-8f19-091d8f87b764/scratchpad/as). I did not check against the live Stripe API that account.charges_enabled, details_submitted, business_profile.url and automatic_tax can serve as verifiers for payments-live and tax-compliance; those field names come from memory. I did not review the VS Code, watch or Zed display code against the cursor-reset scenario beyond the contract and live.rs. I did not test multi-device behavior, since no sync exists yet. The findings about sync and multi-category runs are design analysis against the stated roadmap."
+ ]
+}
