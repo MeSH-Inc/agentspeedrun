@@ -16,3 +16,20 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all --locked
+
+  adapters:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        adapter: [opencode, pi]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - run: cargo build --locked
+      - working-directory: plugins/${{ matrix.adapter }}
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx tsc --noEmit
+          bun test

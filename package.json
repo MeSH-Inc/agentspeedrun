@@ -1,0 +1,9 @@
+{
+  "name": "agentspeedrun",
+  "private": true,
+  "description": "Speedrun timing for agentic coding projects. This manifest lets `pi install git:github.com/mesh-inc/agentspeedrun` find the pi extension; the project itself is a Rust workspace.",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./plugins/pi/agentspeedrun.ts"]
+  }
+}

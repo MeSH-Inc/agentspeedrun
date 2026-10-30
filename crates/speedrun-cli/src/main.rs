@@ -5,11 +5,13 @@ mod hook;
 mod mcp;
 mod ops;
 mod project;
+mod setup;
+mod tools;
 mod watch;
 
 use std::io::Read;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use speedrun_core::{
@@ -43,8 +45,11 @@ enum Cmd {
     },
     /// Show the current run.
     Status {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "line")]
         json: bool,
+        /// One line for status bars; prints nothing when there is no run.
+        #[arg(long)]
+        line: bool,
     },
     /// Mark a milestone as reached. Attach a commit to have it verified.
     Split {
@@ -104,7 +109,8 @@ enum Cmd {
         event: String,
     },
     /// Generic adapter for hosts without a dedicated hook (opencode, pi, editors).
-    /// Reads the prompt text from stdin for `prompt`.
+    /// Reads the prompt text from stdin for `prompt`. Prints one JSON object:
+    /// `{recorded, spooled, run_started, run_id, context}`. Always exits 0.
     Ingest {
         #[arg(value_parser = ["prompt", "turn-end"])]
         kind: String,
@@ -126,6 +132,27 @@ enum Cmd {
     },
     /// Print the read-only display token and live endpoints for widgets.
     Display,
+    /// Run an agent tool (as exposed over MCP) and print its text result.
+    /// Exits 1 if the tool failed. `--list` prints the tool definitions.
+    Tool {
+        #[arg(required_unless_present = "list")]
+        name: Option<String>,
+        /// Tool arguments as a JSON object.
+        #[arg(long, default_value = "{}")]
+        args: String,
+        #[arg(long)]
+        list: bool,
+    },
+    /// Install the adapter for opencode, pi or oh-my-pi (user-wide, or for
+    /// this project with --project). Claude Code uses its plugin marketplace.
+    Setup {
+        host: setup::Host,
+        #[arg(long)]
+        project: bool,
+        /// Replace an existing file speedrun did not write.
+        #[arg(long)]
+        force: bool,
+    },
     /// Run the MCP server on stdio.
     Mcp,
     /// Print the JSON Schema of the plugin ↔ daemon protocol.
@@ -166,10 +193,12 @@ fn run(cmd: Cmd) -> Result<()> {
                 category
             );
         }
-        Cmd::Status { json } => {
+        Cmd::Status { json, line } => {
             let p = Project::require(&cwd)?;
             match ops::active_run(&c, &p)? {
                 Some(run) if json => println!("{}", serde_json::to_string_pretty(&run)?),
+                Some(run) if line => println!("{}", ops::format_line(&run)),
+                None if line => {}
                 Some(run) => print!("{}", ops::format_status(&run)),
                 None => println!("No active run; the timer starts at the next prompt."),
             }
@@ -296,15 +325,21 @@ fn run(cmd: Cmd) -> Result<()> {
             session,
             model,
         } => {
-            let Some(p) = Project::find(&cwd)? else {
-                return Ok(());
-            };
-            if kind == "prompt" {
-                let mut content = String::new();
-                std::io::stdin().read_to_string(&mut content)?;
-                ops::record_prompt(&c, &p, &host, &session, model.as_deref(), &content)?;
-            } else {
-                ops::append(&c, &p, EventPayload::AgentTurnEnded { session_id: session })?;
+            // Adapters parse stdout; never fail them.
+            let out = ingest(&c, &cwd, &kind, &host, &session, model.as_deref())
+                .unwrap_or_else(|e| serde_json::json!({ "recorded": false, "error": format!("{e:#}") }));
+            println!("{out}");
+        }
+        Cmd::Tool { list: true, .. } => println!("{}", serde_json::to_string_pretty(&tools::definitions())?),
+        Cmd::Tool { name, args, .. } => {
+            let args: Value =
+                serde_json::from_str(&args).map_err(|e| anyhow::anyhow!("--args is not JSON: {e}"))?;
+            match tools::call(name.as_deref().unwrap_or_default(), &args) {
+                Ok(text) => println!("{text}"),
+                Err(e) => {
+                    println!("{e:#}");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::Watch { since_hours, once } => watch::watch(since_hours, once)?,
@@ -318,6 +353,31 @@ fn run(cmd: Cmd) -> Result<()> {
             println!("auth:     Authorization: Bearer <token>, or ?token=<token> for EventSource");
             println!("browser pages need SPEEDRUN_CORS_ORIGINS=<origin> set for speedrund");
         }
+        Cmd::Setup { host, project, force } => {
+            let root = if project {
+                Some(Project::find(&cwd)?.map_or_else(|| cwd.clone(), |p| p.root))
+            } else {
+                None
+            };
+            let home = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .context("HOME is not set")?;
+            let xdg = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from);
+            let base = setup::target_dir(host, root.as_deref(), &home, xdg.as_deref());
+            for outcome in setup::install(host, &base, force)? {
+                match outcome {
+                    setup::Outcome::Installed(p) => println!("installed {}", p.display()),
+                    setup::Outcome::Upgraded(p) => println!("updated   {}", p.display()),
+                    setup::Outcome::Unchanged(p) => println!("current   {}", p.display()),
+                }
+            }
+            if !setup::on_path() {
+                println!(
+                    "warning: `speedrun` is not on PATH; the adapter will not find it. Add it, or set SPEEDRUN_BIN."
+                );
+            }
+            println!("Restart the host to load it. Then run `speedrun init` in each repo you want timed.");
+        }
         Cmd::Mcp => mcp::serve()?,
         Cmd::Schema => println!(
             "{}",
@@ -326,6 +386,41 @@ fn run(cmd: Cmd) -> Result<()> {
         Cmd::Hook { .. } => unreachable!("handled in main"),
     }
     Ok(())
+}
+
+fn ingest(
+    c: &Client,
+    cwd: &std::path::Path,
+    kind: &str,
+    host: &str,
+    session: &str,
+    model: Option<&str>,
+) -> Result<Value> {
+    let Some(p) = Project::find(cwd)? else {
+        return Ok(serde_json::json!({ "recorded": false, "reason": "not a speedrun project" }));
+    };
+    if kind == "turn-end" {
+        let r = ops::append(
+            c,
+            &p,
+            EventPayload::AgentTurnEnded {
+                session_id: session.to_string(),
+            },
+        )?;
+        return Ok(serde_json::json!({ "recorded": true, "spooled": r.is_none() }));
+    }
+    let mut content = String::new();
+    std::io::stdin().read_to_string(&mut content)?;
+    Ok(match ops::record_prompt(c, &p, host, session, model, &content)? {
+        Some(r) => serde_json::json!({
+            "recorded": true,
+            "spooled": false,
+            "run_started": r.run_started,
+            "run_id": r.run_id,
+            "context": r.run_started.then(|| ops::run_started_context(&p, &r.run_id)),
+        }),
+        None => serde_json::json!({ "recorded": true, "spooled": true, "run_started": false }),
+    })
 }
 
 fn milestone_event(

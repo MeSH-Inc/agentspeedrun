@@ -49,7 +49,14 @@ In the repo you want to time:
 speedrun init --category any-percent
 ```
 
-Then install the Claude Code plugin (see [plugins/claude-code](plugins/claude-code)) and start prompting. The daemon starts automatically on first use.
+Then connect your agent and start prompting. The daemon starts automatically on first use.
+
+| Host | Install |
+|------|---------|
+| Claude Code | `/plugin marketplace add mesh-inc/agentspeedrun` ([details](plugins/claude-code)) |
+| opencode | `speedrun setup opencode` ([details](plugins/opencode)) |
+| pi | `speedrun setup pi` ([details](plugins/pi)) |
+| oh-my-pi | `speedrun setup omp` ([details](plugins/pi)) |
 
 ```bash
 speedrun status                              # timer and splits
@@ -71,10 +78,11 @@ speedrun display                             # read-only token + URLs for widget
 | `categories/` | Built-in category rulesets (versioned JSON) |
 | `schema/protocol.schema.json` | JSON Schema of the protocol, including `LiveSnapshot` (CI checks it is current) |
 | `schema/examples/` | Generated example payloads for display and design work |
-| `plugins/` | Host adapters. Claude Code works; others are stubs. |
+| `plugins/` | Host adapters: Claude Code, opencode, pi/oh-my-pi (working); VS Code, Zed (stubs) |
 
 ## Status
 
 Scaffold. Working: daemon, CLI, Claude Code plugin, MCP tools, git verifier,
-offline spool, live-display stream with read-only tokens and personal-best comparison. Not yet: URL/CI/Stripe verifiers, encryption of prompts at
-rest, other host adapters, cloud sync and leaderboards.
+offline spool, live-display stream with read-only tokens and personal-best comparison. Adapters: Claude Code, opencode, pi and oh-my-pi.
+Not yet: URL/CI/Stripe verifiers, encryption of prompts at rest, VS Code and
+Zed adapters, cloud sync and leaderboards.

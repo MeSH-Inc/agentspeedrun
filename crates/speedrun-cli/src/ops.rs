@@ -114,3 +114,33 @@ pub fn format_status(run: &RunView) -> String {
     }
     out
 }
+
+/// Text adapters inject into the agent's context when a prompt starts a run.
+pub fn run_started_context(project: &Project, run_id: &str) -> String {
+    format!(
+        "[agentspeedrun] This prompt started a timed `{}` run ({run_id}). The category's own milestones are already \
+         tracked. Once you understand the user's goal, call the `speedrun_propose_milestones` tool once with 3-8 \
+         concrete, checkable milestones specific to this project (the user accepts or rejects them). When you finish \
+         one, call `speedrun_claim_milestone` with the commit that achieves it.",
+        project.config.category_id
+    )
+}
+
+/// One line for status bars: `any-percent 1/2 · 0:12:03`.
+pub fn format_line(run: &RunView) -> String {
+    let predefined = run
+        .milestones
+        .iter()
+        .filter(|m| m.origin == speedrun_core::MilestoneOrigin::Predefined);
+    let total = predefined.clone().count();
+    let counted = predefined.filter(|m| m.counts()).count();
+    let state = match run.status {
+        speedrun_core::RunStatus::Running => String::new(),
+        s => format!(" · {s:?}").to_lowercase(),
+    };
+    format!(
+        "⏱ {} {counted}/{total} · {}{state}",
+        run.category_id,
+        fmt_ms(run.timing.timed_ms)
+    )
+}

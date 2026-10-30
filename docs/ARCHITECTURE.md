@@ -11,9 +11,9 @@
 ## Components
 
 ```
-host (Claude Code, opencode, pi, VS Code, Zed)
-  └─ adapter: hooks → `speedrun hook <host> <event>` / `speedrun ingest …`
-              MCP   → `speedrun mcp` (stdio)
+host (Claude Code, opencode, pi/omp, VS Code, Zed)
+  └─ adapter: prompts/turns → `speedrun hook claude-code …` / `speedrun ingest …`
+              agent tools   → `speedrun mcp` (stdio) / `speedrun tool <name>`
 speedrun (CLI)
   ├─ finds the project: nearest .speedrun/project.json (untracked dirs record nothing)
   ├─ HTTP client → speedrund, autostarting it if needed
@@ -81,6 +81,24 @@ sets `required_trust`. Verifiers (`speedrund/src/verify.rs`):
 
 Until the planned verifiers exist, milestones that require them cannot reach
 `evidence_verified`.
+
+## Host adapters
+
+Adapters only translate host events into CLI calls. They hold no logic of their own, so all hosts behave the same and fixes ship with the binary.
+
+| Host | Prompt / turn start | Turn end | Agent tools | Run-start context |
+|---|---|---|---|---|
+| Claude Code | `UserPromptSubmit` hook | `Stop`, `SessionEnd` | MCP (`speedrun mcp`) | hook `additionalContext` |
+| opencode | `chat.message` | `session.status` idle | native `tool` → `speedrun tool` | system-prompt transform |
+| pi / omp | `before_agent_start` | `agent_end` | `registerTool` → `speedrun tool` | injected hidden message |
+
+Shared rules:
+- **Only human prompts are recorded.** Subagent sessions are skipped: opencode `parentID`, omp `ctx.agent.kind`.
+- **One turn-end per turn.** Adapters track which sessions are busy.
+- **Adapters never throw into the host.**
+- **Install from the binary.** `speedrun setup <host>` installs the copy of the adapter embedded in the binary (`include_str!`), so adapter and CLI versions cannot drift.
+
+Tests run each adapter against the real CLI and daemon with a fake host (`plugins/*/test`).
 
 ## Live displays
 

@@ -40,7 +40,7 @@ fn claude_code_inner(event: &str) -> Result<()> {
             let resp =
                 ops::record_prompt(&client, &project, "claude-code", session, str_of("model"), prompt)?;
             if let Some(r) = resp.filter(|r| r.run_started) {
-                print_context(&run_started_context(&project, &r.run_id));
+                print_context(&ops::run_started_context(&project, &r.run_id));
             }
         }
         "stop" | "session-end" => {
@@ -65,14 +65,4 @@ fn print_context(text: &str) {
         }
     });
     println!("{out}");
-}
-
-fn run_started_context(project: &Project, run_id: &str) -> String {
-    format!(
-        "[agentspeedrun] This prompt started a timed `{}` run ({run_id}). The category's own milestones are already \
-         tracked. Once you understand the user's goal, call the `speedrun_propose_milestones` tool once with 3-8 \
-         concrete, checkable milestones specific to this project (the user accepts or rejects them). When you finish \
-         one, call `speedrun_claim_milestone` with the commit that achieves it.",
-        project.config.category_id
-    )
 }
