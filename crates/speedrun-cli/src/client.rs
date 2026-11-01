@@ -48,6 +48,10 @@ fn spool_dir() -> PathBuf {
     paths::data_dir().join("spool")
 }
 
+/// Header the daemon reads to exempt a spooled write from its last-event
+/// clock bound. Only `flush_spool` marks a delivery this way.
+const REPLAY_HEADER: &str = "X-Speedrun-Replay";
+
 impl Client {
     pub fn new() -> Self {
         Self::with_timeout(Duration::from_secs(5))
@@ -80,11 +84,15 @@ impl Client {
         method: &str,
         path: &str,
         body: Option<&Value>,
+        from_spool: bool,
     ) -> Result<T, CallError> {
-        let req = self
+        let mut req = self
             .agent
             .request(method, &format!("{}{path}", self.base))
             .set("Authorization", &format!("Bearer {}", Self::token()?));
+        if from_spool {
+            req = req.set(REPLAY_HEADER, "1");
+        }
         let res = match body {
             Some(b) => req.send_json(b),
             None => req.call(),
@@ -108,19 +116,19 @@ impl Client {
     /// Make sure the daemon is up (starting it if needed), then deliver any
     /// spooled events first so they keep their order relative to new ones.
     pub fn ready(&self) -> Result<(), CallError> {
-        self.with_autostart(|| self.send::<Value>("GET", "/v1/health", None))?;
+        self.with_autostart(|| self.send::<Value>("GET", "/v1/health", None, false))?;
         self.flush_spool();
         Ok(())
     }
 
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
         self.ready()?;
-        self.send("GET", path, None)
+        self.send("GET", path, None, false)
     }
 
     pub fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T, CallError> {
         self.ready()?;
-        self.send("POST", path, Some(body))
+        self.send("POST", path, Some(body), false)
     }
 
     /// POST that must not be lost: if the daemon is unreachable the request
@@ -240,7 +248,7 @@ impl Client {
                 let Ok(entry) = serde_json::from_str::<SpoolEntry>(&line) else {
                     continue;
                 };
-                match self.send::<Value>("POST", &entry.path, Some(&entry.body)) {
+                match self.send::<Value>("POST", &entry.path, Some(&entry.body), true) {
                     Ok(_) => delivered += 1,
                     Err(CallError::Unreachable(_)) => {
                         append_line(&live, &line);

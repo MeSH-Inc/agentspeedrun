@@ -9,7 +9,7 @@ use std::time::Duration as StdDuration;
 use axum::{
     Json, Router,
     extract::{Path, Query, Request, State},
-    http::{HeaderValue, Method, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{
         IntoResponse, Response,
@@ -41,6 +41,15 @@ pub struct AppState {
 /// Live streams resend a snapshot at least this often, so displays
 /// self-correct even if they missed something.
 const LIVE_REFRESH: StdDuration = StdDuration::from_secs(60);
+
+/// Header the client sets on a write it is replaying from its spool.
+const REPLAY_HEADER: &str = "x-speedrun-replay";
+
+/// A spooled write is exempt from the last-event clock bound; nothing in the
+/// body can claim that exemption.
+fn is_replay(headers: &HeaderMap) -> bool {
+    headers.contains_key(REPLAY_HEADER)
+}
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
@@ -222,14 +231,32 @@ fn notify(state: &AppState) {
     state.changes.send_modify(|n| *n = n.wrapping_add(1));
 }
 
-async fn record_prompt(State(s): State<AppState>, Json(req): Json<PromptRequest>) -> impl IntoResponse {
-    let res = call(&s, move |svc| svc.record_prompt(req)).await;
+async fn record_prompt(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<PromptRequest>,
+) -> impl IntoResponse {
+    let from_spool = is_replay(&headers);
+    let res = call(&s, move |svc| {
+        svc.check_prompt_occurred_at(&req.project_id, req.occurred_at, from_spool)?;
+        svc.record_prompt(req)
+    })
+    .await;
     notify(&s);
     res
 }
 
-async fn append(State(s): State<AppState>, Json(req): Json<AppendRequest>) -> impl IntoResponse {
-    let res = blocking(&s, move |svc| svc.append(req)).await;
+async fn append(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<AppendRequest>,
+) -> impl IntoResponse {
+    let from_spool = is_replay(&headers);
+    let res = blocking(&s, move |svc| {
+        svc.check_occurred_at(&req.run_id, req.occurred_at, from_spool)?;
+        svc.append(req)
+    })
+    .await;
     finish_append(s, res).await
 }
 
@@ -276,9 +303,11 @@ async fn active_run(State(s): State<AppState>, Path(project_id): Path<String>) -
 async fn append_to_project(
     State(s): State<AppState>,
     Path(project_id): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<ProjectAppendRequest>,
 ) -> impl IntoResponse {
-    let res = blocking(&s, move |svc| svc.append_to_project(&project_id, req)).await;
+    let from_spool = is_replay(&headers);
+    let res = blocking(&s, move |svc| svc.append_to_project(&project_id, req, from_spool)).await;
     finish_append(s, res).await
 }
 

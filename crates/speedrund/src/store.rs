@@ -215,20 +215,28 @@ impl Reader<'_> {
         rows.map(|b| parse_body(&b?)).collect()
     }
 
-    /// When the run's newest event (by `seq`) says it happened. The daemon
-    /// compares a new event's time against this, so a replay is judged
-    /// against the log as it stands rather than against wall-clock now.
-    pub fn last_occurred_at(&self, run_id: &str) -> rusqlite::Result<Option<DateTime<Utc>>> {
-        let body: Option<String> = self
+    /// When the run's first and newest events (by `seq`) say they happened.
+    /// `None` when the run has no events. A write is bounded against both: it
+    /// may not be dated before the run started, nor (unless it is a spool
+    /// replay) more than the skew allowance behind the newest event.
+    pub fn run_bounds(&self, run_id: &str) -> rusqlite::Result<Option<(DateTime<Utc>, DateTime<Utc>)>> {
+        let first: Option<String> = self
             .0
             .query_row(
-                "SELECT body FROM events WHERE run_id = ?1 ORDER BY seq DESC LIMIT 1",
+                "SELECT body FROM events WHERE run_id = ?1 ORDER BY seq ASC LIMIT 1",
                 [run_id],
                 |r| r.get(0),
             )
             .optional()?;
-        match body {
-            Some(body) => Ok(Some(parse(&body)?.occurred_at)),
+        match first {
+            Some(first) => {
+                let last: String = self.0.query_row(
+                    "SELECT body FROM events WHERE run_id = ?1 ORDER BY seq DESC LIMIT 1",
+                    [run_id],
+                    |r| r.get(0),
+                )?;
+                Ok(Some((parse(&first)?.occurred_at, parse(&last)?.occurred_at)))
+            }
             None => Ok(None),
         }
     }

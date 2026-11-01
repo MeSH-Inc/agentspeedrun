@@ -15,7 +15,7 @@ use speedrun_core::{
 };
 
 use crate::clock::ClockWindow;
-use crate::store::{Store, Tx, UnreadableRow};
+use crate::store::{Reader, Store, Tx, UnreadableRow};
 use crate::verify;
 
 /// A verification that finishes within this long of the claim is dated at
@@ -92,6 +92,27 @@ fn fold(tx: &Tx<'_>, run_id: &str) -> Result<RunView> {
     RunView::fold(&events, Utc::now()).ok_or_else(|| Error::NotFound(format!("run {run_id}")))
 }
 
+/// The run a new event for `project_id` joins: the project's newest run,
+/// unless it was abandoned, which closed it. `None` means the write starts a
+/// fresh run. This is the one place write paths decide which run they target.
+fn open_run_id(reader: &Reader<'_>, project_id: &str) -> Result<Option<String>> {
+    match reader.latest_run(project_id)? {
+        Some(run_id) => {
+            let closed = reader.run_events(&run_id)?.into_iter().any(|e| {
+                matches!(
+                    e.payload,
+                    EventPayload::RunFinished {
+                        outcome: RunOutcome::Abandoned,
+                        ..
+                    }
+                )
+            });
+            Ok((!closed).then_some(run_id))
+        }
+        None => Ok(None),
+    }
+}
+
 /// The event that proposed `milestone_id` in this log, if any. A retried
 /// proposal names the same milestone, so it must become a no-op.
 fn proposal_event<'a>(events: &'a [Event], milestone_id: &str) -> Option<&'a Event> {
@@ -136,13 +157,10 @@ impl Service {
                 };
             }
             let at = CLOCK.clamp(req.occurred_at, Utc::now());
-            let current = match tx.reader().latest_run(&req.project_id)? {
-                Some(run_id) => Some(fold(tx, &run_id)?),
-                None => None,
-            };
+            let current = open_run_id(&tx.reader(), &req.project_id)?;
             let (run_id, run_started) = match current {
-                Some(run) if !run.closed => (run.run_id, false),
-                _ => {
+                Some(run_id) => (run_id, false),
+                None => {
                     let cat = category::find(categories, &req.category_id, None)
                         .ok_or_else(|| Error::BadRequest(format!("unknown category {}", req.category_id)))?;
                     (start_run(tx, &req, cat, at)?, true)
@@ -255,13 +273,7 @@ impl Service {
             let run = RunView::fold(&events, Utc::now())
                 .ok_or_else(|| Error::NotFound(format!("run {}", req.run_id)))?;
             run.check(&req.payload).map_err(Error::Conflict)?;
-            let at = CLOCK
-                .admit(
-                    req.occurred_at,
-                    tx.reader().last_occurred_at(&req.run_id)?,
-                    Utc::now(),
-                )
-                .map_err(Error::BadRequest)?;
+            let at = CLOCK.clamp(req.occurred_at, Utc::now());
             let e = tx.insert(&req.run_id, &req.event_id, at, req.payload.clone())?;
             Ok((e, true))
         })?;
@@ -288,22 +300,61 @@ impl Service {
     }
 
     /// Append to the project's active run.
-    pub fn append_to_project(&mut self, project_id: &str, req: ProjectAppendRequest) -> Result<Appended> {
+    pub fn append_to_project(
+        &mut self,
+        project_id: &str,
+        req: ProjectAppendRequest,
+        from_spool: bool,
+    ) -> Result<Appended> {
         // A retry must land in the run the original went to, even if a newer run exists.
         let run_id = match self.store.reader().event(&req.event_id)? {
             Some(existing) => existing.run_id,
-            None => self.active_run(project_id)?.map(|r| r.run_id).ok_or_else(|| {
+            None => open_run_id(&self.store.reader(), project_id)?.ok_or_else(|| {
                 Error::NotFound(format!(
                     "no active run for project {project_id}; send a prompt first"
                 ))
             })?,
         };
+        self.check_occurred_at(&run_id, req.occurred_at, from_spool)?;
         self.append(AppendRequest {
             event_id: req.event_id,
             run_id,
             occurred_at: req.occurred_at,
             payload: req.payload,
         })
+    }
+
+    /// Refuse a write dated outside the run's clock window: before the run
+    /// started, or (unless it is a spool replay) too far behind the log.
+    ///
+    /// The HTTP layer calls this before the write, inside the same service
+    /// lock, so the check and the append cannot interleave with another write.
+    pub fn check_occurred_at(
+        &self,
+        run_id: &str,
+        occurred_at: Option<DateTime<Utc>>,
+        from_spool: bool,
+    ) -> Result<()> {
+        match self.store.reader().run_bounds(run_id)? {
+            Some((start, last)) => CLOCK
+                .admit(occurred_at, start, last, Utc::now(), from_spool)
+                .map_err(Error::BadRequest),
+            None => Ok(()),
+        }
+    }
+
+    /// Refuse a prompt dated outside the window of the run it will join. A
+    /// prompt that starts a fresh run has no earlier events to be behind.
+    pub fn check_prompt_occurred_at(
+        &self,
+        project_id: &str,
+        occurred_at: Option<DateTime<Utc>>,
+        from_spool: bool,
+    ) -> Result<()> {
+        match open_run_id(&self.store.reader(), project_id)? {
+            Some(run_id) => self.check_occurred_at(&run_id, occurred_at, from_spool),
+            None => Ok(()),
+        }
     }
 
     /// The evidence check a claim calls for, if any.
