@@ -87,8 +87,8 @@ fn decode_pubkey(pubkey_hex: &str) -> Result<VerifyingKey, String> {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SignatureCheck {
     pub signed: u64,
-    /// Events with no signature: schema v1 logs, or a chain that predates
-    /// signing.
+    /// Events with no signature. Signing is mandatory, so any such event
+    /// also sets `error`.
     pub unsigned: u64,
     /// First signature problem, if any.
     pub error: Option<String>,
@@ -102,19 +102,17 @@ impl SignatureCheck {
 
 /// Check every signature in one run's chain against the key the run names.
 ///
-/// A run with no `device_pubkey` (a v1 log) is reported as unsigned rather
-/// than broken. A signed event that does not verify is an error.
+/// A run must name a device key in `RunStarted`, and every event must carry
+/// a signature over its hash. A missing key or a missing signature is an
+/// error: unsigned v1 logs are retired.
 pub fn verify_event_signatures(events: &[Event]) -> SignatureCheck {
     let mut check = SignatureCheck::default();
-    let key = events.iter().find_map(|e| match &e.payload {
-        EventPayload::RunStarted {
-            device_pubkey: Some(k),
-            ..
-        } => Some(k.clone()),
-        _ => None,
-    });
+    let key = run_key(events);
+    if names_no_device_key(events) {
+        check.error = Some("run_started names no device key".into());
+    }
     for e in events {
-        match (&e.sig, &key) {
+        match (&e.sig, key) {
             (Some(sig), Some(k)) => {
                 if verify_hash(k, &e.hash, sig) {
                     check.signed += 1;
@@ -130,10 +128,39 @@ pub fn verify_event_signatures(events: &[Event]) -> SignatureCheck {
                     ));
                 }
             }
-            (None, _) => check.unsigned += 1,
+            (None, _) => {
+                check.unsigned += 1;
+                if check.error.is_none() {
+                    check.error = Some(format!("event seq {}: no signature", e.seq));
+                }
+            }
         }
     }
     check
+}
+
+/// The device key a run's `RunStarted` names.
+fn run_key(events: &[Event]) -> Option<&str> {
+    events.iter().find_map(|e| match &e.payload {
+        EventPayload::RunStarted {
+            device_pubkey: Some(k),
+            ..
+        } => Some(k.as_str()),
+        _ => None,
+    })
+}
+
+/// Whether any `RunStarted` in the chain fails to name a device key.
+fn names_no_device_key(events: &[Event]) -> bool {
+    events.iter().any(|e| {
+        matches!(
+            &e.payload,
+            EventPayload::RunStarted {
+                device_pubkey: None,
+                ..
+            }
+        )
+    })
 }
 
 #[cfg(test)]
