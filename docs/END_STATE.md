@@ -7,8 +7,8 @@ and later are out of scope: they are mostly governance (C2, C5, C7).
 This is an index of the acceptance items in `V0.2.md` and `COMMONS.md` §14, which define
 them. **Who**: `loop` means a bounded change a test can judge, which an automated proposer
 can make once the test exists; `leader` means it needs design, a schema or category change,
-or code outside the Rust workspace. **Test**: an ignored objective test that fails until the
-item holds (`cargo test --all -- --ignored audit_`), or a test that shows it already holds.
+or code outside the Rust workspace. **Test**: the test that shows the item holds, or an ignored
+objective test that fails until it does. Every named `audit_` test passes as of 2026-11-01.
 
 ## v0.2 (COMMONS P0)
 

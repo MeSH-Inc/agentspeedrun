@@ -1224,8 +1224,7 @@ mod tests {
         assert_eq!(out.report().verifier, None);
     }
 
-    // --- Audit regressions (docs/audit/v0.1.0.json, docs/V0.2.md). Tests marked ignore
-    // fail until their finding is fixed; `guard_` tests must keep passing.
+    // --- Audit regressions (docs/audit/v0.1.0.json, docs/V0.2.md).
 
     /// A repo whose only commit was made, by its committer date, in 2001.
     fn repo_committed_in_2001() -> (tempfile::TempDir, String, String) {
@@ -1260,7 +1259,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-1"]
     fn audit_a3_1_commit_from_before_the_run_does_not_verify() {
         let (_d, root, sha) = repo_committed_in_2001();
         let mut j = job(

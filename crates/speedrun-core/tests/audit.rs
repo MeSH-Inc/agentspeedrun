@@ -1,8 +1,7 @@
 //! Regression tests for v0.1.0 audit findings (docs/audit/v0.1.0.json, docs/V0.2.md).
 //!
-//! Tests marked `#[ignore = "audit ..."]` fail until their finding is fixed; run them with
-//! `cargo test -- --ignored audit_`. The `guard_` tests pass today and must keep passing:
-//! they stop a fix from passing an audit test by removing the behaviour it tests.
+//! Each `audit_` test was ignored until its finding was fixed, then made an ordinary test.
+//! The `guard_` tests keep a fix from passing by removing the behaviour under test.
 
 use chrono::{DateTime, Duration, Utc};
 use speedrun_core::hash::compute_hash;
@@ -91,7 +90,6 @@ fn prompted(min: i64) -> (i64, EventPayload) {
 // --- A6-1 (high), V0.2 M5: pausing does not stop the agent ------------------------------
 
 #[test]
-#[ignore = "audit A6-1"]
 fn audit_a6_1_agent_turn_while_paused_resumes_the_run() {
     let v = fold(vec![paused(10), started(20), ended(50)], 60);
     assert_eq!(v.status, RunStatus::Running);
@@ -108,7 +106,6 @@ fn audit_a6_1_agent_turn_while_paused_resumes_the_run() {
 }
 
 #[test]
-#[ignore = "audit A6-1"]
 fn audit_a6_1_prompt_while_paused_resumes_the_run() {
     let v = fold(vec![paused(10), prompted(20)], 30);
     assert_eq!(v.status, RunStatus::Running);
@@ -120,7 +117,6 @@ fn audit_a6_1_prompt_while_paused_resumes_the_run() {
 }
 
 #[test]
-#[ignore = "audit A6-1"]
 fn audit_a6_1_pause_with_an_open_turn_is_rejected() {
     let v = fold(vec![started(5)], 10);
     assert!(v.check(&EventPayload::RunPaused { reason: None }).is_err());
@@ -138,7 +134,6 @@ fn guard_pause_without_open_turns_still_pauses() {
 // --- A2-3 / A2-4, V0.2 W3: turn accounting ----------------------------------------------
 
 #[test]
-#[ignore = "audit A2-3"]
 fn audit_a2_3_a_turn_without_an_end_does_not_absorb_the_gap() {
     // The first turn never ended (interrupt, crash). Its idle hour is not agent time.
     let v = fold(vec![started(0), started(60), ended(70)], 70);
@@ -150,7 +145,6 @@ fn audit_a2_3_a_turn_without_an_end_does_not_absorb_the_gap() {
 }
 
 #[test]
-#[ignore = "audit A2-4"]
 fn audit_a2_4_turns_pair_by_occurred_at() {
     // Spool replay delivers the first end after the second start: turns 0-30 and 60-80.
     let v = fold(vec![started(0), started(60), ended(30), ended(80)], 90);
@@ -197,7 +191,6 @@ fn milestone(origin: MilestoneOrigin) -> Vec<(i64, EventPayload)> {
 }
 
 #[test]
-#[ignore = "audit A6-5"]
 fn audit_a6_5_user_split_counts_for_an_agent_milestone() {
     let v = fold(milestone(MilestoneOrigin::AgentGenerated), 20);
     let m = v.milestone("m").expect("milestone");
@@ -219,13 +212,11 @@ fn assert_redacted(text: &str, secret: &str) {
 }
 
 #[test]
-#[ignore = "audit A1-2"]
 fn audit_a1_2_json_quoted_key() {
     assert_redacted(r#"config: {"api_key": "q7Rw2mZx9KpL4vNs"}"#, "q7Rw2mZx9KpL4vNs");
 }
 
 #[test]
-#[ignore = "audit A1-2"]
 fn audit_a1_2_bearer_header() {
     assert_redacted(
         "curl -H 'Authorization: Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0' https://api.example.com",
@@ -234,7 +225,6 @@ fn audit_a1_2_bearer_header() {
 }
 
 #[test]
-#[ignore = "audit A1-2"]
 fn audit_a1_2_credentialed_database_url() {
     assert_redacted(
         "DATABASE_URL is postgres://admin:Vq8sLm2Tn4@db.example.com:5432/app",
@@ -243,19 +233,16 @@ fn audit_a1_2_credentialed_database_url() {
 }
 
 #[test]
-#[ignore = "audit A1-2"]
 fn audit_a1_2_pass_suffix() {
     assert_redacted("export DB_PASS=correcthorsebattery", "correcthorsebattery");
 }
 
 #[test]
-#[ignore = "audit A1-2"]
 fn audit_a1_2_camel_case_key() {
     assert_redacted("const apiKey = \"Zt5pQw8nLr3xVb6y\";", "Zt5pQw8nLr3xVb6y");
 }
 
 #[test]
-#[ignore = "audit A1-2"]
 fn audit_a1_2_stripe_test_and_webhook_keys() {
     assert_redacted("use sk_test_51HxAbCdEfGhIjKlMn for now", "51HxAbCdEfGhIjKlMn");
     assert_redacted(
@@ -265,7 +252,6 @@ fn audit_a1_2_stripe_test_and_webhook_keys() {
 }
 
 #[test]
-#[ignore = "audit A1-2"]
 fn audit_a1_2_jwt() {
     assert_redacted(
         "session cookie eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
@@ -274,7 +260,6 @@ fn audit_a1_2_jwt() {
 }
 
 #[test]
-#[ignore = "audit A1-2"]
 fn audit_a1_2_truncated_private_key() {
     assert_redacted(
         "here is the key: -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB",

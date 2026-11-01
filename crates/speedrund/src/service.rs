@@ -882,7 +882,6 @@ mod tests {
     // --- Audit regressions (docs/audit/v0.1.0.json, docs/V0.2.md).
 
     #[test]
-    #[ignore = "audit A2-2"]
     fn audit_a2_2_stale_job_does_not_verify_a_reclaimed_milestone() {
         let (mut s, _d) = svc();
         let run = s.record_prompt(prompt("p1")).unwrap().run_id;

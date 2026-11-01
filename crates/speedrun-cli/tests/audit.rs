@@ -1,7 +1,7 @@
 //! Regression tests for v0.1.0 audit findings (docs/audit/v0.1.0.json, docs/V0.2.md).
 //!
-//! Tests marked `#[ignore = "audit ..."]` fail until their finding is fixed; run them with
-//! `cargo test -- --ignored audit_`. The `guard_` tests pass today and must keep passing.
+//! Each `audit_` test was ignored until its finding was fixed, then made an ordinary test.
+//! The `guard_` tests keep a fix from passing by removing the behaviour under test.
 
 use std::process::{Command, Stdio};
 
@@ -26,13 +26,11 @@ fn exit_code(args: &[&str]) -> Option<i32> {
 // --- A4-1, V0.2 M1: a hook that cannot parse its arguments blocks Claude Code ------------
 
 #[test]
-#[ignore = "audit A4-1"]
 fn audit_a4_1_hook_with_unknown_arguments_exits_zero() {
     assert_eq!(exit_code(&["hook", "x", "y", "--bogus"]), Some(0));
 }
 
 #[test]
-#[ignore = "audit A4-1"]
 fn audit_a4_1_hook_with_a_flag_from_a_newer_plugin_exits_zero() {
     assert_eq!(
         exit_code(&["hook", "claude-code", "user-prompt-submit", "--added-later"]),
@@ -41,13 +39,11 @@ fn audit_a4_1_hook_with_a_flag_from_a_newer_plugin_exits_zero() {
 }
 
 #[test]
-#[ignore = "audit A4-1"]
 fn audit_a4_1_hook_with_missing_arguments_exits_zero() {
     assert_eq!(exit_code(&["hook", "claude-code"]), Some(0));
 }
 
 #[test]
-#[ignore = "audit A4-1"]
 fn audit_a4_1_ingest_with_bad_arguments_exits_zero() {
     assert_eq!(exit_code(&["ingest", "prompt", "--bogus"]), Some(0));
 }
