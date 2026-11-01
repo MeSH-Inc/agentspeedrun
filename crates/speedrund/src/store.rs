@@ -123,6 +123,22 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// A stored run log: the rows that decoded into events, plus the rows that
+/// did not. Decoding policy lives here, so callers never see raw bodies.
+pub struct RunLog {
+    pub events: Vec<Event>,
+    pub unreadable: Vec<UnreadableRow>,
+}
+
+/// One stored row whose body is not an `Event`. `event_id` comes from the
+/// column, so it is known even when the body is truncated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableRow {
+    pub run_id: String,
+    pub event_id: String,
+    pub error: String,
+}
+
 /// Read-only queries, usable on the connection or inside a transaction.
 pub struct Reader<'c>(&'c Connection);
 
@@ -143,6 +159,33 @@ impl Reader<'_> {
             .prepare_cached("SELECT body FROM events WHERE run_id = ?1 ORDER BY seq")?;
         let rows = stmt.query_map([run_id], |r| r.get::<_, String>(0))?;
         rows.map(|b| parse(&b?)).collect()
+    }
+
+    /// Read a run's log without failing on a row that does not decode: the
+    /// rows that did are returned as events, and the rest are named here so
+    /// the caller can report them instead of dropping them silently.
+    pub fn run_log(&self, run_id: &str) -> rusqlite::Result<RunLog> {
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT event_id, body FROM events WHERE run_id = ?1 ORDER BY seq")?;
+        let mut rows = stmt.query([run_id])?;
+        let mut log = RunLog {
+            events: Vec::new(),
+            unreadable: Vec::new(),
+        };
+        while let Some(row) = rows.next()? {
+            let event_id: String = row.get(0)?;
+            let body: String = row.get(1)?;
+            match serde_json::from_str::<Event>(&body) {
+                Ok(event) => log.events.push(event),
+                Err(e) => log.unreadable.push(UnreadableRow {
+                    run_id: run_id.to_string(),
+                    event_id,
+                    error: e.to_string(),
+                }),
+            }
+        }
+        Ok(log)
     }
 
     pub fn latest_run(&self, project_id: &str) -> rusqlite::Result<Option<String>> {

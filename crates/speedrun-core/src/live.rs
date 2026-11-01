@@ -47,6 +47,21 @@ pub struct LiveRun {
     pub milestones: Vec<LiveMilestone>,
     /// Best earlier completed run of the same category and version, by `timed_ms`.
     pub pb: Option<PersonalBest>,
+    /// Rows of this run's log that could not be decoded. Reported rather than
+    /// dropped; empty in a healthy log, and omitted from JSON then.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(skip)]
+    pub errors: Vec<SnapshotError>,
+}
+
+/// A stored event row the daemon could not decode while building a snapshot.
+/// Carried on the run it belongs to so damage is visible, never silently gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SnapshotError {
+    pub run_id: String,
+    /// The row's `event_id` column, known even when its body is truncated.
+    pub event_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -188,6 +203,7 @@ impl LiveRun {
                 project_name: project_name(p),
                 timing: p.timing,
             }),
+            errors: Vec::new(),
         }
     }
 

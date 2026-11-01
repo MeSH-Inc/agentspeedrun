@@ -9,11 +9,11 @@ use speedrun_core::{
     api::{AppendRequest, AppendResponse, ChainReport, ProjectAppendRequest, PromptRequest, PromptResponse},
     category,
     hash::verify_chain,
-    live::{LiveRun, LiveSnapshot},
+    live::{LiveRun, LiveSnapshot, SnapshotError},
     redact::redact,
 };
 
-use crate::store::{Store, Tx};
+use crate::store::{Store, Tx, UnreadableRow};
 use crate::verify;
 
 /// A verification that finishes within this long of the claim is dated at
@@ -49,13 +49,31 @@ pub struct Appended {
     pub job: Option<verify::Job>,
 }
 
+/// Turn rows that could not be decoded into snapshot errors.
+fn snapshot_errors(rows: impl IntoIterator<Item = UnreadableRow>) -> Vec<SnapshotError> {
+    rows.into_iter()
+        .map(|row| SnapshotError {
+            run_id: row.run_id,
+            event_id: row.event_id,
+            message: row.error,
+        })
+        .collect()
+}
+
+/// Cached personal-best candidates for one project@category@version, plus
+/// the rows those logs held that could not be decoded when it was filled.
+struct PbGroup {
+    runs: Vec<RunView>,
+    unreadable: Vec<UnreadableRow>,
+}
+
 pub struct Service {
     store: Store,
     categories: Vec<Category>,
     /// Completed runs per project@category@version, fastest first by `timed_ms`.
     /// A live run's PB is taken from its own project's entry only.
     /// Cleared whenever any run finishes.
-    pb_cache: HashMap<(String, String, u32), Vec<RunView>>,
+    pb_cache: HashMap<(String, String, u32), PbGroup>,
 }
 
 fn clamp_time(t: Option<DateTime<Utc>>) -> DateTime<Utc> {
@@ -393,22 +411,32 @@ impl Service {
         let cursor = reader.cursor()?;
         let mut views = Vec::new();
         for run_id in reader.latest_runs()? {
-            let Some(view) = RunView::fold(&reader.run_events(&run_id)?, as_of) else {
+            let log = reader.run_log(&run_id)?;
+            let Some(view) = RunView::fold(&log.events, as_of) else {
                 continue;
             };
             if !view.closed && view.last_event_at >= as_of - window {
-                views.push(view);
+                views.push((view, log.unreadable));
             }
         }
         let mut runs = Vec::with_capacity(views.len());
-        for view in views {
+        for (view, unreadable) in views {
             let name = category::find(&self.categories, &view.category_id, Some(view.category_version))
                 .map_or_else(|| view.category_id.clone(), |c| c.name.clone());
-            let pb = self
-                .completed_runs(&view.project_id, &view.category_id, view.category_version)?
-                .iter()
-                .find(|r| r.run_id != view.run_id);
-            runs.push(LiveRun::from_view(&view, &name, as_of, pb));
+            let group = self.completed_runs(&view)?;
+            let pb = group.runs.iter().find(|r| r.run_id != view.run_id);
+            let mut run = LiveRun::from_view(&view, &name, as_of, pb);
+            run.errors = snapshot_errors(unreadable);
+            for row in &group.unreadable {
+                if row.run_id != view.run_id {
+                    run.errors.push(SnapshotError {
+                        run_id: row.run_id.clone(),
+                        event_id: row.event_id.clone(),
+                        message: row.error.clone(),
+                    });
+                }
+            }
+            runs.push(run);
         }
         runs.sort_by_key(|r| (r.finished_at.is_some(), std::cmp::Reverse(r.last_event_at)));
         Ok(LiveSnapshot { as_of, cursor, runs })
@@ -417,14 +445,20 @@ impl Service {
     /// The fastest completed runs of `project_id` in `category_id`@`version`,
     /// fastest first. Choosing the PB here — rather than from the whole
     /// category — is what keeps a project's comparison to its own results.
-    fn completed_runs(&mut self, project_id: &str, category_id: &str, version: u32) -> Result<&[RunView]> {
-        let key = (project_id.to_string(), category_id.to_string(), version);
+    fn completed_runs(&mut self, view: &RunView) -> Result<&PbGroup> {
+        let project_id = &view.project_id;
+        let category_id = &view.category_id;
+        let version = view.category_version;
+        let key = (project_id.clone(), category_id.clone(), version);
         if !self.pb_cache.contains_key(&key) {
             let reader = self.store.reader();
             let now = Utc::now();
             let mut done = Vec::new();
+            let mut unreadable = Vec::new();
             for run_id in reader.runs_in_category_for_project(project_id, category_id, version)? {
-                if let Some(v) = RunView::fold(&reader.run_events(&run_id)?, now)
+                let log = reader.run_log(&run_id)?;
+                unreadable.extend(log.unreadable);
+                if let Some(v) = RunView::fold(&log.events, now)
                     && v.status == RunStatus::Completed
                 {
                     done.push(v);
@@ -433,7 +467,13 @@ impl Service {
             done.sort_by_key(|v| v.timing.timed_ms);
             // Two is enough: the best, and the runner-up for when the best is the run being shown.
             done.truncate(2);
-            self.pb_cache.insert(key.clone(), done);
+            self.pb_cache.insert(
+                key.clone(),
+                PbGroup {
+                    runs: done,
+                    unreadable,
+                },
+            );
         }
         Ok(&self.pb_cache[&key])
     }
