@@ -506,6 +506,31 @@ impl RunView {
             })
     }
 
+    /// Whether `cause_event_id` is still the claim that holds `milestone_id`:
+    /// a later claim supersedes it, and an invalidation clears it.
+    pub fn claim_is_current(events: &[Event], milestone_id: &str, cause_event_id: &str) -> bool {
+        let mut current = None;
+        for e in events {
+            if let Some(reached) = Self::claim_change(e, milestone_id) {
+                current = reached.then_some(e.event_id.as_str());
+            }
+        }
+        current == Some(cause_event_id)
+    }
+
+    /// Whether `e` reaches (`Some(true)`) or invalidates (`Some(false)`) `milestone_id`.
+    fn claim_change(e: &Event, milestone_id: &str) -> Option<bool> {
+        match &e.payload {
+            EventPayload::MilestoneReached { milestone_id: id, .. } => {
+                (id.as_str() == milestone_id).then_some(true)
+            }
+            EventPayload::MilestoneInvalidated { milestone_id: id, .. } => {
+                (id.as_str() == milestone_id).then_some(false)
+            }
+            _ => None,
+        }
+    }
+
     pub fn is_finished(&self) -> bool {
         matches!(self.status, RunStatus::Completed | RunStatus::Abandoned)
     }

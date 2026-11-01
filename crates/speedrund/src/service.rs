@@ -313,6 +313,12 @@ impl Service {
         if !outcome.verified() {
             return Ok(Vec::new());
         }
+        // A job is only good while its cause is still the milestone's current
+        // claim; invalidation or a newer claim makes the evidence stale.
+        let events = self.store.reader().run_events(&job.run_id)?;
+        if !RunView::claim_is_current(&events, &job.milestone_id, &job.cause_event_id) {
+            return Ok(Vec::new());
+        }
         let now = Utc::now();
         let at = if now - job.claimed_at <= VERIFY_GRACE {
             job.claimed_at
