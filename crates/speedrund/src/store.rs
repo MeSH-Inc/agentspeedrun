@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -66,11 +66,15 @@ impl Store {
     /// device (v1 archives keep the id they were written with).
     pub fn open(path: &Path, key: SigningKey) -> Result<Self> {
         let mut conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        // The schema gate reads only; it must run before any pragma or
+        // migration can change a database written by a newer build.
+        let schema = Schema::THIS_BUILD;
+        schema.refuse_newer(&conn, path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        migrate(&mut conn)?;
+        schema.apply(&mut conn)?;
         let fingerprint = fingerprint(&pubkey_hex(&key)).map_err(anyhow::Error::msg)?;
         let device_id = match conn
             .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |r| r.get(0))
@@ -111,16 +115,55 @@ impl Store {
     }
 }
 
-fn migrate(conn: &mut Connection) -> Result<()> {
-    let current: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql)
-            .with_context(|| format!("migration {}", i + 1))?;
-        tx.pragma_update(None, "user_version", i as i64 + 1)?;
-        tx.commit()?;
+/// The schema contract between this build and a database file.
+///
+/// It is the only place that interprets `user_version`: a database above
+/// `supported` belongs to a newer build and is refused, never migrated. The
+/// startup path depends on this stable bound; the store never reaches up to
+/// HTTP, logging or the binary's exit handling to report it.
+struct Schema {
+    supported: i64,
+}
+
+impl Schema {
+    /// The migration list this build carries defines what it can open.
+    const THIS_BUILD: Self = Self {
+        supported: MIGRATIONS.len() as i64,
+    };
+
+    /// Read-only: refuse a database written by a newer build. Callers run
+    /// this before any pragma that would change the file, so a newer
+    /// database is left exactly as it was found.
+    fn refuse_newer(&self, conn: &Connection, path: &Path) -> Result<()> {
+        let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if found > self.supported {
+            return Err(anyhow!(
+                "database {} is at schema version {found}, newer than this build supports ({})",
+                path.display(),
+                self.supported
+            ));
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Apply the migrations this database is missing. `refuse_newer` has
+    /// already bounded the stored version by `supported`.
+    fn apply(&self, conn: &mut Connection) -> Result<()> {
+        let current: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let pending = MIGRATIONS
+            .iter()
+            .enumerate()
+            .take(self.supported as usize)
+            .skip(current as usize);
+        for (i, sql) in pending {
+            let tx = conn.transaction()?;
+            tx.execute_batch(sql)
+                .with_context(|| format!("migration {}", i + 1))?;
+            tx.pragma_update(None, "user_version", i as i64 + 1)?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
 }
 
 /// A stored run log: the rows that decoded into events, plus the rows that
