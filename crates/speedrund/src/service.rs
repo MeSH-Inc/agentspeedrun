@@ -723,6 +723,20 @@ mod tests {
         assert_eq!(live.runs[0].status, RunStatus::Completed);
         assert!(live.runs[0].pb.is_none(), "a run is not its own PB");
 
+        // The next run of the same project, after a reset closes the completed one, beside a
+        // run of another project: its PB is the project's own completed run (A6-6).
+        let reset = EventPayload::RunFinished {
+            outcome: RunOutcome::Abandoned,
+            reason: None,
+        };
+        append(&mut s, &first, "one-reset", reset).unwrap();
+        let next = s
+            .record_prompt(PromptRequest {
+                project_id: "a".into(),
+                ..prompt("a-p2")
+            })
+            .unwrap()
+            .run_id;
         s.record_prompt(PromptRequest {
             project_id: "b".into(),
             ..prompt("b-p")
@@ -730,9 +744,10 @@ mod tests {
         .unwrap();
         let live = s.live(Duration::days(1)).unwrap();
         assert_eq!(live.runs.len(), 2);
-        assert_eq!(live.runs[0].status, RunStatus::Running, "open runs sort first");
-        assert_eq!(live.runs[0].pb.as_ref().unwrap().run_id, first);
-        assert!(live.runs[0].running.agent);
+        let shown = live.runs.iter().find(|r| r.run_id == next).unwrap();
+        assert_eq!(shown.status, RunStatus::Running);
+        assert_eq!(shown.pb.as_ref().unwrap().run_id, first);
+        assert!(shown.running.agent);
         assert!(live.cursor > 0);
         assert!(
             s.live(Duration::zero()).unwrap().runs.len() < 2,
@@ -743,7 +758,10 @@ mod tests {
     #[test]
     fn late_verification_is_dated_when_checked() {
         let (mut s, _d) = svc();
-        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        // The run starts before the late claim, so the claim is late but not backdated (A2-6).
+        let mut p = prompt("p1");
+        p.occurred_at = Some(Utc::now() - Duration::hours(2));
+        let run = s.record_prompt(p).unwrap().run_id;
         let claim = |s: &mut Service, id: &str, at: DateTime<Utc>| {
             s.append(AppendRequest {
                 event_id: id.into(),
@@ -931,5 +949,101 @@ mod tests {
         let m = m.milestone("happy-path-demo").unwrap();
         assert_ne!(m.state, MilestoneState::Verified);
         assert!(m.trust < Some(Trust::EvidenceVerified));
+    }
+
+    /// Complete a run of `project` that started `ago` before now, then reset it so the
+    /// project's next prompt starts a new run. The completed result is kept.
+    fn completed_run(s: &mut Service, project: &str, name: &str, ago: Duration) -> String {
+        let mut p = prompt(&format!("{name}-p"));
+        p.project_id = project.into();
+        p.occurred_at = Some(Utc::now() - ago);
+        let run = s.record_prompt(p).unwrap().run_id;
+        for key in ["scaffold-runs", "happy-path-demo"] {
+            let claim = EventPayload::MilestoneReached {
+                milestone_id: key.into(),
+                trust: Trust::SelfDeclared,
+                evidence: vec![],
+            };
+            append(s, &run, &format!("{name}-{key}"), claim).unwrap();
+            // Inject the verification the way a verifier would.
+            let verified = EventPayload::MilestoneVerified {
+                milestone_id: key.into(),
+                trust: Trust::EvidenceVerified,
+                verifier: "test".into(),
+                evidence: vec![],
+            };
+            s.insert_derived(&run, &format!("{name}-{key}-v"), Utc::now(), verified)
+                .unwrap();
+            s.complete_if_done(&run).unwrap();
+        }
+        assert_eq!(s.run(&run).unwrap().status, RunStatus::Completed);
+        let reset = EventPayload::RunFinished {
+            outcome: RunOutcome::Abandoned,
+            reason: None,
+        };
+        append(s, &run, &format!("{name}-reset"), reset).unwrap();
+        s.pb_cache.clear();
+        run
+    }
+
+    /// The PB the live snapshot shows for `project`'s current run, with the project it came from.
+    fn live_pb(s: &mut Service, project: &str) -> Option<(String, String)> {
+        let live = s.live(Duration::days(1)).unwrap();
+        let shown = live
+            .runs
+            .iter()
+            .find(|r| r.project_id == project)
+            .unwrap_or_else(|| panic!("{project} has a live run"));
+        let pb = shown.pb.as_ref()?;
+        let from = s.run(&pb.run_id).unwrap().project_id;
+        Some((pb.run_id.clone(), from))
+    }
+
+    /// W7.a: the PB shown comes from the same project (V0.2 W7: PBs scoped to the project by default).
+    #[test]
+    #[ignore = "audit A6-6"]
+    fn audit_w7_a_pb_is_the_projects_own_run_not_a_faster_foreign_one() {
+        let (mut s, _d) = svc();
+        completed_run(&mut s, "other", "fast", Duration::minutes(1));
+        let own = completed_run(&mut s, "mine", "slow", Duration::hours(2));
+        s.record_prompt(PromptRequest {
+            project_id: "mine".into(),
+            ..prompt("mine-now")
+        })
+        .unwrap();
+        assert_eq!(
+            live_pb(&mut s, "mine").map(|(run, _)| run),
+            Some(own),
+            "the PB is this project's earlier run, not the faster run of another project"
+        );
+    }
+
+    /// W7.a: the PB shown comes from the same project (V0.2 W7: PBs scoped to the project by default).
+    #[test]
+    #[ignore = "audit A6-6"]
+    fn audit_w7_a_project_without_a_completed_run_shows_no_foreign_pb() {
+        let (mut s, _d) = svc();
+        completed_run(&mut s, "other", "fast", Duration::minutes(1));
+        s.record_prompt(PromptRequest {
+            project_id: "fresh".into(),
+            ..prompt("fresh-now")
+        })
+        .unwrap();
+        if let Some((run, from)) = live_pb(&mut s, "fresh") {
+            assert_eq!(from, "fresh", "PB {run} comes from another project");
+        }
+    }
+
+    /// W7.a guard: a project's own earlier completed run is still shown as its PB.
+    #[test]
+    fn guard_w7_a_projects_own_completed_run_is_its_pb() {
+        let (mut s, _d) = svc();
+        let own = completed_run(&mut s, "mine", "first", Duration::hours(1));
+        s.record_prompt(PromptRequest {
+            project_id: "mine".into(),
+            ..prompt("mine-now")
+        })
+        .unwrap();
+        assert_eq!(live_pb(&mut s, "mine"), Some((own, "mine".to_string())));
     }
 }

@@ -1280,4 +1280,43 @@ mod tests {
         );
         assert!(verifier(Fake::default()).verify(&j).verified());
     }
+
+    /// A passing GitHub Actions run, created in 2030, that tested `sha` of Acme/Shop.
+    fn passing_ci_run(sha: &str) -> (Verifier, Evidence) {
+        let v = verifier(Fake::default().with(
+            "https://api.github.com/repos/Acme/Shop/actions/runs/7",
+            200,
+            ci_body("success", sha, "2030-01-01T00:00:00Z"),
+        ));
+        let ev = Evidence::CiRun {
+            url: "https://github.com/Acme/Shop/actions/runs/7".into(),
+        };
+        (v, ev)
+    }
+
+    /// M6.b: a `ci_run` whose head commit predates run start does not verify (V0.2 M6: reject the ci_run head_sha whose committer time is before run start).
+    #[test]
+    #[ignore = "audit A3-1"]
+    fn audit_m6_b_ci_run_on_a_commit_from_before_the_run_does_not_verify() {
+        let (_d, root, sha) = repo_committed_in_2001();
+        git_output(
+            &root,
+            &["remote", "add", "origin", "git@github.com:Acme/Shop.git"],
+        )
+        .expect("git remote");
+        let (v, ev) = passing_ci_run(&sha);
+        let mut j = job(Some("tests-green"), Some(&root), vec![ev]);
+        j.run_started_at = DateTime::from_timestamp(1_600_000_000, 0).unwrap(); // 2020
+        let out = v.verify(&j);
+        assert!(!out.verified(), "CI ran in 2030 on a 2001 commit: {out:?}");
+    }
+
+    /// M6.b guard: a passing CI run on a commit made during the run still verifies.
+    #[test]
+    fn guard_m6_b_ci_run_on_a_commit_made_during_the_run_verifies() {
+        let (_d, root, sha) = repo();
+        let (v, ev) = passing_ci_run(&sha);
+        let out = v.verify(&job(Some("tests-green"), Some(&root), vec![ev]));
+        assert!(out.verified(), "{out:?}");
+    }
 }

@@ -6,7 +6,9 @@
 use chrono::{DateTime, Duration, Utc};
 use speedrun_core::hash::compute_hash;
 use speedrun_core::redact::redact;
-use speedrun_core::{Event, EventPayload, MilestoneOrigin, RunStatus, RunView, SCHEMA_VERSION, Trust};
+use speedrun_core::{
+    Event, EventPayload, MilestoneOrigin, MilestoneState, RunStatus, RunView, SCHEMA_VERSION, Trust,
+};
 
 const MINUTE_MS: i64 = 60_000;
 
@@ -279,4 +281,44 @@ fn guard_redaction_leaves_ordinary_prompts_alone() {
     ] {
         assert_eq!(redact(text), (text.to_string(), false), "changed {text:?}");
     }
+}
+
+// --- A3-5 / A6-5, V0.2 M9: accepting a milestone can set the trust it requires ----------
+
+/// An agent-proposed milestone requiring `agent_claimed`, then `accepted`: a
+/// `milestone_accepted` payload as JSON, so it can carry fields the payload may gain.
+fn accepted(accepted: serde_json::Value) -> RunView {
+    let accepted: EventPayload = serde_json::from_value(accepted).expect("a milestone_accepted payload");
+    let mut items = milestone(MilestoneOrigin::AgentGenerated);
+    items.truncate(1);
+    items.push((2, accepted));
+    fold(items, 20)
+}
+
+#[test]
+#[ignore = "audit A3-5, A6-5"]
+fn audit_m9_b_accept_sets_required_trust() {
+    // END_STATE M9.b; V0.2 M9: "Let `accept` set required_trust", raising or lowering it.
+    for (wire, trust) in [
+        ("evidence_verified", Trust::EvidenceVerified),
+        ("self_declared", Trust::SelfDeclared),
+    ] {
+        let v = accepted(serde_json::json!({
+            "type": "milestone_accepted",
+            "milestone_id": "m",
+            "required_trust": wire,
+        }));
+        let m = v.milestone("m").expect("milestone");
+        assert_eq!(m.state, MilestoneState::Accepted);
+        assert_eq!(m.required_trust, trust, "accepted with required_trust {wire}");
+    }
+}
+
+#[test]
+fn guard_accept_without_required_trust_keeps_the_proposed_requirement() {
+    // v0.1 logs carry no required_trust on milestone_accepted; they must fold as before.
+    let v = accepted(serde_json::json!({ "type": "milestone_accepted", "milestone_id": "m" }));
+    let m = v.milestone("m").expect("milestone");
+    assert_eq!(m.state, MilestoneState::Accepted);
+    assert_eq!(m.required_trust, Trust::AgentClaimed);
 }
