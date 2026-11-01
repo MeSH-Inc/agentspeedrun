@@ -1307,7 +1307,6 @@ mod tests {
 
     /// M6.b: a `ci_run` whose head commit predates run start does not verify (V0.2 M6: reject the ci_run head_sha whose committer time is before run start).
     #[test]
-    #[ignore = "audit A3-1"]
     fn audit_m6_b_ci_run_on_a_commit_from_before_the_run_does_not_verify() {
         let (_d, root, sha) = repo_committed_in_2001();
         git_output(

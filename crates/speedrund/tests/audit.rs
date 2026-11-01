@@ -270,7 +270,6 @@ fn reports_an_error(snapshot: &Value, event_id: &str) -> bool {
 
 /// W1.b: one corrupt row yields a 200 from `/v1/live` with an error entry (V0.2 W1: live skips and reports rows it cannot parse).
 #[test]
-#[ignore = "audit A2-5"]
 fn audit_w1_b_corrupt_row_gives_live_200_with_an_error_entry() {
     let d = Daemon::start();
     let healthy = d.prompt("healthy-p1", "healthy");
@@ -309,7 +308,6 @@ fn guard_w1_b_healthy_log_lists_every_run_without_an_error_entry() {
 
 /// W2.c: a backdated claim gets 400 (V0.2 W2: occurred_at no earlier than the run's last event minus skew, unless a marked spool replay).
 #[test]
-#[ignore = "audit A2-6"]
 fn audit_w2_c_backdated_claim_is_rejected() {
     let d = Daemon::start();
     let run = d.prompt("p1", "proj");
@@ -371,7 +369,6 @@ fn guard_w2_c_current_claim_is_accepted() {
 
 /// W4.c: `GET /v1/live?token=<full>` returns 401 (V0.2 W4: accept only the display token in `?token=`).
 #[test]
-#[ignore = "audit A1-7"]
 fn audit_w4_c_full_token_in_query_string_is_rejected() {
     let d = Daemon::start();
     let (status, body) = d.get(&format!("/v1/live?token={}", d.token), None);
@@ -398,7 +395,6 @@ fn guard_w4_c_full_token_in_header_reads_live() {
 
 /// M3: daemon logs reach stderr or a capped file (V0.2 M3: stdout is discarded by autostart; log data_dir at startup).
 #[test]
-#[ignore = "audit A5-2"]
 fn audit_m3_daemon_logs_reach_stderr_or_a_file() {
     let d = Daemon::start();
     let data_dir = d.home.path().to_string_lossy().into_owned();

@@ -291,7 +291,6 @@ impl Drop for Daemon {
 const SECRET: &str = "sk_live_FAKEFAKEFAKEFAKE0123456789";
 
 #[test]
-#[ignore = "audit A1-3"]
 fn audit_m7_b_spooled_prompt_is_redacted() {
     // END_STATE M7.b; V0.2 M7: the client calls redact() before spooling.
     let machine = Machine::new();
@@ -312,7 +311,6 @@ fn guard_spooled_prompt_without_secrets_is_kept_intact() {
 }
 
 #[test]
-#[ignore = "audit A1-3"]
 fn audit_m7_b_sent_prompt_is_redacted() {
     // END_STATE M7.b; V0.2 M7: the client calls redact() before sending.
     let machine = Machine::new();
@@ -336,7 +334,6 @@ fn guard_sent_prompt_without_secrets_is_sent_intact() {
 }
 
 #[test]
-#[ignore = "audit A1-3"]
 fn audit_m7_b_refused_spool_entries_do_not_accumulate_without_bound() {
     // END_STATE M7.b; V0.2 M7: rejected.jsonl is capped. V0.2 states no size, so the bound
     // is generous: after 256 refusals of 64 KiB prompts (16 MiB), the data directory keeps
@@ -424,7 +421,6 @@ fn count(titles: &[String], title: &str) -> usize {
 }
 
 #[test]
-#[ignore = "audit A4-5"]
 fn audit_w5_b_repeated_propose_during_an_outage_gives_no_duplicate_milestones() {
     // END_STATE W5.b; V0.2 W5: "A repeated propose during an outage gives no duplicate milestones."
     let batch: &[&str] = &["login works", "todos persist across restarts"];

@@ -1062,7 +1062,6 @@ mod tests {
 
     /// W7.a: the PB shown comes from the same project (V0.2 W7: PBs scoped to the project by default).
     #[test]
-    #[ignore = "audit A6-6"]
     fn audit_w7_a_pb_is_the_projects_own_run_not_a_faster_foreign_one() {
         let (mut s, _d) = svc();
         completed_run(&mut s, "other", "fast", Duration::minutes(1));
@@ -1081,7 +1080,6 @@ mod tests {
 
     /// W7.a: the PB shown comes from the same project (V0.2 W7: PBs scoped to the project by default).
     #[test]
-    #[ignore = "audit A6-6"]
     fn audit_w7_a_project_without_a_completed_run_shows_no_foreign_pb() {
         let (mut s, _d) = svc();
         completed_run(&mut s, "other", "fast", Duration::minutes(1));
