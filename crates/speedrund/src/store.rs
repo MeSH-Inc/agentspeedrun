@@ -177,11 +177,20 @@ impl Reader<'_> {
         rows.collect()
     }
 
-    pub fn runs_in_category(&self, category_id: &str, version: u32) -> rusqlite::Result<Vec<String>> {
-        let mut stmt = self
-            .0
-            .prepare_cached("SELECT run_id FROM runs WHERE category_id = ?1 AND category_version = ?2")?;
-        let rows = stmt.query_map(params![category_id, version], |r| r.get(0))?;
+    /// Run ids of `project_id` in `category_id`@`version`. The PB a live run is
+    /// compared against is drawn from this set, so another project's run can
+    /// never be offered as its personal best.
+    pub fn runs_in_category_for_project(
+        &self,
+        project_id: &str,
+        category_id: &str,
+        version: u32,
+    ) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.0.prepare_cached(
+            "SELECT run_id FROM runs
+             WHERE project_id = ?1 AND category_id = ?2 AND category_version = ?3",
+        )?;
+        let rows = stmt.query_map(params![project_id, category_id, version], |r| r.get(0))?;
         rows.collect()
     }
 }

@@ -52,9 +52,10 @@ pub struct Appended {
 pub struct Service {
     store: Store,
     categories: Vec<Category>,
-    /// Completed runs per category@version, fastest first by `timed_ms`.
+    /// Completed runs per project@category@version, fastest first by `timed_ms`.
+    /// A live run's PB is taken from its own project's entry only.
     /// Cleared whenever any run finishes.
-    pb_cache: HashMap<(String, u32), Vec<RunView>>,
+    pb_cache: HashMap<(String, String, u32), Vec<RunView>>,
 }
 
 fn clamp_time(t: Option<DateTime<Utc>>) -> DateTime<Utc> {
@@ -404,7 +405,7 @@ impl Service {
             let name = category::find(&self.categories, &view.category_id, Some(view.category_version))
                 .map_or_else(|| view.category_id.clone(), |c| c.name.clone());
             let pb = self
-                .completed_runs(&view.category_id, view.category_version)?
+                .completed_runs(&view.project_id, &view.category_id, view.category_version)?
                 .iter()
                 .find(|r| r.run_id != view.run_id);
             runs.push(LiveRun::from_view(&view, &name, as_of, pb));
@@ -413,13 +414,16 @@ impl Service {
         Ok(LiveSnapshot { as_of, cursor, runs })
     }
 
-    fn completed_runs(&mut self, category_id: &str, version: u32) -> Result<&[RunView]> {
-        let key = (category_id.to_string(), version);
+    /// The fastest completed runs of `project_id` in `category_id`@`version`,
+    /// fastest first. Choosing the PB here — rather than from the whole
+    /// category — is what keeps a project's comparison to its own results.
+    fn completed_runs(&mut self, project_id: &str, category_id: &str, version: u32) -> Result<&[RunView]> {
+        let key = (project_id.to_string(), category_id.to_string(), version);
         if !self.pb_cache.contains_key(&key) {
             let reader = self.store.reader();
             let now = Utc::now();
             let mut done = Vec::new();
-            for run_id in reader.runs_in_category(category_id, version)? {
+            for run_id in reader.runs_in_category_for_project(project_id, category_id, version)? {
                 if let Some(v) = RunView::fold(&reader.run_events(&run_id)?, now)
                     && v.status == RunStatus::Completed
                 {
