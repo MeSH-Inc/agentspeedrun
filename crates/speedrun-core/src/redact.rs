@@ -2,25 +2,41 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+const TOKEN_PATTERNS: &[&str] = &[
+    // Provider API keys, webhook secrets and session tokens.
+    r"sk-ant-[A-Za-z0-9_\-]{20,}",
+    r"sk-(?:proj-)?[A-Za-z0-9_\-]{20,}",
+    r"gh[pousr]_[A-Za-z0-9]{30,}",
+    r"github_pat_[A-Za-z0-9_]{30,}",
+    r"xox[abprs]-[A-Za-z0-9\-]{10,}",
+    r"(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",
+    r"whsec_[A-Za-z0-9]{16,}",
+    r"AKIA[0-9A-Z]{16}",
+    r"AIza[0-9A-Za-z_\-]{35}",
+    r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+",
+    // Authorization headers and URLs that carry userinfo credentials.
+    r"(?i)\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/=\-]{16,}",
+    r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:[^\s@/]+@",
+];
+
+const PRIVATE_KEY_PATTERNS: &[&str] = &[
+    // A complete PEM block, or an orphaned header whose body runs to EOF.
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)",
+];
+
+const ASSIGNMENT_PATTERNS: &[&str] = &[
+    // KEY=value / "secret": "value" style assignments, including camelCase names.
+    r#"(?i)\b[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|API_?KEY|PRIVATE_?KEY)[A-Z0-9_]*["']?\s*[:=]\s*["']?[^\s"']{8,}"#,
+];
+
 static PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        // Provider API keys and tokens.
-        r"sk-ant-[A-Za-z0-9_\-]{20,}",
-        r"sk-(?:proj-)?[A-Za-z0-9_\-]{20,}",
-        r"gh[pousr]_[A-Za-z0-9]{30,}",
-        r"github_pat_[A-Za-z0-9_]{30,}",
-        r"xox[abprs]-[A-Za-z0-9\-]{10,}",
-        r"(?:sk|rk)_live_[A-Za-z0-9]{16,}",
-        r"AKIA[0-9A-Z]{16}",
-        r"AIza[0-9A-Za-z_\-]{35}",
-        // PEM private keys.
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
-        // KEY=value / "secret": "value" style assignments.
-        r#"(?i)\b[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*[:=]\s*["']?[^\s"']{8,}"#,
-    ]
-    .iter()
-    .map(|p| Regex::new(p).expect("valid redaction regex"))
-    .collect()
+    TOKEN_PATTERNS
+        .iter()
+        .chain(PRIVATE_KEY_PATTERNS)
+        .chain(ASSIGNMENT_PATTERNS)
+        .copied()
+        .map(|p| Regex::new(p).expect("valid redaction regex"))
+        .collect()
 });
 
 pub const REDACTED: &str = "[REDACTED]";
