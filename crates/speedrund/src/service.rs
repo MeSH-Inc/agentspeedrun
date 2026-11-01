@@ -9,7 +9,7 @@ use speedrun_core::{
     Trust,
     api::{AppendRequest, AppendResponse, ChainReport, ProjectAppendRequest, PromptRequest, PromptResponse},
     category,
-    hash::verify_chain,
+    hash::verify_stored_chain,
     live::{LiveRun, LiveSnapshot, SnapshotError},
     redact::redact,
 };
@@ -520,7 +520,8 @@ impl Service {
 
     pub fn verify_chain(&self, run_id: &str) -> Result<ChainReport> {
         let events = self.events(run_id)?;
-        let chain = verify_chain(&events);
+        let bodies = self.store.reader().run_bodies(run_id)?;
+        let chain = verify_stored_chain(&bodies);
         let signatures = speedrun_core::sign::verify_event_signatures(&events);
         let error = chain.err().map(|e| e.to_string()).or(signatures.error);
         Ok(ChainReport {

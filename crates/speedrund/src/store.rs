@@ -204,6 +204,17 @@ impl Reader<'_> {
         rows.map(|b| parse(&b?)).collect()
     }
 
+    /// The run's event bodies exactly as stored, ordered by seq. Unlike
+    /// [`Reader::run_events`] this does not require a body to parse as this
+    /// build's [`Event`], so a chain check can see fields it does not know.
+    pub fn run_bodies(&self, run_id: &str) -> rusqlite::Result<Vec<serde_json::Value>> {
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT body FROM events WHERE run_id = ?1 ORDER BY seq")?;
+        let rows = stmt.query_map([run_id], |r| r.get::<_, String>(0))?;
+        rows.map(|b| parse_body(&b?)).collect()
+    }
+
     /// When the run's newest event (by `seq`) says it happened. The daemon
     /// compares a new event's time against this, so a replay is judged
     /// against the log as it stands rather than against wall-clock now.
@@ -300,6 +311,11 @@ impl Reader<'_> {
 }
 
 fn parse(body: &str) -> rusqlite::Result<Event> {
+    serde_json::from_str(body)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
+}
+
+fn parse_body(body: &str) -> rusqlite::Result<serde_json::Value> {
     serde_json::from_str(body)
         .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
 }

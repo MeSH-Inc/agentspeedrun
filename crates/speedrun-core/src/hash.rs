@@ -68,19 +68,66 @@ pub fn compute_hash(event: &Event) -> String {
 /// stored, with `hash` and `sig` removed. Unlike [`compute_hash`], fields this
 /// build does not know are kept, so a body written by a newer build still
 /// hashes to what that build stored (W1.a).
-///
-/// Not implemented yet: returns an empty string.
-pub fn compute_stored_hash(_body: &Value) -> String {
-    String::new()
+pub fn compute_stored_hash(body: &Value) -> String {
+    let mut body = body.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("hash");
+        map.remove("sig");
+    }
+    hex::encode(Sha256::digest(canonical_json(&body).as_bytes()))
 }
 
 /// Check that stored event bodies (one run, ordered by seq) form an intact
 /// chain, hashing each body as stored ([`compute_stored_hash`]) rather than its
 /// typed parse. The same checks and errors as [`verify_chain`].
 ///
-/// Not implemented yet: reports every chain as tampered at seq 0.
-pub fn verify_stored_chain(_bodies: &[Value]) -> Result<(), ChainError> {
-    Err(ChainError::Tampered { seq: 0 })
+/// A body whose `seq`, `run_id` or `hash` is missing or the wrong shape cannot
+/// be part of an intact chain, so it is reported as tampered at its position.
+pub fn verify_stored_chain(bodies: &[Value]) -> Result<(), ChainError> {
+    let mut prev_hash: Option<&str> = None;
+    let mut run_id: Option<&str> = None;
+    for (i, body) in bodies.iter().enumerate() {
+        let expected = i as u64 + 1;
+        let seq = body
+            .get("seq")
+            .and_then(Value::as_u64)
+            .ok_or(ChainError::Tampered { seq: expected })?;
+        if seq != expected {
+            return Err(ChainError::Gap { seq, expected });
+        }
+        let found_run = body
+            .get("run_id")
+            .and_then(Value::as_str)
+            .ok_or(ChainError::Tampered { seq })?;
+        if let Some(expected_run) = run_id {
+            if found_run != expected_run {
+                return Err(ChainError::WrongRun {
+                    seq,
+                    found: found_run.to_string(),
+                    expected: expected_run.to_string(),
+                });
+            }
+        } else {
+            run_id = Some(found_run);
+        }
+        let linked = match body.get("prev_hash") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(hash)) => Some(hash.as_str()),
+            Some(_) => return Err(ChainError::BrokenLink { seq }),
+        };
+        if linked != prev_hash {
+            return Err(ChainError::BrokenLink { seq });
+        }
+        let stored = body
+            .get("hash")
+            .and_then(Value::as_str)
+            .ok_or(ChainError::Tampered { seq })?;
+        if compute_stored_hash(body) != stored {
+            return Err(ChainError::Tampered { seq });
+        }
+        prev_hash = Some(stored);
+    }
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
