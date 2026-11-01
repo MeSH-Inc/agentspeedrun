@@ -360,8 +360,10 @@ fn run(cmd: Cmd) -> Result<()> {
                 );
             }
             println!(
-                "ok: {} events, head {}",
+                "ok: {} events, {} signed, {} unsigned (v1), head {}",
                 r.events,
+                r.signed,
+                r.unsigned,
                 r.head_hash.unwrap_or_default()
             );
         }

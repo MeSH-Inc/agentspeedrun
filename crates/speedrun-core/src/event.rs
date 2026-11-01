@@ -25,8 +25,12 @@ pub struct Event {
     pub payload: EventPayload,
     /// Hash of the previous event in this run; `None` only for `seq == 1`.
     pub prev_hash: Option<String>,
-    /// sha256 over the canonical JSON of this event without `hash`.
+    /// sha256 over the canonical JSON of this event without `hash` or `sig`.
     pub hash: String,
+    /// Ed25519 signature over the `hash` (hex), from the device's key.
+    /// Absent in schema v1 events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -37,6 +41,9 @@ pub enum EventPayload {
         project_root: Option<String>,
         category_id: String,
         category_version: u32,
+        /// Hex ed25519 public key of the device that signs this chain.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_pubkey: Option<String>,
     },
     PromptSubmitted {
         session_id: String,

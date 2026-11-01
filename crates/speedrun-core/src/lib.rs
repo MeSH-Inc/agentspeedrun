@@ -11,6 +11,7 @@ pub mod live;
 pub mod paths;
 pub mod projection;
 pub mod redact;
+pub mod sign;
 
 pub use category::{Category, MilestoneTemplate};
 pub use event::{Event, EventPayload, Evidence, MilestoneOrigin, RunOutcome, SCHEMA_VERSION, Trust};

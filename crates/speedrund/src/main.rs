@@ -2,6 +2,7 @@
 //! editor and agent plugin talks to it over loopback HTTP.
 
 mod http;
+mod keys;
 mod service;
 mod store;
 mod verify;
@@ -14,7 +15,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
-use speedrun_core::{category, paths};
+use speedrun_core::{category, paths, sign::pubkey_hex};
 
 fn ensure_token(path: &Path) -> Result<String> {
     if let Ok(t) = fs::read_to_string(path) {
@@ -49,8 +50,10 @@ async fn main() -> Result<()> {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
     let token = ensure_token(&paths::token_path())?;
     let display_token = ensure_token(&paths::display_token_path())?;
+    let device_key = keys::load_or_create(&paths::device_key_path())?;
+    let device_pubkey = pubkey_hex(&device_key);
 
-    let store = store::Store::open(&dir.join("speedrun.sqlite"))?;
+    let store = store::Store::open(&dir.join("speedrun.sqlite"), device_key)?;
     let service = service::Service::new(store, category::builtin());
 
     let addr: SocketAddr = paths::daemon_addr()
@@ -62,7 +65,12 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr} (is another speedrund running?)"))?;
-    tracing::info!(%addr, data_dir = %dir.display(), "speedrund listening");
+    tracing::info!(
+        %addr,
+        data_dir = %dir.display(),
+        device_pubkey = %device_pubkey,
+        "speedrund listening"
+    );
 
     let cors_origins: Vec<String> = std::env::var("SPEEDRUN_CORS_ORIGINS")
         .unwrap_or_default()

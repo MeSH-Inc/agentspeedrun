@@ -226,6 +226,7 @@ impl RunView {
             project_root,
             category_id,
             category_version,
+            ..
         } = &first.payload
         else {
             return None;
@@ -553,6 +554,7 @@ mod tests {
                 project_root: None,
                 category_id: "any-percent".into(),
                 category_version: 1,
+                device_pubkey: None,
             },
         )];
         all.extend(items);
@@ -568,6 +570,7 @@ mod tests {
                 payload,
                 prev_hash: out.last().map(|p| p.hash.clone()),
                 hash: String::new(),
+                sig: None,
             };
             e.hash = compute_hash(&e);
             out.push(e);

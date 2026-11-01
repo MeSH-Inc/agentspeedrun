@@ -41,11 +41,13 @@ fn write_canonical(v: &Value, out: &mut String) {
     }
 }
 
-/// Hash of an event: sha256 over its canonical JSON with `hash` removed.
+/// Hash of an event: sha256 over its canonical JSON with `hash` and `sig`
+/// removed. The signature covers this hash, so it cannot be part of it.
 pub fn compute_hash(event: &Event) -> String {
     let mut v = serde_json::to_value(event).expect("Event always serializes");
     if let Value::Object(map) = &mut v {
         map.remove("hash");
+        map.remove("sig");
     }
     hex::encode(Sha256::digest(canonical_json(&v).as_bytes()))
 }
@@ -116,6 +118,7 @@ mod tests {
                 },
                 prev_hash: out.last().map(|p| p.hash.clone()),
                 hash: String::new(),
+                sig: None,
             };
             e.hash = compute_hash(&e);
             out.push(e);

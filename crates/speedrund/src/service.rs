@@ -451,13 +451,17 @@ impl Service {
 
     pub fn verify_chain(&self, run_id: &str) -> Result<ChainReport> {
         let events = self.events(run_id)?;
-        let result = verify_chain(&events);
+        let chain = verify_chain(&events);
+        let signatures = speedrun_core::sign::verify_event_signatures(&events);
+        let error = chain.err().map(|e| e.to_string()).or(signatures.error);
         Ok(ChainReport {
             run_id: run_id.to_string(),
             events: events.len() as u64,
-            ok: result.is_ok(),
-            error: result.err().map(|e| e.to_string()),
+            ok: error.is_none(),
+            error,
             head_hash: events.last().map(|e| e.hash.clone()),
+            signed: signatures.signed,
+            unsigned: signatures.unsigned,
         })
     }
 }
@@ -474,6 +478,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
             project_root: req.project_root.clone(),
             category_id: cat.id.clone(),
             category_version: cat.version,
+            device_pubkey: Some(tx.device_pubkey()),
         },
     )?;
     for m in &cat.milestones {
@@ -509,7 +514,8 @@ mod tests {
 
     fn svc() -> (Service, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+        let key = speedrun_core::sign::parse_seed(&"07".repeat(32)).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite"), key).unwrap();
         (Service::new(store, category::builtin()), dir)
     }
 
@@ -817,5 +823,51 @@ mod tests {
             Ok(())
         });
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn every_event_is_signed_by_the_device() {
+        let (mut s, _d) = svc();
+        let r = s.record_prompt(prompt("p1")).unwrap();
+        let report = s.verify_chain(&r.run_id).unwrap();
+        assert!(report.ok, "{:?}", report.error);
+        assert_eq!(report.signed, report.events);
+        assert_eq!(report.unsigned, 0);
+        for e in s.events(&r.run_id).unwrap() {
+            assert!(e.sig.is_some(), "seq {} is unsigned", e.seq);
+        }
+    }
+
+    /// The owner of the machine owns SQLite: they can drop the append-only
+    /// triggers and re-hash whatever they edit. The signature is what still
+    /// catches it.
+    #[test]
+    fn rewriting_and_rehashing_an_event_fails_the_signature_check() {
+        let (mut s, _d) = svc();
+        let r = s.record_prompt(prompt("p1")).unwrap();
+
+        let mut events = s.events(&r.run_id).unwrap();
+        let last = events.last_mut().unwrap();
+        last.recorded_at += Duration::seconds(1);
+        last.hash = speedrun_core::hash::compute_hash(last);
+        let (seq, body) = (last.seq as i64, serde_json::to_string(&last).unwrap());
+
+        s.store
+            .transaction(|tx| {
+                tx.raw().execute_batch("DROP TRIGGER events_no_update")?;
+                tx.raw().execute(
+                    "UPDATE events SET body = ?1 WHERE run_id = ?2 AND seq = ?3",
+                    rusqlite::params![body, r.run_id, seq],
+                )?;
+                Ok::<(), rusqlite::Error>(())
+            })
+            .unwrap();
+
+        let report = s.verify_chain(&r.run_id).unwrap();
+        assert!(!report.ok);
+        assert!(
+            report.error.unwrap().contains("signature"),
+            "a re-hashed edit must fail on the signature, not silently pass"
+        );
     }
 }

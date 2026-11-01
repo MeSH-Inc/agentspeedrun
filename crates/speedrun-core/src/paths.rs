@@ -23,6 +23,11 @@ pub fn token_path() -> PathBuf {
     data_dir().join("token")
 }
 
+/// Ed25519 device key (hex seed, mode 0600). Generated on first start.
+pub fn device_key_path() -> PathBuf {
+    data_dir().join("device.key")
+}
+
 /// Read-only token for live displays: sees timing and milestones, never prompts.
 pub fn display_token_path() -> PathBuf {
     data_dir().join("display-token")

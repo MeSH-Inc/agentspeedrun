@@ -230,6 +230,7 @@ mod tests {
                 project_root: Some(format!("/home/dev/{root}")),
                 category_id: "any-percent".into(),
                 category_version: 1,
+                device_pubkey: None,
             },
         )];
         for (key, title, trust) in [
@@ -268,6 +269,7 @@ mod tests {
                 payload,
                 prev_hash: out.last().map(|p| p.hash.clone()),
                 hash: String::new(),
+                sig: None,
             };
             e.hash = compute_hash(&e);
             out.push(e);

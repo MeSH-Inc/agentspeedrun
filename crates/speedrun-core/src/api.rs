@@ -98,6 +98,13 @@ pub struct ChainReport {
     pub ok: bool,
     pub error: Option<String>,
     pub head_hash: Option<String>,
+    /// Events carrying a verified device signature.
+    #[serde(default)]
+    pub signed: u64,
+    /// Events with no signature: schema v1 logs, or a chain that predates
+    /// signing on this device.
+    #[serde(default)]
+    pub unsigned: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

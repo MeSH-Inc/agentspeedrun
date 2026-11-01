@@ -97,8 +97,15 @@
           ]
         },
         "hash": {
-          "description": "sha256 over the canonical JSON of this event without `hash`.",
+          "description": "sha256 over the canonical JSON of this event without `hash` or `sig`.",
           "type": "string"
+        },
+        "sig": {
+          "description": "Ed25519 signature over the `hash` (hex), from the device's key.\nAbsent in schema v1 events.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -138,6 +145,13 @@
               "type": "integer",
               "format": "uint32",
               "minimum": 0
+            },
+            "device_pubkey": {
+              "description": "Hex ed25519 public key of the device that signs this chain.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -1121,6 +1135,20 @@
             "string",
             "null"
           ]
+        },
+        "signed": {
+          "description": "Events carrying a verified device signature.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
+        "unsigned": {
+          "description": "Events with no signature: schema v1 logs, or a chain that predates\nsigning on this device.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
         }
       },
       "required": [

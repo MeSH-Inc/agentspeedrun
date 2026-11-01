@@ -5,8 +5,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use ed25519_dalek::SigningKey;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use speedrun_core::{Event, EventPayload, SCHEMA_VERSION, hash::compute_hash, new_id};
+use speedrun_core::{
+    Event, EventPayload, SCHEMA_VERSION,
+    hash::compute_hash,
+    sign::{fingerprint, pubkey_hex, sign_hash},
+};
 
 const MIGRATIONS: &[&str] = &[
     r#"
@@ -52,28 +57,35 @@ CREATE INDEX runs_by_category ON runs (category_id, category_version);
 pub struct Store {
     conn: Connection,
     device_id: String,
+    key: SigningKey,
 }
 
 impl Store {
-    pub fn open(path: &Path) -> Result<Self> {
+    /// Open the database. `key` signs every event appended from now on; the
+    /// device id is its fingerprint, unless an older database already names a
+    /// device (v1 archives keep the id they were written with).
+    pub fn open(path: &Path, key: SigningKey) -> Result<Self> {
         let mut conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         migrate(&mut conn)?;
+        let fingerprint = fingerprint(&pubkey_hex(&key)).map_err(anyhow::Error::msg)?;
         let device_id = match conn
             .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |r| r.get(0))
             .optional()?
         {
             Some(id) => id,
             None => {
-                let id = new_id();
-                conn.execute("INSERT INTO meta (key, value) VALUES ('device_id', ?1)", [&id])?;
-                id
+                conn.execute(
+                    "INSERT INTO meta (key, value) VALUES ('device_id', ?1)",
+                    [&fingerprint],
+                )?;
+                fingerprint
             }
         };
-        Ok(Self { conn, device_id })
+        Ok(Self { conn, device_id, key })
     }
 
     /// Run `f` in an IMMEDIATE transaction; commit only if it returns Ok.
@@ -87,6 +99,7 @@ impl Store {
         let mut w = Tx {
             tx,
             device_id: &self.device_id,
+            key: &self.key,
         };
         let out = f(&mut w)?;
         w.tx.commit()?;
@@ -181,11 +194,17 @@ fn parse(body: &str) -> rusqlite::Result<Event> {
 pub struct Tx<'c> {
     tx: Transaction<'c>,
     device_id: &'c str,
+    key: &'c SigningKey,
 }
 
 impl Tx<'_> {
     pub fn reader(&self) -> Reader<'_> {
         Reader(&self.tx)
+    }
+
+    /// Hex public key of the device writing this transaction.
+    pub fn device_pubkey(&self) -> String {
+        pubkey_hex(self.key)
     }
 
     /// Append to the end of a run's chain. The caller validates first.
@@ -215,8 +234,10 @@ impl Tx<'_> {
             payload,
             prev_hash: last.map(|(_, h)| h),
             hash: String::new(),
+            sig: None,
         };
         event.hash = compute_hash(&event);
+        event.sig = Some(sign_hash(self.key, &event.hash));
         let body = serde_json::to_string(&event).expect("Event always serializes");
         self.tx.execute(
             "INSERT INTO events (event_id, run_id, seq, type, occurred_at, recorded_at, hash, body)

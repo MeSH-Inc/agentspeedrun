@@ -36,7 +36,8 @@ Every run is an ordered, gapless, hash-chained list of events
 `occurred_at` and `payload`; the daemon assigns `seq`, `recorded_at`,
 `device_id`, `prev_hash` and `hash`.
 
-- `hash = sha256(canonical_json(event without hash))`, canonical JSON sorting keys recursively.
+- `hash = sha256(canonical_json(event without hash and sig))`, canonical JSON sorting keys recursively.
+- `sig = ed25519(hash)` using the device key in `$SPEEDRUN_HOME/device.key` (mode 0600, generated on first start). `RunStarted` carries `device_pubkey`, so a chain can be checked without the machine that wrote it: an edit that repairs the hash still fails the signature. v1 events have no signature and are reported as `unsigned`, not broken.
 - SQLite triggers abort any `UPDATE` or `DELETE` on `events`.
 - Retrying an `event_id` returns the stored event; reusing one for a different payload is a 409.
 - `occurred_at` more than 5 minutes in the future is clamped. Past times are accepted, since spooled events arrive late.
