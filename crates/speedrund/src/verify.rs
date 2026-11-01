@@ -189,8 +189,7 @@ impl Verifier {
                 Evidence::GitCommit { sha } => (
                     "git",
                     match job.project_root.as_deref() {
-                        Some(root) if git_commit_in_history(root, sha) => Ok(()),
-                        Some(_) => Err(format!("commit {sha} is not in this project's history")),
+                        Some(root) => git_commit_evidence(root, sha, job.run_started_at.timestamp()),
                         None => Err("the run has no project root to check commits against".into()),
                     },
                 ),
@@ -533,6 +532,28 @@ fn git_commit_in_history(root: &str, sha: &str) -> bool {
     well_formed
         && git_output(root, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_some()
         && git_output(root, &["merge-base", "--is-ancestor", sha, "HEAD"]).is_some()
+}
+
+/// The commit's committer time, in whole seconds since the Unix epoch.
+fn git_commit_time(root: &str, sha: &str) -> Result<i64, String> {
+    let raw = git_output(root, &["show", "-s", "--format=%ct", sha])
+        .ok_or_else(|| format!("commit {sha} has no readable committer time"))?;
+    raw.trim()
+        .parse()
+        .map_err(|_| format!("commit {sha} has no readable committer time"))
+}
+
+/// A commit verifies only if it is in this project's history and was made no
+/// earlier than the run began. Git records whole seconds, so compare against
+/// `run_started_secs`; a commit made in the same second still counts.
+fn git_commit_evidence(root: &str, sha: &str, run_started_secs: i64) -> Result<(), String> {
+    if !git_commit_in_history(root, sha) {
+        return Err(format!("commit {sha} is not in this project's history"));
+    }
+    if git_commit_time(root, sha)? < run_started_secs {
+        return Err(format!("commit {sha} was made before this speedrun started"));
+    }
+    Ok(())
 }
 
 /// Everyone who has committed to the project: payments from them are not revenue.
