@@ -31,7 +31,7 @@ Claude Code / opencode / pi / VS Code / Zed      thin adapters (hooks, MCP)
 - **Trust levels.** A milestone counts only at its category's required trust: `self_declared` < `agent_claimed` < `evidence_verified`. Only daemon verifiers grant `evidence_verified`: git commits in the project's history, live public HTTPS pages (including terms and privacy content), passing GitHub Actions runs, and real live-mode Stripe payments.
 - **Several clocks.** Real time, timed (minus pauses), agent time (turns, unioned across sessions) and human time (gaps between turns, capped at 15 min each).
 
-Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Building a widget, picture-in-picture or phone view? See [docs/LIVE_DISPLAY.md](docs/LIVE_DISPLAY.md).
+Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Building a widget, picture-in-picture or phone view? See [docs/LIVE_DISPLAY.md](docs/LIVE_DISPLAY.md). Runs are private by default; the proposal for publishing them as a commons — device signing, disclosure tiers, external-clock brackets — is [docs/COMMONS.md](docs/COMMONS.md).
 
 ## Quick start
 
