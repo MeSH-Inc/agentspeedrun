@@ -3,6 +3,7 @@
 
 mod http;
 mod keys;
+mod logging;
 mod service;
 mod store;
 mod verify;
@@ -39,11 +40,7 @@ fn ensure_token(path: &Path) -> Result<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("SPEEDRUN_LOG").unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    logging::init()?;
 
     let dir = paths::data_dir();
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -65,12 +62,7 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr} (is another speedrund running?)"))?;
-    tracing::info!(
-        %addr,
-        data_dir = %dir.display(),
-        device_pubkey = %device_pubkey,
-        "speedrund listening"
-    );
+    logging::startup(addr, &dir, &device_pubkey);
 
     let cors_origins: Vec<String> = std::env::var("SPEEDRUN_CORS_ORIGINS")
         .unwrap_or_default()

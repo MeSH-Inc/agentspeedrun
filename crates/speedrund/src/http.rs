@@ -255,9 +255,7 @@ async fn finish_append(
     .await
     .map_err(|e| Error::Internal(e.into()))?;
     let derived = derived?;
-    if !outcome.verified() {
-        tracing::info!(problems = ?outcome.problems, "evidence not verified");
-    }
+    crate::logging::verification_failed(&outcome);
     if !derived.is_empty() {
         notify(&s);
     }
