@@ -66,9 +66,22 @@ pub struct MilestoneView {
 }
 
 impl MilestoneView {
+    /// Whether the strongest claim meets this milestone's trust requirement.
+    fn meets_trust_requirement(&self) -> bool {
+        match self.trust {
+            Some(t) if t >= self.required_trust => true,
+            // Outside category rules a user's own claim stands in for an agent
+            // claim: the user is the authority on milestones they created.
+            Some(Trust::SelfDeclared) => {
+                self.origin != MilestoneOrigin::Predefined && self.required_trust == Trust::AgentClaimed
+            }
+            _ => false,
+        }
+    }
+
     pub fn counts(&self) -> bool {
         matches!(self.state, MilestoneState::Reached | MilestoneState::Verified)
-            && self.trust.is_some_and(|t| t >= self.required_trust)
+            && self.meets_trust_requirement()
     }
 }
 
@@ -103,6 +116,23 @@ pub struct RunView {
 }
 
 type Interval = (DateTime<Utc>, DateTime<Utc>);
+
+/// One observed agent turn for a session.
+#[derive(Debug, Clone, Copy)]
+struct Turn {
+    start: DateTime<Utc>,
+    /// When the turn ended, or provisionally when a newer turn started first.
+    end: Option<DateTime<Utc>>,
+    /// `end` was inferred from a newer start, so a late real end may extend it.
+    provisional: bool,
+}
+
+impl Turn {
+    /// Whether an `AgentTurnEnded` at `t` can pair with this turn.
+    fn accepts_end(&self, t: DateTime<Utc>) -> bool {
+        self.start <= t && (self.end.is_none() || (self.provisional && self.end.is_some_and(|e| e <= t)))
+    }
+}
 
 /// Sort and merge overlapping intervals.
 fn merge(mut v: Vec<Interval>) -> Vec<Interval> {
@@ -254,7 +284,9 @@ impl RunView {
             last_seq: 0,
             head_hash: None,
         };
-        let mut open_turns: BTreeMap<String, DateTime<Utc>> = BTreeMap::new();
+        let mut turns: BTreeMap<String, Vec<Turn>> = BTreeMap::new();
+        // Latest activity seen per session, used to end a superseded turn.
+        let mut last_seen: BTreeMap<String, DateTime<Utc>> = BTreeMap::new();
         let mut agent: Vec<Interval> = Vec::new();
         let mut pauses: Vec<Interval> = Vec::new();
         let mut pause_open: Option<DateTime<Utc>> = None;
@@ -272,17 +304,56 @@ impl RunView {
                     view.prompt_count += 1;
                     view.sessions.insert(session_id.clone());
                     view.hosts.insert(host.clone());
+                    // A prompt means the user is back: end any open pause here.
+                    if let Some(p) = pause_open.take() {
+                        pauses.push((p, t));
+                        view.status = RunStatus::Running;
+                    }
+                    let seen = last_seen.get(session_id).copied();
+                    last_seen.insert(session_id.clone(), seen.map_or(t, |s| s.max(t)));
                 }
                 EventPayload::AgentTurnStarted { session_id } => {
                     view.sessions.insert(session_id.clone());
-                    if let Some(prev) = open_turns.insert(session_id.clone(), t) {
-                        agent.push((prev, t));
+                    // Agent work means the user is back: end any open pause here.
+                    if let Some(p) = pause_open.take() {
+                        pauses.push((p, t));
+                        view.status = RunStatus::Running;
                     }
+                    // A newer start supersedes an open turn for this session. Close
+                    // it at the last thing we saw, not at this (possibly much later)
+                    // start, so a crashed turn cannot absorb the idle gap.
+                    let seen = last_seen.get(session_id).copied();
+                    if let Some(list) = turns.get_mut(session_id) {
+                        for turn in list.iter_mut() {
+                            if turn.end.is_none() && turn.start <= t {
+                                turn.end = Some(seen.map_or(turn.start, |s| s.max(turn.start)));
+                                turn.provisional = true;
+                            }
+                        }
+                    }
+                    let turn = Turn {
+                        start: t,
+                        end: None,
+                        provisional: false,
+                    };
+                    turns.entry(session_id.clone()).or_default().push(turn);
+                    last_seen.insert(session_id.clone(), seen.map_or(t, |s| s.max(t)));
                 }
                 EventPayload::AgentTurnEnded { session_id } => {
-                    if let Some(s) = open_turns.remove(session_id) {
-                        agent.push((s, t));
+                    // Pair by occurred_at: an end can belong to a start delivered
+                    // after it, and an end before every known start is stale.
+                    if let Some(list) = turns.get_mut(session_id) {
+                        let candidate = list
+                            .iter_mut()
+                            .filter(|turn| turn.accepts_end(t))
+                            .max_by_key(|turn| turn.start);
+                        if let Some(turn) = candidate {
+                            turn.end = Some(t);
+                            turn.provisional = false;
+                        }
                     }
+                    let seen = last_seen.get(session_id).copied();
+                    last_seen.insert(session_id.clone(), seen.map_or(t, |s| s.max(t)));
                 }
                 EventPayload::MilestoneProposed {
                     milestone_id,
@@ -386,16 +457,29 @@ impl RunView {
         }
 
         let end = view.finished_at.unwrap_or(now).max(start);
+        let mut any_open = false;
+        for list in turns.values() {
+            for turn in list {
+                match turn.end {
+                    Some(e) => agent.push((turn.start, e)),
+                    None => {
+                        any_open = true;
+                        // An open turn runs until the view's clock.
+                        agent.push((turn.start, end));
+                    }
+                }
+            }
+        }
         if !view.is_finished() {
-            view.open_turns = open_turns.len() as u32;
+            view.open_turns = turns
+                .values()
+                .filter(|list| list.iter().any(|turn| turn.end.is_none()))
+                .count() as u32;
             view.paused_since = pause_open;
-            if open_turns.is_empty() && pause_open.is_none() {
+            if !any_open && pause_open.is_none() {
                 let last_busy = agent.iter().chain(pauses.iter()).map(|&(_, b)| b).max();
                 view.idle_since = Some(last_busy.map_or(start, |b| b.max(start)).min(end));
             }
-        }
-        for (_, s) in open_turns {
-            agent.push((s, end));
         }
         if let Some(p) = pause_open {
             pauses.push((p, end));
@@ -529,6 +613,9 @@ impl RunView {
                 S::Reached | S::Verified => Ok(()),
                 s => Err(format!("cannot invalidate a milestone that is {s:?}").to_lowercase()),
             },
+            P::RunPaused { .. } if self.open_turns > 0 => {
+                Err("cannot pause while an agent turn is open".into())
+            }
             P::RunPaused { .. } if self.status == RunStatus::Paused => Err("run is already paused".into()),
             P::RunResumed {} if self.status != RunStatus::Paused => Err("run is not paused".into()),
             P::RunPaused { .. } | P::RunResumed {} | P::RunFinished { .. } => Ok(()),
