@@ -5,6 +5,7 @@ mod hook;
 mod mcp;
 mod ops;
 mod project;
+mod redacted;
 mod secret;
 mod setup;
 mod tools;

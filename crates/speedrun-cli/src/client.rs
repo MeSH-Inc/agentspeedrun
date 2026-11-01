@@ -6,7 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -231,6 +231,7 @@ impl Client {
                 }
             }
         }
+        let rejected = RejectedLog::new(dir.join("rejected.jsonl"));
         let mut delivered = 0;
         for file in files {
             let Ok(f) = fs::File::open(&file) else { continue };
@@ -249,7 +250,7 @@ impl Client {
                         break;
                     }
                     // The daemon refused it; keep it for inspection rather than retrying forever.
-                    Err(CallError::Api { .. }) => append_line(&dir.join("rejected.jsonl"), &line),
+                    Err(CallError::Api { .. }) => rejected.append(&line),
                 }
             }
             let _ = fs::remove_file(&file);
@@ -267,18 +268,90 @@ fn spool(path: &str, body: &Value) {
     append_line(&spool_dir().join("pending.jsonl"), &line);
 }
 
-fn append_line(file: &PathBuf, line: &str) {
-    if let Some(dir) = file.parent() {
-        let _ = fs::create_dir_all(dir);
+fn append_line(file: &Path, line: &str) {
+    if let Err(e) = append_line_result(file, line) {
+        report_write_error("spool file", file, &e);
     }
-    // One write per line with O_APPEND keeps concurrent writers from interleaving.
-    if let Ok(mut f) = OpenOptions::new()
+}
+
+/// One write per line with O_APPEND keeps concurrent writers from interleaving.
+fn append_line_result(file: &Path, line: &str) -> std::io::Result<()> {
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut f = OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(file)
-    {
-        let _ = f.write_all(format!("{line}\n").as_bytes());
+        .open(file)?;
+    f.write_all(format!("{line}\n").as_bytes())
+}
+
+fn report_write_error(what: &str, file: &Path, e: &std::io::Error) {
+    if std::env::var_os("SPEEDRUN_DEBUG").is_some() {
+        eprintln!("speedrun: could not write {what} {}: {e}", file.display());
+    }
+}
+
+/// Newest refused entries are kept for inspection, but the log must not grow
+/// without bound no matter how many the daemon refuses.
+const REJECTED_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// A capped log of refused spool entries. `append` is the only way to write
+/// to it, and it enforces the cap, so callers cannot leave the file unbounded.
+struct RejectedLog {
+    file: PathBuf,
+}
+
+impl RejectedLog {
+    fn new(file: PathBuf) -> Self {
+        Self { file }
+    }
+
+    fn append(&self, line: &str) {
+        if let Err(e) = self.try_append(line) {
+            report_write_error("refused-event log", &self.file, &e);
+        }
+    }
+
+    fn try_append(&self, line: &str) -> std::io::Result<()> {
+        let current = match fs::metadata(&self.file) {
+            Ok(meta) => meta.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e),
+        };
+        if current.saturating_add(line.len() as u64 + 1) > REJECTED_MAX_BYTES {
+            self.trim_to_newest()?;
+        }
+        append_line_result(&self.file, line)
+    }
+
+    /// Keep the newest entries that fit in half the cap; the rest of the
+    /// headroom amortizes trimming over several appends.
+    fn trim_to_newest(&self) -> std::io::Result<()> {
+        let text = match fs::read_to_string(&self.file) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if text.is_empty() {
+            return Ok(());
+        }
+        let keep = REJECTED_MAX_BYTES / 2;
+        let mut total = 0u64;
+        let mut kept: Vec<&str> = Vec::new();
+        for line in text.lines().rev() {
+            let len = line.len() as u64 + 1;
+            if !kept.is_empty() && total.saturating_add(len) > keep {
+                break;
+            }
+            total = total.saturating_add(len);
+            kept.push(line);
+        }
+        kept.reverse();
+        let mut out = kept.join("\n");
+        out.push('\n');
+        fs::write(&self.file, out)
     }
 }
 

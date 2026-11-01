@@ -9,6 +9,7 @@ use speedrun_core::{
 
 use crate::client::Client;
 use crate::project::Project;
+use crate::redacted::RedactedText;
 
 pub fn record_prompt(
     c: &Client,
@@ -18,6 +19,7 @@ pub fn record_prompt(
     model: Option<&str>,
     content: &str,
 ) -> Result<Option<PromptResponse>> {
+    let content = RedactedText::new(content);
     let body = json!({
         "event_id": speedrun_core::new_id(),
         "project_id": p.config.project_id,
@@ -26,7 +28,7 @@ pub fn record_prompt(
         "session_id": session_id,
         "host": host,
         "model": model,
-        "content": content,
+        "content": content.as_str(),
         "occurred_at": chrono::Utc::now(),
         "starts_turn": true,
     });
