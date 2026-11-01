@@ -38,7 +38,6 @@ pub struct Job {
     pub claimed_at: DateTime<Utc>,
     /// The URL the run's `deployed` milestone was verified with, if it was.
     /// Legal pages must be on its registrable domain (A3-4).
-    #[allow(dead_code)] // Not read until the legal-pages domain rule exists (W2.a).
     pub deployed_url: Option<String>,
 }
 
@@ -186,6 +185,8 @@ impl Verifier {
             return out;
         }
 
+        let key = job.key.as_deref();
+        let deployed = job.deployed_url.as_deref();
         let mut legal = LegalCoverage::default();
         for ev in &job.evidence {
             let (name, result) = match ev {
@@ -197,7 +198,7 @@ impl Verifier {
                         None => Err("the run has no project root to check commits against".into()),
                     },
                 ),
-                Evidence::Url { url } => ("url", self.check_url(url, job.key.as_deref(), &mut legal)),
+                Evidence::Url { url } => ("url", self.check_url(url, key, deployed, &mut legal)),
                 Evidence::CiRun { url } => ("ci", self.check_ci(url, job)),
                 Evidence::StripeEvent { event_id } => ("stripe", self.check_stripe(event_id, job)),
             };
@@ -217,20 +218,38 @@ impl Verifier {
 
     // --- URLs ------------------------------------------------------------
 
-    fn check_url(&self, url: &str, key: Option<&str>, legal: &mut LegalCoverage) -> Result<(), String> {
+    fn check_url(
+        &self,
+        url: &str,
+        key: Option<&str>,
+        deployed_url: Option<&str>,
+        legal: &mut LegalCoverage,
+    ) -> Result<(), String> {
         public_https_url(url)?;
+        let legal_page = key == Some("legal-pages");
+        if legal_page {
+            legal_domain(url, deployed_url)?;
+        }
         let page = self.fetch.get(url, &[], false)?;
         public_https_url(&page.url).map_err(|e| format!("{url} redirects to {}: {e}", page.url))?;
+        if legal_page {
+            legal_domain(&page.url, deployed_url)?;
+        }
         if !(200..300).contains(&page.status) {
             return Err(format!("{url} answered HTTP {}", page.status));
         }
-        let text = visible_text(&page.body).to_lowercase();
+        let raw = if legal_page {
+            legal_text(&page.body)
+        } else {
+            visible_text(&page.body)
+        };
+        let text = raw.to_lowercase();
         let short = text.split_whitespace().count() < PLACEHOLDER_MAX_WORDS;
         let sign = PLACEHOLDER_SIGNS.iter().find(|s| short && text.contains(*s));
         if let Some(sign) = sign.or(["lorem ipsum"].iter().find(|s| text.contains(*s))) {
             return Err(format!("{url} looks like a placeholder page (\"{sign}\")"));
         }
-        if key == Some("legal-pages") {
+        if legal_page {
             legal.add(url, &text)?;
         }
         Ok(())
@@ -424,10 +443,131 @@ pub fn visible_text(html: &str) -> String {
     decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Tags whose text is not legal-page content: scripts and styles are never
+/// rendered, and links, navigation and footers are a page's chrome rather
+/// than the document it carries.
+const NON_CONTENT_TAGS: &[&str] = &["a", "nav", "footer", "script", "style", "noscript", "template"];
+
+/// The tag name that opens at `at`, if it is one of [`NON_CONTENT_TAGS`]. A
+/// name matches only at a boundary, so `<a>` is dropped but `<article>` is not.
+fn opens_non_content_tag(lower: &str, at: usize) -> Option<&'static str> {
+    NON_CONTENT_TAGS.iter().copied().find(|tag| {
+        let rest = match lower.get(at + 1..) {
+            Some(rest) => rest,
+            None => return false,
+        };
+        let after = match rest.strip_prefix(*tag) {
+            Some(after) => after,
+            None => return false,
+        };
+        match after.chars().next() {
+            None => true,
+            Some(c) => c == '>' || c == '/' || c.is_ascii_whitespace(),
+        }
+    })
+}
+
+/// Where `</name` starts at or after `from`, matched at a name boundary so
+/// the closer of `<abbr>` is not mistaken for `</a>`.
+fn closing_tag(lower: &str, from: usize, name: &str) -> Option<usize> {
+    let needle = format!("</{name}");
+    let mut at = from;
+    loop {
+        let hit = at + lower[at..].find(&needle)?;
+        let after = hit + needle.len();
+        let boundary = match lower.get(after..).and_then(|rest| rest.chars().next()) {
+            None => true,
+            Some(c) => c == '>' || c == '/' || c.is_ascii_whitespace(),
+        };
+        if boundary {
+            return Some(hit);
+        }
+        at = after;
+    }
+}
+
+/// Just past the closing tag of the non-content element opening at `at`, or
+/// `None` when the markup there is ordinary content or never closes.
+fn skip_element(lower: &str, at: usize) -> Option<usize> {
+    let tag = opens_non_content_tag(lower, at)?;
+    let hit = closing_tag(lower, at, tag)?;
+    let end = match lower[hit..].find('>') {
+        Some(end) => hit + end + 1,
+        None => lower.len(),
+    };
+    Some(end)
+}
+
+/// Text a reader sees on a legal page: like [`visible_text`], but the text
+/// inside links, navigation and footers is dropped, so a "Privacy Policy"
+/// link in a site's chrome does not make the page around it a policy.
+fn legal_text(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut i = 0;
+    while i < html.len() {
+        if lower[i..].starts_with('<') {
+            if let Some(end) = skip_element(&lower, i) {
+                i = end;
+            } else {
+                i = match lower[i..].find('>') {
+                    Some(end) => i + end + 1,
+                    None => html.len(),
+                };
+            }
+            out.push(' ');
+        } else {
+            let next = match lower[i..].find('<') {
+                Some(next) => i + next,
+                None => html.len(),
+            };
+            out.push_str(&html[i..next]);
+            i = next;
+        }
+    }
+    let decoded = out
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&#39;", "'")
+        .replace("&rsquo;", "'")
+        .replace("&quot;", "\"");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The last two host labels of `raw`: the approximation of the registrable
+/// domain the legal-pages rule compares.
+fn registrable_domain(raw: &str) -> Result<String, String> {
+    let url = url::Url::parse(raw).map_err(|e| format!("{raw} is not a URL: {e}"))?;
+    let host = match url.host_str() {
+        Some(host) => host.trim_end_matches('.').to_ascii_lowercase(),
+        None => return Err(format!("{raw} has no host")),
+    };
+    let labels: Vec<&str> = host.split('.').collect();
+    let skip = labels.len().saturating_sub(2);
+    Ok(labels.into_iter().skip(skip).collect::<Vec<_>>().join("."))
+}
+
+/// Legal pages must sit on the deployment's own site, and only once the run
+/// has a verified deployment URL to compare against.
+fn legal_domain(url: &str, deployed_url: Option<&str>) -> Result<(), String> {
+    let deployed = match deployed_url {
+        Some(deployed) => deployed,
+        None => return Err("legal pages need a verified deployment to compare against".into()),
+    };
+    let page = registrable_domain(url)?;
+    let site = registrable_domain(deployed)?;
+    if page != site {
+        return Err(format!("{url} is on {page}, not the deployment's {site}"));
+    }
+    Ok(())
+}
+
+/// Which legal documents the fetched pages provide, with the URL that
+/// provided each, so one page cannot stand in for both.
 #[derive(Default)]
 struct LegalCoverage {
-    terms: bool,
-    privacy: bool,
+    terms_urls: Vec<String>,
+    privacy_urls: Vec<String>,
 }
 
 impl LegalCoverage {
@@ -452,18 +592,29 @@ impl LegalCoverage {
                 "{url} has only {words} words of server-rendered text; legal pages must be readable without JavaScript"
             ));
         }
-        self.terms |= terms;
-        self.privacy |= privacy;
+        if terms {
+            self.terms_urls.push(url.to_string());
+        }
+        if privacy {
+            self.privacy_urls.push(url.to_string());
+        }
         Ok(())
     }
 
     fn missing(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if !self.terms {
+        if self.terms_urls.is_empty() {
             out.push("no terms of service page among the URLs".into());
         }
-        if !self.privacy {
+        if self.privacy_urls.is_empty() {
             out.push("no privacy policy page among the URLs".into());
+        }
+        let distinct = self
+            .terms_urls
+            .iter()
+            .any(|terms| self.privacy_urls.iter().any(|privacy| privacy != terms));
+        if !self.terms_urls.is_empty() && !self.privacy_urls.is_empty() && !distinct {
+            out.push("the terms and privacy policy must be different URLs".into());
         }
         out
     }
