@@ -286,6 +286,11 @@ impl Verifier {
                 "CI run {id} tested {sha}, which is not in this project's history"
             ));
         }
+        if commit_predates_run(root, sha, job.run_started_at.timestamp())? {
+            return Err(format!(
+                "CI run {id} tested commit {sha}, which predates this speedrun"
+            ));
+        }
         let created = DateTime::parse_from_rfc3339(field("created_at"))
             .map_err(|_| format!("CI run {id} has no readable created_at"))?;
         if created < job.run_started_at {
@@ -543,14 +548,20 @@ fn git_commit_time(root: &str, sha: &str) -> Result<i64, String> {
         .map_err(|_| format!("commit {sha} has no readable committer time"))
 }
 
+/// Whether `sha` was committed before the run began. Git records whole
+/// seconds, so a commit made in the same second still counts.
+fn commit_predates_run(root: &str, sha: &str, run_started_secs: i64) -> Result<bool, String> {
+    let committed = git_commit_time(root, sha)?;
+    Ok(committed < run_started_secs)
+}
+
 /// A commit verifies only if it is in this project's history and was made no
-/// earlier than the run began. Git records whole seconds, so compare against
-/// `run_started_secs`; a commit made in the same second still counts.
+/// earlier than the run began.
 fn git_commit_evidence(root: &str, sha: &str, run_started_secs: i64) -> Result<(), String> {
     if !git_commit_in_history(root, sha) {
         return Err(format!("commit {sha} is not in this project's history"));
     }
-    if git_commit_time(root, sha)? < run_started_secs {
+    if commit_predates_run(root, sha, run_started_secs)? {
         return Err(format!("commit {sha} was made before this speedrun started"));
     }
     Ok(())
