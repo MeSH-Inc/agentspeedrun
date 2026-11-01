@@ -436,3 +436,76 @@ fn guard_proposals_with_different_titles_during_an_outage_all_arrive() {
     assert_eq!(count(&titles, "login works"), 1, "{titles:?}");
     assert_eq!(count(&titles, "todos persist"), 1, "{titles:?}");
 }
+
+// --- W2.d, A2-6: flush marks its deliveries as replays ------------------------------------
+
+const PROJECT: &str = "01KAUDITPROJECT0000000000";
+
+/// POST to the machine's daemon with its token; the status and JSON body.
+fn post(machine: &Machine, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
+    let result = ureq::post(&format!("http://{}{path}", machine.addr))
+        .set("Authorization", "Bearer audit-test-token")
+        .send_json(body.clone());
+    match result {
+        Ok(r) => (r.status(), r.into_json().unwrap_or_default()),
+        Err(ureq::Error::Status(s, r)) => (s, r.into_json().unwrap_or_default()),
+        Err(e) => panic!("daemon unreachable: {e}"),
+    }
+}
+
+#[test]
+#[ignore = "audit A2-6"]
+fn audit_w2_d_spooled_event_older_than_the_runs_last_event_is_delivered_by_flush() {
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    let now = chrono::Utc::now();
+    let (status, body) = post(
+        &machine,
+        "/v1/prompts",
+        &serde_json::json!({
+            "event_id": "p1", "project_id": PROJECT, "project_root": null,
+            "category_id": "any-percent", "session_id": "s", "host": "test", "model": null,
+            "content": "build it",
+            "occurred_at": (now - chrono::Duration::minutes(40)).to_rfc3339(),
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let run = body["run_id"].as_str().unwrap().to_string();
+    let (status, body) = post(
+        &machine,
+        &format!("/v1/projects/{PROJECT}/events"),
+        &serde_json::json!({
+            "event_id": "recent", "occurred_at": now.to_rfc3339(),
+            "payload": {"type": "milestone_reached", "milestone_id": "scaffold-runs",
+                        "trust": "self_declared", "evidence": []},
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // A turn end the client spooled 30 minutes ago, while the daemon was unreachable.
+    let spool = machine.data_dir().join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    let entry = serde_json::json!({
+        "path": format!("/v1/projects/{PROJECT}/events"),
+        "body": {
+            "event_id": "spooled-turn-end",
+            "occurred_at": (now - chrono::Duration::minutes(30)).to_rfc3339(),
+            "payload": {"type": "agent_turn_ended", "session_id": "s"},
+        },
+    });
+    std::fs::write(spool.join("pending.jsonl"), format!("{entry}\n")).unwrap();
+
+    let out = machine.speedrun(&["flush"], b"");
+    let events = ureq::get(&format!("http://{}/v1/runs/{run}/events", machine.addr))
+        .set("Authorization", "Bearer audit-test-token")
+        .call()
+        .unwrap()
+        .into_string()
+        .unwrap();
+    assert!(
+        events.contains("spooled-turn-end"),
+        "flush must deliver it as a replay; flush said: {}\nrejected: {:?}",
+        String::from_utf8_lossy(&out.stdout),
+        machine.files_containing("spooled-turn-end")
+    );
+}

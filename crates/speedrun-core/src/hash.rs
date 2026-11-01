@@ -64,6 +64,25 @@ pub fn compute_hash(event: &Event) -> String {
     hex::encode(Sha256::digest(canonical_json(&v).as_bytes()))
 }
 
+/// Hash of a stored event body: sha256 over the canonical JSON of the body as
+/// stored, with `hash` and `sig` removed. Unlike [`compute_hash`], fields this
+/// build does not know are kept, so a body written by a newer build still
+/// hashes to what that build stored (W1.a).
+///
+/// Not implemented yet: returns an empty string.
+pub fn compute_stored_hash(_body: &Value) -> String {
+    String::new()
+}
+
+/// Check that stored event bodies (one run, ordered by seq) form an intact
+/// chain, hashing each body as stored ([`compute_stored_hash`]) rather than its
+/// typed parse. The same checks and errors as [`verify_chain`].
+///
+/// Not implemented yet: reports every chain as tampered at seq 0.
+pub fn verify_stored_chain(_bodies: &[Value]) -> Result<(), ChainError> {
+    Err(ChainError::Tampered { seq: 0 })
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ChainError {
     #[error("event seq {seq}: expected seq {expected}")]

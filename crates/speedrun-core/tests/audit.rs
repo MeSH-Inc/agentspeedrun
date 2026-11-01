@@ -322,3 +322,144 @@ fn guard_accept_without_required_trust_keeps_the_proposed_requirement() {
     assert_eq!(m.state, MilestoneState::Accepted);
     assert_eq!(m.required_trust, Trust::AgentClaimed);
 }
+
+// --- W1.a, A2-5: hash and verify the stored body, not its typed re-serialization -------
+
+/// sha256 over the canonical JSON of `body` without `hash` and `sig`, computed here rather
+/// than by the code under test.
+fn expected_stored_hash(body: &serde_json::Value) -> String {
+    use sha2::Digest;
+    let mut v = body.clone();
+    let map = v.as_object_mut().expect("an event body is an object");
+    map.remove("hash");
+    map.remove("sig");
+    hex::encode(sha2::Sha256::digest(
+        speedrun_core::hash::canonical_json(&v).as_bytes(),
+    ))
+}
+
+/// Three stored bodies of one run, the second carrying `extra` (fields this build does not
+/// know) in its payload, each hashed as stored and linked to the one before.
+fn stored_chain(extra: serde_json::Value) -> Vec<serde_json::Value> {
+    let mut bodies: Vec<serde_json::Value> = Vec::new();
+    for (seq, e) in log(vec![ended(1), ended(2)]).into_iter().enumerate() {
+        let mut body = serde_json::to_value(&e).expect("an event serializes");
+        if seq == 1 {
+            let payload = body["payload"].as_object_mut().expect("payload object");
+            payload.extend(extra.as_object().expect("extra fields").clone());
+        }
+        body["prev_hash"] = bodies
+            .last()
+            .map_or(serde_json::Value::Null, |p| p["hash"].clone());
+        body["hash"] = serde_json::Value::String(expected_stored_hash(&body));
+        bodies.push(body);
+    }
+    bodies
+}
+
+#[test]
+#[ignore = "audit A2-5"]
+fn audit_w1_a_stored_hash_keeps_fields_this_build_does_not_know() {
+    let body = &stored_chain(serde_json::json!({ "future_field": "x" }))[1];
+    assert_eq!(
+        speedrun_core::hash::compute_stored_hash(body),
+        expected_stored_hash(body)
+    );
+}
+
+#[test]
+#[ignore = "audit A2-5"]
+fn audit_w1_a_stored_chain_with_an_unknown_optional_field_verifies() {
+    let bodies = stored_chain(serde_json::json!({ "future_field": "x", "future_list": [1, 2] }));
+    assert_eq!(speedrun_core::hash::verify_stored_chain(&bodies), Ok(()));
+}
+
+#[test]
+#[ignore = "audit A2-5"]
+fn audit_w1_a_editing_an_unknown_field_is_detected() {
+    let mut bodies = stored_chain(serde_json::json!({ "future_field": "x" }));
+    bodies[1]["payload"]["future_field"] = serde_json::json!("y");
+    assert_eq!(
+        speedrun_core::hash::verify_stored_chain(&bodies),
+        Err(speedrun_core::hash::ChainError::Tampered { seq: 2 })
+    );
+}
+
+#[test]
+#[ignore = "audit A2-5"]
+fn audit_w1_a_stored_chain_detects_gaps_and_broken_links() {
+    let mut gap = stored_chain(serde_json::json!({}));
+    gap.remove(1);
+    assert_eq!(
+        speedrun_core::hash::verify_stored_chain(&gap),
+        Err(speedrun_core::hash::ChainError::Gap { seq: 3, expected: 2 })
+    );
+    let mut relinked = stored_chain(serde_json::json!({}));
+    relinked[2]["prev_hash"] = serde_json::json!("0".repeat(64));
+    relinked[2]["hash"] = serde_json::Value::String(expected_stored_hash(&relinked[2]));
+    assert_eq!(
+        speedrun_core::hash::verify_stored_chain(&relinked),
+        Err(speedrun_core::hash::ChainError::BrokenLink { seq: 3 })
+    );
+}
+
+#[test]
+fn guard_w1_a_typed_chain_still_verifies() {
+    let events = log(vec![ended(1), ended(2)]);
+    assert_eq!(speedrun_core::hash::verify_chain(&events), Ok(()));
+}
+
+// --- W1.e, owner decision D4: v1 formats are retired, so an unsigned event fails ---------
+
+/// A run whose events are all signed by one key, as the v2 daemon writes them.
+fn signed_log(key: &ed25519_dalek::SigningKey) -> Vec<Event> {
+    use speedrun_core::sign::{pubkey_hex, sign_hash};
+    let mut out: Vec<Event> = Vec::new();
+    for (seq, mut e) in log(vec![ended(1), ended(2)]).into_iter().enumerate() {
+        if seq == 0 {
+            e.payload = EventPayload::RunStarted {
+                project_id: "p".into(),
+                project_root: None,
+                category_id: "any-percent".into(),
+                category_version: 1,
+                device_pubkey: Some(pubkey_hex(key)),
+            };
+        }
+        e.prev_hash = out.last().map(|p| p.hash.clone());
+        e.hash = compute_hash(&e);
+        e.sig = Some(sign_hash(key, &e.hash));
+        out.push(e);
+    }
+    out
+}
+
+fn device_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[9u8; 32])
+}
+
+#[test]
+#[ignore = "audit D4"]
+fn audit_w1_e_run_without_a_device_key_fails_the_signature_check() {
+    // log() writes a RunStarted with no device_pubkey and no signatures: a v1 log.
+    let check = speedrun_core::sign::verify_event_signatures(&log(vec![ended(1)]));
+    assert!(check.error.is_some(), "an unsigned v1 log must fail: {check:?}");
+}
+
+#[test]
+#[ignore = "audit D4"]
+fn audit_w1_e_one_unsigned_event_in_a_signed_run_fails_the_signature_check() {
+    let mut events = signed_log(&device_key());
+    events[2].sig = None;
+    let check = speedrun_core::sign::verify_event_signatures(&events);
+    assert!(
+        check.error.as_deref().is_some_and(|e| e.contains("seq 3")),
+        "the unsigned event must be named: {check:?}"
+    );
+}
+
+#[test]
+fn guard_w1_e_fully_signed_run_passes_the_signature_check() {
+    let check = speedrun_core::sign::verify_event_signatures(&signed_log(&device_key()));
+    assert!(check.ok(), "{check:?}");
+    assert_eq!(check.signed, 3);
+}

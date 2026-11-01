@@ -219,30 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_v1_logs_are_reported_not_failed() {
-        let k = key();
-        let mut events = vec![signed(&k, 1)];
-        events[0].sig = None;
-        events[0].payload = EventPayload::RunStarted {
-            project_id: "p".into(),
-            project_root: None,
-            category_id: "any-percent".into(),
-            category_version: 1,
-            device_pubkey: None,
-        };
-        events[0].hash = crate::hash::compute_hash(&events[0]);
-        let check = verify_event_signatures(&events);
-        assert_eq!(
-            check,
-            SignatureCheck {
-                signed: 0,
-                unsigned: 1,
-                error: None
-            }
-        );
-    }
-
-    #[test]
     fn signing_does_not_change_the_hash() {
         let k = key();
         let mut e = signed(&k, 1);

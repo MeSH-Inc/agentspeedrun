@@ -29,15 +29,16 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | M9.a | A user's claim satisfies `agent_claimed` on a non-predefined milestone | loop | | `audit_a6_5_*` |
 | M9.b | `accept` can set `required_trust` | leader | | `audit_m9_b_*` |
 | M10 | The docs claim only what the code does | leader | | |
-| W1.a | `speedrun verify` passes on a frozen v0.2 fixture DB after a dummy optional field is added | leader | | |
+| W1.a | `speedrun verify` passes on an event carrying an optional field this build does not know; hashing covers the stored body | loop | | `audit_w1_a_*` |
 | W1.b | One corrupt row yields a 200 from `/v1/live` with an error entry | loop | | `audit_w1_b_*` |
-| W1.c | A binary opening a DB with a newer schema than its own exits non-zero with a clear log line | leader | | |
+| W1.c | A binary opening a DB with a newer schema than its own exits non-zero with a clear log line | loop | | `audit_w1_c_*` |
 | W1.d | A v2 run whose prompt text was deleted still verifies | leader | D7 | |
-| W1.e | Nothing reads v1 events, bare milestone ids or unsigned events; an unsigned event fails `speedrun verify`; each built-in category has one version | leader | D4 | |
-| W2.a | Mocked-verifier scenarios of A3-1/2/3/4 fail closed under the current category rules | leader | D4 | |
+| W1.e | An unsigned event, or a run naming no device key, fails `speedrun verify` | loop | D4 | `audit_w1_e_*` |
+| W1.f | Predefined milestone ids are namespaced `<category>@<version>/<key>`, and nothing reads bare ids | leader | D4 | |
+| W2.a | Mocked-verifier scenarios of A3-1/2/3/4 fail closed under the current category rules | loop | D4 | `audit_w2_a_*`, `audit_a3_1_*` |
 | W2.b | A verification job whose claim was invalidated and re-made does not verify | loop | | `audit_a2_2_*` |
 | W2.c | A backdated claim gets 400 | loop | | `audit_w2_c_*` |
-| W2.d | A marked spool replay older than the run's last event is accepted; the lower bound also applies to the prompt route | leader | | |
+| W2.d | A spool replay (marked `X-Speedrun-Replay: 1`, set by flush) older than the run's last event is accepted; the lower bound also applies to the prompt route | loop | | `audit_w2_d_*` |
 | W3.a | start@0, start@60 in one session gives agent time well under 60 min | loop | | `audit_a2_3_*` |
 | W3.b | start@0, start@60, end@30, end@80 gives 50 min | loop | | `audit_a2_4_*` |
 | W3.c | A paused run with agent work gives non-zero `agent_ms` | loop | | `audit_a6_1_agent_turn_while_paused_*` |

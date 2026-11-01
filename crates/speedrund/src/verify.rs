@@ -36,6 +36,10 @@ pub struct Job {
     pub project_root: Option<String>,
     pub run_started_at: DateTime<Utc>,
     pub claimed_at: DateTime<Utc>,
+    /// The URL the run's `deployed` milestone was verified with, if it was.
+    /// Legal pages must be on its registrable domain (A3-4).
+    #[allow(dead_code)] // Not read until the legal-pages domain rule exists (W2.a).
+    pub deployed_url: Option<String>,
 }
 
 impl Job {
@@ -868,6 +872,7 @@ impl Fetch for Net {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     /// Canned responses by URL.
     #[derive(Default)]
@@ -919,6 +924,7 @@ mod tests {
             project_root: root.map(str::to_string),
             run_started_at: DateTime::from_timestamp(1_000_000, 0).unwrap(),
             claimed_at: Utc::now(),
+            deployed_url: Some("https://acme.dev".into()),
         }
     }
 
@@ -1328,5 +1334,373 @@ mod tests {
         let (v, ev) = passing_ci_run(&sha);
         let out = v.verify(&job(Some("tests-green"), Some(&root), vec![ev]));
         assert!(out.verified(), "{out:?}");
+    }
+
+    // --- W2.a: first-revenue and legal-pages rules, fixed in place (owner decision D4).
+
+    const STRIPE_API: &str = "https://api.stripe.com/v1";
+
+    fn stripe_object(base: Value, extra: Value) -> String {
+        let mut o = base;
+        o.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        o.to_string()
+    }
+
+    fn invoice(id: &str, extra: Value) -> String {
+        stripe_object(
+            serde_json::json!({
+                "id": id, "object": "invoice", "livemode": true, "status": "paid",
+                "amount_paid": 900, "paid_out_of_band": false, "created": 2_000_000_000,
+                "status_transitions": {"paid_at": 2_000_000_000},
+                "customer_email": "customer@buyer.com"
+            }),
+            extra,
+        )
+    }
+
+    /// Charges and PaymentIntents the Stripe scenarios below resolve to.
+    fn stripe_fake() -> Fake {
+        use serde_json::json;
+        Fake::default()
+            .with(
+                &format!("{STRIPE_API}/charges/ch_ok"),
+                200,
+                charge("ch_ok", json!({})),
+            )
+            .with(
+                &format!("{STRIPE_API}/charges/ch_ref"),
+                200,
+                charge("ch_ref", json!({"refunded": true, "amount_refunded": 900})),
+            )
+            .with(
+                &format!("{STRIPE_API}/payment_intents/pi_ok"),
+                200,
+                json!({"livemode": true, "status": "succeeded", "latest_charge": "ch_ok"}).to_string(),
+            )
+            .with(
+                &format!("{STRIPE_API}/payment_intents/pi_ref"),
+                200,
+                json!({"livemode": true, "status": "succeeded", "latest_charge": "ch_ref"}).to_string(),
+            )
+    }
+
+    fn first_payment(v: &Verifier, root: &str, id: &str) -> Outcome {
+        v.verify(&job(Some("first-payment"), Some(root), vec![stripe(id)]))
+    }
+
+    #[test]
+    #[ignore = "audit A3-2"]
+    fn audit_w2_a_invoice_paid_out_of_band_does_not_verify() {
+        let (_d, root, _) = repo();
+        let v = verifier(stripe_fake().with(
+            &format!("{STRIPE_API}/invoices/in_oob"),
+            200,
+            invoice(
+                "in_oob",
+                serde_json::json!({"paid_out_of_band": true, "charge": "ch_ok"}),
+            ),
+        ));
+        let out = first_payment(&v, &root, "in_oob");
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-2"]
+    fn audit_w2_a_invoice_with_no_charge_fails_closed() {
+        let (_d, root, _) = repo();
+        let v = verifier(stripe_fake().with(
+            &format!("{STRIPE_API}/invoices/in_bare"),
+            200,
+            invoice("in_bare", serde_json::json!({})),
+        ));
+        let out = first_payment(&v, &root, "in_bare");
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-2"]
+    fn audit_w2_a_invoice_resolves_its_charge_through_its_payments() {
+        // Current Stripe API versions list an invoice's payments instead of a `charge` field.
+        let (_d, root, _) = repo();
+        let paid_by = |pi: &str| {
+            serde_json::json!({"payments": {"data": [
+                {"payment": {"type": "payment_intent", "payment_intent": pi}}
+            ]}})
+        };
+        let v = verifier(
+            stripe_fake()
+                .with(
+                    &format!("{STRIPE_API}/invoices/in_refunded"),
+                    200,
+                    invoice("in_refunded", paid_by("pi_ref")),
+                )
+                .with(
+                    &format!("{STRIPE_API}/invoices/in_paid"),
+                    200,
+                    invoice("in_paid", paid_by("pi_ok")),
+                ),
+        );
+        let refunded = first_payment(&v, &root, "in_refunded");
+        assert!(
+            refunded.problems.join(" ").contains("refunded"),
+            "{:?}",
+            refunded.problems
+        );
+        assert!(first_payment(&v, &root, "in_paid").verified());
+    }
+
+    #[test]
+    fn guard_w2_a_invoice_with_a_good_charge_verifies() {
+        let (_d, root, _) = repo();
+        let v = verifier(stripe_fake().with(
+            &format!("{STRIPE_API}/invoices/in_card"),
+            200,
+            invoice("in_card", serde_json::json!({"charge": "ch_ok"})),
+        ));
+        let out = first_payment(&v, &root, "in_card");
+        assert!(out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-2"]
+    fn audit_w2_a_checkout_session_without_a_payment_fails_closed() {
+        let (_d, root, _) = repo();
+        let v = verifier(
+            stripe_fake().with(
+                &format!("{STRIPE_API}/checkout/sessions/cs_bare"),
+                200,
+                serde_json::json!({"livemode": true, "payment_status": "paid", "amount_total": 900,
+                       "created": 2_000_000_000, "customer_details": {"email": "c@buyer.com"}})
+                .to_string(),
+            ),
+        );
+        let out = first_payment(&v, &root, "cs_bare");
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    /// One API request: its URL and headers.
+    type Request = (String, Vec<(String, String)>);
+
+    /// Records the headers of every API request it answers.
+    struct Recording {
+        inner: Fake,
+        seen: Arc<Mutex<Vec<Request>>>,
+    }
+
+    impl Fetch for Recording {
+        fn get(&self, url: &str, headers: &[(&str, &str)], api: bool) -> Result<Page, String> {
+            if api {
+                let headers = headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+                self.seen.lock().unwrap().push((url.to_string(), headers));
+            }
+            self.inner.get(url, &[], api)
+        }
+    }
+
+    #[test]
+    #[ignore = "audit A3-2"]
+    fn audit_w2_a_stripe_requests_pin_the_api_version() {
+        let (_d, root, _) = repo();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let v = Verifier {
+            fetch: Box::new(Recording {
+                inner: stripe_fake(),
+                seen: Arc::clone(&seen),
+            }),
+            secrets: Box::new(Keys(&[("stripe", "rk_live_x")])),
+        };
+        assert!(first_payment(&v, &root, "pi_ok").verified());
+        let seen = seen.lock().unwrap();
+        assert!(!seen.is_empty());
+        for (url, headers) in seen.iter() {
+            assert!(
+                headers
+                    .iter()
+                    .any(|(k, v)| k.eq_ignore_ascii_case("stripe-version") && !v.trim().is_empty()),
+                "{url} sent no Stripe-Version: {headers:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "audit A3-3"]
+    fn audit_w2_a_founder_paying_under_a_plus_alias_is_a_committer() {
+        let (_d, root, _) = repo();
+        let v = verifier(Fake::default().with(
+            &format!("{STRIPE_API}/charges/ch_alias"),
+            200,
+            charge(
+                "ch_alias",
+                serde_json::json!({"billing_details": {"email": "founder+shop@example.com"}}),
+            ),
+        ));
+        let out = first_payment(&v, &root, "ch_alias");
+        assert!(out.problems.join(" ").contains("committer"), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-3"]
+    fn audit_w2_a_charge_without_a_customer_email_does_not_verify() {
+        let (_d, root, _) = repo();
+        let v = verifier(Fake::default().with(
+            &format!("{STRIPE_API}/charges/ch_anon"),
+            200,
+            charge(
+                "ch_anon",
+                serde_json::json!({"billing_details": {"email": null}, "receipt_email": null}),
+            ),
+        ));
+        let out = first_payment(&v, &root, "ch_anon");
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-3"]
+    fn audit_w2_a_mostly_refunded_charge_counts_as_refunded() {
+        let (_d, root, _) = repo();
+        let v = verifier(
+            Fake::default()
+                .with(
+                    &format!("{STRIPE_API}/charges/ch_half"),
+                    200,
+                    charge("ch_half", serde_json::json!({"amount_refunded": 450})),
+                )
+                .with(
+                    &format!("{STRIPE_API}/charges/ch_most"),
+                    200,
+                    charge("ch_most", serde_json::json!({"amount_refunded": 899})),
+                ),
+        );
+        for id in ["ch_half", "ch_most"] {
+            let out = first_payment(&v, &root, id);
+            assert!(
+                out.problems.join(" ").contains("refunded"),
+                "{id}: {:?}",
+                out.problems
+            );
+        }
+    }
+
+    fn legal_page(heading: &str) -> String {
+        format!("<h1>{heading}</h1><p>{}</p>", "words ".repeat(MIN_LEGAL_WORDS))
+    }
+
+    fn legal(v: &Verifier, deployed: Option<&str>, urls: &[&str]) -> Outcome {
+        let mut j = job(Some("legal-pages"), None, urls.iter().map(|u| url(u)).collect());
+        j.deployed_url = deployed.map(str::to_string);
+        v.verify(&j)
+    }
+
+    #[test]
+    #[ignore = "audit A3-4"]
+    fn audit_w2_a_footer_links_do_not_make_legal_pages() {
+        let marketing = format!(
+            "<h1>Buy our widget</h1><p>{}</p><footer><a href=/terms>Terms of Service</a> \
+             <a href=/privacy>Privacy Policy</a></footer>",
+            "widget ".repeat(MIN_LEGAL_WORDS)
+        );
+        let v = verifier(
+            Fake::default()
+                .with("https://acme.dev/", 200, marketing.clone())
+                .with("https://acme.dev/pricing", 200, marketing),
+        );
+        let out = legal(
+            &v,
+            Some("https://acme.dev"),
+            &["https://acme.dev/", "https://acme.dev/pricing"],
+        );
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-4"]
+    fn audit_w2_a_nav_links_do_not_make_a_privacy_policy() {
+        let home = format!(
+            "<nav><a href=/privacy>Privacy Policy</a></nav><h1>Acme</h1><p>{}</p>",
+            "widget ".repeat(MIN_LEGAL_WORDS)
+        );
+        let v = verifier(
+            Fake::default()
+                .with("https://acme.dev/terms", 200, legal_page("Terms of Service"))
+                .with("https://acme.dev/home", 200, home),
+        );
+        let out = legal(
+            &v,
+            Some("https://acme.dev"),
+            &["https://acme.dev/terms", "https://acme.dev/home"],
+        );
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-4"]
+    fn audit_w2_a_one_url_cannot_be_both_legal_pages() {
+        let both = format!(
+            "{}{}",
+            legal_page("Terms of Service"),
+            legal_page("Privacy Policy")
+        );
+        let v = verifier(Fake::default().with("https://acme.dev/legal", 200, both));
+        let out = legal(&v, Some("https://acme.dev"), &["https://acme.dev/legal"]);
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-4"]
+    fn audit_w2_a_legal_pages_on_another_domain_do_not_verify() {
+        let v = verifier(
+            Fake::default()
+                .with(
+                    "https://stripe.com/legal/ssa",
+                    200,
+                    legal_page("Terms of Service"),
+                )
+                .with(
+                    "https://policies.google.com/privacy",
+                    200,
+                    legal_page("Privacy Policy"),
+                ),
+        );
+        let out = legal(
+            &v,
+            Some("https://acme.dev"),
+            &[
+                "https://stripe.com/legal/ssa",
+                "https://policies.google.com/privacy",
+            ],
+        );
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    #[ignore = "audit A3-4"]
+    fn audit_w2_a_legal_pages_need_a_verified_deployment() {
+        let v = verifier(
+            Fake::default()
+                .with("https://acme.dev/terms", 200, legal_page("Terms of Service"))
+                .with("https://acme.dev/privacy", 200, legal_page("Privacy Policy")),
+        );
+        let out = legal(&v, None, &["https://acme.dev/terms", "https://acme.dev/privacy"]);
+        assert!(!out.verified(), "{:?}", out.problems);
+    }
+
+    #[test]
+    fn guard_w2_a_legal_pages_on_the_deployments_registrable_domain_verify() {
+        let v = verifier(
+            Fake::default()
+                .with("https://www.acme.dev/terms", 200, legal_page("Terms of Service"))
+                .with("https://www.acme.dev/privacy", 200, legal_page("Privacy Policy")),
+        );
+        let out = legal(
+            &v,
+            Some("https://app.acme.dev/dashboard"),
+            &["https://www.acme.dev/terms", "https://www.acme.dev/privacy"],
+        );
+        assert!(out.verified(), "{:?}", out.problems);
     }
 }

@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
 use speedrun_core::{
-    Category, Event, EventPayload, MilestoneOrigin, MilestoneState, RunOutcome, RunStatus, RunView, Trust,
+    Category, Event, EventPayload, Evidence, MilestoneOrigin, MilestoneState, RunOutcome, RunStatus, RunView,
+    Trust,
     api::{AppendRequest, AppendResponse, ChainReport, ProjectAppendRequest, PromptRequest, PromptResponse},
     category,
     hash::verify_chain,
@@ -337,6 +338,7 @@ impl Service {
             project_root: run.project_root.clone(),
             run_started_at: run.started_at,
             claimed_at: cause.occurred_at,
+            deployed_url: deployed_url(&run),
         }))
     }
 
@@ -531,6 +533,18 @@ impl Service {
             unsigned: signatures.unsigned,
         })
     }
+}
+
+/// The URL the run's `deployed` milestone was verified with, if it was.
+fn deployed_url(run: &RunView) -> Option<String> {
+    let deployed = run
+        .milestones
+        .iter()
+        .find(|m| m.key.as_deref() == Some("deployed") && m.trust == Some(Trust::EvidenceVerified))?;
+    deployed.evidence.iter().find_map(|e| match e {
+        Evidence::Url { url } => Some(url.clone()),
+        _ => None,
+    })
 }
 
 fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<Utc>) -> Result<String> {

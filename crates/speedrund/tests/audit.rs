@@ -424,3 +424,297 @@ fn audit_m3_daemon_logs_reach_stderr_or_a_file() {
         d.stdout()
     );
 }
+
+// --- W1.a, A2-5: the daemon verifies stored bodies, so a newer build's fields verify ----
+
+/// sha256 over the canonical JSON of `body` without `hash` and `sig`.
+fn stored_hash(body: &Value) -> String {
+    use sha2::Digest;
+    let mut v = body.clone();
+    let map = v.as_object_mut().expect("an event body is an object");
+    map.remove("hash");
+    map.remove("sig");
+    hex::encode(sha2::Sha256::digest(
+        speedrun_core::hash::canonical_json(&v).as_bytes(),
+    ))
+}
+
+/// Append to `run_id`, behind the daemon's back, the event a newer build would write: a
+/// payload with an optional field this build does not know, hashed over the stored body and
+/// signed with this data directory's device key.
+fn insert_event_from_a_newer_build(home: &Path, run_id: &str) {
+    let conn = rusqlite::Connection::open(home.join("speedrun.sqlite")).expect("open the database");
+    conn.busy_timeout(Duration::from_secs(5)).unwrap();
+    let (seq, last_body): (i64, String) = conn
+        .query_row(
+            "SELECT seq, body FROM events WHERE run_id = ?1 ORDER BY seq DESC LIMIT 1",
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the run has events");
+    let last: Value = serde_json::from_str(&last_body).unwrap();
+    let now = Utc::now().to_rfc3339();
+    let mut body = last.clone();
+    body["event_id"] = json!("from-a-newer-build");
+    body["seq"] = json!(seq + 1);
+    body["occurred_at"] = json!(now);
+    body["recorded_at"] = json!(now);
+    body["payload"] = json!({
+        "type": "agent_turn_ended",
+        "session_id": "s1",
+        "future_field": {"added_in": "a later schema"},
+    });
+    body["prev_hash"] = last["hash"].clone();
+    body["hash"] = json!(stored_hash(&body));
+    let key = speedrun_core::sign::parse_seed(
+        &fs::read_to_string(home.join("device.key")).expect("the device key"),
+    )
+    .expect("a device key seed");
+    body["sig"] = json!(speedrun_core::sign::sign_hash(
+        &key,
+        body["hash"].as_str().unwrap()
+    ));
+    conn.execute(
+        "INSERT INTO events (event_id, run_id, seq, type, occurred_at, recorded_at, hash, body)
+         VALUES (?1, ?2, ?3, 'agent_turn_ended', ?4, ?4, ?5, ?6)",
+        rusqlite::params![
+            "from-a-newer-build",
+            run_id,
+            seq + 1,
+            now,
+            body["hash"].as_str().unwrap(),
+            body.to_string()
+        ],
+    )
+    .expect("insert the event");
+}
+
+#[test]
+#[ignore = "audit A2-5"]
+fn audit_w1_a_event_with_an_unknown_optional_field_verifies() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    insert_event_from_a_newer_build(d.home.path(), &run);
+    let (status, report) = d.get(&format!("/v1/runs/{run}/verify"), Some(&d.token));
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["ok"], true, "{report}");
+}
+
+#[test]
+fn guard_w1_a_edited_event_still_fails_verification() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    insert_event_from_a_newer_build(d.home.path(), &run);
+    // A second row that claims the first one's hash for different contents.
+    let conn = rusqlite::Connection::open(d.home.path().join("speedrun.sqlite")).unwrap();
+    conn.busy_timeout(Duration::from_secs(5)).unwrap();
+    let (seq, body): (i64, String) = conn
+        .query_row(
+            "SELECT seq, body FROM events WHERE run_id = ?1 ORDER BY seq DESC LIMIT 1",
+            [&run],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let mut forged: Value = serde_json::from_str(&body).unwrap();
+    forged["event_id"] = json!("forged");
+    forged["seq"] = json!(seq + 1);
+    forged["prev_hash"] = forged["hash"].clone();
+    forged["payload"]["future_field"] = json!("edited without rehashing");
+    conn.execute(
+        "INSERT INTO events (event_id, run_id, seq, type, occurred_at, recorded_at, hash, body)
+         VALUES ('forged', ?1, ?2, 'agent_turn_ended', ?3, ?3, ?4, ?5)",
+        rusqlite::params![
+            run,
+            seq + 1,
+            Utc::now().to_rfc3339(),
+            forged["hash"].as_str().unwrap(),
+            forged.to_string()
+        ],
+    )
+    .unwrap();
+    let (_, report) = d.get(&format!("/v1/runs/{run}/verify"), Some(&d.token));
+    assert_eq!(report["ok"], false, "{report}");
+}
+
+// --- W1.c, A5-4: a binary never runs against a database written by a newer one ----------
+
+#[test]
+#[ignore = "audit A5-4"]
+fn audit_w1_c_database_with_a_newer_schema_stops_the_daemon_with_a_clear_line() {
+    let home = tempfile::tempdir().unwrap();
+    let output = tempfile::tempdir().unwrap();
+    {
+        let conn = rusqlite::Connection::open(home.path().join("speedrun.sqlite")).unwrap();
+        conn.execute_batch("CREATE TABLE future (x); PRAGMA user_version = 99;")
+            .unwrap();
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_speedrund"))
+        .env("SPEEDRUN_HOME", home.path())
+        .env("SPEEDRUN_ADDR", format!("127.0.0.1:{}", free_port()))
+        .env_remove("SPEEDRUN_LOG")
+        .env_remove("RUST_LOG")
+        .env_remove("SPEEDRUN_DEVICE_KEY")
+        .stdin(Stdio::null())
+        .stdout(File::create(output.path().join("stdout")).unwrap())
+        .stderr(File::create(output.path().join("stderr")).unwrap())
+        .spawn()
+        .unwrap();
+    let mut status = None;
+    wait_for(STARTUP_LIMIT, || {
+        status = child.try_wait().ok().flatten();
+        status.is_some()
+    });
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let stderr = fs::read_to_string(output.path().join("stderr")).unwrap_or_default();
+    assert!(
+        status.is_some_and(|s| !s.success()),
+        "the daemon must exit non-zero, not serve a newer database (exit: {status:?})\n{stderr}"
+    );
+    assert!(
+        stderr.contains("99") && stderr.to_lowercase().contains("newer"),
+        "the log line must say the database is newer and name its version:\n{stderr}"
+    );
+    let version: i64 = rusqlite::Connection::open(home.path().join("speedrun.sqlite"))
+        .unwrap()
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 99, "the newer database must be left as it was");
+}
+
+// --- W2.d, A2-6: a marked spool replay is exempt from the last-event bound ---------------
+
+/// Header a client sets when it delivers an event from its spool.
+const REPLAY_HEADER: &str = "X-Speedrun-Replay";
+
+fn post_replay(d: &Daemon, path: &str, body: &Value) -> (u16, Value) {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(10)).build();
+    let result = agent
+        .post(&format!("{}{path}", d.base))
+        .set("Authorization", &format!("Bearer {}", d.token))
+        .set(REPLAY_HEADER, "1")
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string());
+    let response = match result {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(ureq::Error::Transport(_)) => return (0, Value::Null),
+    };
+    let status = response.status();
+    let text = response.into_string().unwrap_or_default();
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+fn turn_end(event_id: &str, at: chrono::DateTime<Utc>) -> Value {
+    json!({
+        "event_id": event_id,
+        "occurred_at": at.to_rfc3339(),
+        "payload": {"type": "agent_turn_ended", "session_id": "s1"},
+    })
+}
+
+/// A run whose newest event is a claim made now, after a prompt made 40 minutes ago.
+fn run_with_a_recent_event(d: &Daemon) -> String {
+    let (status, body) = d.post(
+        "/v1/prompts",
+        &json!({
+            "event_id": "p1", "project_id": "proj", "project_root": null,
+            "category_id": "any-percent", "session_id": "s1", "host": "test", "model": null,
+            "content": "build it",
+            "occurred_at": (Utc::now() - chrono::Duration::minutes(40)).to_rfc3339(),
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let run = body["run_id"].as_str().unwrap().to_string();
+    let (status, body) = d.post(
+        "/v1/events",
+        &json!({
+            "event_id": "recent", "run_id": run, "occurred_at": Utc::now().to_rfc3339(),
+            "payload": claim("scaffold-runs", json!([])),
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    run
+}
+
+#[test]
+#[ignore = "audit A2-6"]
+fn audit_w2_d_marked_replay_older_than_the_last_event_is_accepted() {
+    let d = Daemon::start();
+    let _run = run_with_a_recent_event(&d);
+    let spooled_at = Utc::now() - chrono::Duration::minutes(30);
+    let (status, body) = post_replay(&d, "/v1/projects/proj/events", &turn_end("spooled", spooled_at));
+    assert_eq!(
+        status, 200,
+        "a spooled event delivered late must be recorded: {body}"
+    );
+    let recorded = body["event"]["occurred_at"].as_str().unwrap_or_default();
+    let recorded = chrono::DateTime::parse_from_rfc3339(recorded).map(|t| t.with_timezone(&Utc));
+    assert_eq!(
+        recorded.ok().map(|t| t.timestamp()),
+        Some(spooled_at.timestamp()),
+        "at the time it happened: {body}"
+    );
+}
+
+#[test]
+fn guard_w2_d_unmarked_event_older_than_the_last_event_is_refused() {
+    let d = Daemon::start();
+    let _run = run_with_a_recent_event(&d);
+    let (status, body) = d.post(
+        "/v1/projects/proj/events",
+        &turn_end("unmarked", Utc::now() - chrono::Duration::minutes(30)),
+    );
+    assert_eq!(status, 400, "{body}");
+}
+
+#[test]
+fn guard_w2_d_replay_from_before_the_run_started_is_refused() {
+    let d = Daemon::start();
+    let _run = run_with_a_recent_event(&d);
+    let (status, body) = post_replay(
+        &d,
+        "/v1/projects/proj/events",
+        &turn_end("before-start", Utc::now() - chrono::Duration::hours(2)),
+    );
+    assert_eq!(status, 400, "a replay may not predate its run: {body}");
+}
+
+#[test]
+#[ignore = "audit A2-6"]
+fn audit_w2_d_prompt_older_than_the_last_event_is_refused() {
+    let d = Daemon::start();
+    let _run = run_with_a_recent_event(&d);
+    let (status, body) = d.post(
+        "/v1/prompts",
+        &json!({
+            "event_id": "late-prompt", "project_id": "proj", "project_root": null,
+            "category_id": "any-percent", "session_id": "s1", "host": "test", "model": null,
+            "content": "and then",
+            "occurred_at": (Utc::now() - chrono::Duration::minutes(30)).to_rfc3339(),
+        }),
+    );
+    assert_eq!(
+        status, 400,
+        "an unmarked prompt dated before the run's last event: {body}"
+    );
+}
+
+#[test]
+fn guard_w2_d_marked_prompt_replay_is_accepted() {
+    let d = Daemon::start();
+    let _run = run_with_a_recent_event(&d);
+    let (status, body) = post_replay(
+        &d,
+        "/v1/prompts",
+        &json!({
+            "event_id": "spooled-prompt", "project_id": "proj", "project_root": null,
+            "category_id": "any-percent", "session_id": "s1", "host": "test", "model": null,
+            "content": "and then",
+            "occurred_at": (Utc::now() - chrono::Duration::minutes(30)).to_rfc3339(),
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+}
