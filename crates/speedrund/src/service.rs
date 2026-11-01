@@ -642,6 +642,8 @@ mod tests {
 
         let mut p = prompt("p1");
         p.project_root = Some(repo.to_string_lossy().into());
+        // The commit must be made during the run (audit A3-1), so the run starts before it.
+        p.occurred_at = Some(Utc::now() - Duration::hours(1));
         let run = s.record_prompt(p).unwrap().run_id;
         let reach = |id: &str| EventPayload::MilestoneReached {
             milestone_id: id.into(),
@@ -869,5 +871,60 @@ mod tests {
             report.error.unwrap().contains("signature"),
             "a re-hashed edit must fail on the signature, not silently pass"
         );
+    }
+
+    // --- Audit regressions (docs/audit/v0.1.0.json, docs/V0.2.md).
+
+    #[test]
+    #[ignore = "audit A2-2"]
+    fn audit_a2_2_stale_job_does_not_verify_a_reclaimed_milestone() {
+        let (mut s, _d) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        let claim = |evidence: Evidence| EventPayload::MilestoneReached {
+            milestone_id: "happy-path-demo".into(),
+            trust: Trust::SelfDeclared,
+            evidence: vec![evidence],
+        };
+        let request = |id: &str, payload: EventPayload| AppendRequest {
+            event_id: id.into(),
+            run_id: run.clone(),
+            occurred_at: None,
+            payload,
+        };
+        let stale = s
+            .append(request(
+                "c1",
+                claim(Evidence::Url {
+                    url: "https://demo.acme.dev".into(),
+                }),
+            ))
+            .unwrap()
+            .job
+            .expect("url evidence needs a check");
+        s.append(request(
+            "i1",
+            EventPayload::MilestoneInvalidated {
+                milestone_id: "happy-path-demo".into(),
+                reason: "wrong demo".into(),
+            },
+        ))
+        .unwrap();
+        s.append(request(
+            "c2",
+            claim(Evidence::Note {
+                text: "done now".into(),
+            }),
+        ))
+        .unwrap();
+
+        let passed = verify::Outcome {
+            verifiers: vec!["url"],
+            problems: vec![],
+        };
+        assert!(s.finish_verification(&stale, &passed).unwrap().is_empty());
+        let m = s.run(&run).unwrap();
+        let m = m.milestone("happy-path-demo").unwrap();
+        assert_ne!(m.state, MilestoneState::Verified);
+        assert!(m.trust < Some(Trust::EvidenceVerified));
     }
 }

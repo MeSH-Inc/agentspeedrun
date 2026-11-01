@@ -1202,4 +1202,63 @@ mod tests {
         assert_eq!(out.verifiers, vec!["url"]);
         assert_eq!(out.report().verifier, None);
     }
+
+    // --- Audit regressions (docs/audit/v0.1.0.json, docs/V0.2.md). Tests marked ignore
+    // fail until their finding is fixed; `guard_` tests must keep passing.
+
+    /// A repo whose only commit was made, by its committer date, in 2001.
+    fn repo_committed_in_2001() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=f",
+            "-c",
+            "user.email=f@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "old",
+        ]);
+        let sha = git(&["rev-parse", "HEAD"]).trim().to_string();
+        (dir, root, sha)
+    }
+
+    #[test]
+    #[ignore = "audit A3-1"]
+    fn audit_a3_1_commit_from_before_the_run_does_not_verify() {
+        let (_d, root, sha) = repo_committed_in_2001();
+        let mut j = job(
+            Some("happy-path-demo"),
+            Some(&root),
+            vec![Evidence::GitCommit { sha }],
+        );
+        j.run_started_at = DateTime::from_timestamp(1_600_000_000, 0).unwrap(); // 2020
+        assert!(!verifier(Fake::default()).verify(&j).verified());
+    }
+
+    #[test]
+    fn guard_commit_made_during_the_run_verifies_a_demo() {
+        let (_d, root, sha) = repo();
+        let j = job(
+            Some("happy-path-demo"),
+            Some(&root),
+            vec![Evidence::GitCommit { sha }],
+        );
+        assert!(verifier(Fake::default()).verify(&j).verified());
+    }
 }
