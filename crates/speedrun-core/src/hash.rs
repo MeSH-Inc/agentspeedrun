@@ -41,6 +41,18 @@ fn write_canonical(v: &Value, out: &mut String) {
     }
 }
 
+/// A stable id derived from `parts`: their sha256, hex-encoded. Each part is
+/// NUL-terminated, so `["ab", "c"]` and `["a", "bc"]` differ. The same parts
+/// always give the same id, which lets a retried request name the same thing.
+pub fn content_id(parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update([0u8]);
+    }
+    hex::encode(hasher.finalize())
+}
+
 /// Hash of an event: sha256 over its canonical JSON with `hash` and `sig`
 /// removed. The signature covers this hash, so it cannot be part of it.
 pub fn compute_hash(event: &Event) -> String {

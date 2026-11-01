@@ -53,6 +53,13 @@ pub fn definitions() -> Value {
     ])
 }
 
+/// A proposal's identity: what it says, not when it was made or where it
+/// happened to be sent. A retry names the same milestone, so the daemon can
+/// treat it as a no-op while a new title still arrives.
+fn proposed_milestone_id(project_id: &str, title: &str) -> String {
+    speedrun_core::hash::content_id(&["milestone", project_id, title])
+}
+
 /// Run a tool against the project enclosing `dir`.
 pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
     let project = Project::require(dir)?;
@@ -71,6 +78,7 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
             if items.is_empty() {
                 anyhow::bail!("milestones must be a non-empty array");
             }
+            let mut queued = 0;
             let mut ids = Vec::new();
             for m in items {
                 let title = m
@@ -79,23 +87,29 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
                     .unwrap_or_default()
                     .trim()
                     .to_string();
-                let milestone_id = speedrun_core::new_id();
-                ops::append_now(
-                    &client,
-                    &project,
-                    EventPayload::MilestoneProposed {
-                        milestone_id: milestone_id.clone(),
-                        origin: MilestoneOrigin::AgentGenerated,
-                        key: None,
-                        title: title.clone(),
-                        description: m.get("description").and_then(Value::as_str).map(str::to_string),
-                        required_trust: Trust::AgentClaimed,
-                    },
-                )?;
+                let milestone_id = proposed_milestone_id(&project.config.project_id, &title);
+                let payload = EventPayload::MilestoneProposed {
+                    milestone_id: milestone_id.clone(),
+                    origin: MilestoneOrigin::AgentGenerated,
+                    key: None,
+                    title: title.clone(),
+                    description: m.get("description").and_then(Value::as_str).map(str::to_string),
+                    required_trust: Trust::AgentClaimed,
+                };
+                // Spooled proposals are not failures: a later flush delivers
+                // them, and the daemon makes the repeated ones no-ops.
+                if ops::append(&client, &project, payload)?.is_none() {
+                    queued += 1;
+                }
                 ids.push(format!("{milestone_id}  {title}"));
             }
+            let note = if queued == 0 {
+                String::new()
+            } else {
+                format!("\n{queued} queued until the daemon is reachable.")
+            };
             Ok(format!(
-                "Proposed {} milestones. The user accepts them with `speedrun accept <id>`:\n{}",
+                "Proposed {} milestones. The user accepts them with `speedrun accept <id>`:\n{}{note}",
                 ids.len(),
                 ids.join("\n")
             ))

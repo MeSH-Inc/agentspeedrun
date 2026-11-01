@@ -91,6 +91,15 @@ fn fold(tx: &Tx<'_>, run_id: &str) -> Result<RunView> {
     RunView::fold(&events, Utc::now()).ok_or_else(|| Error::NotFound(format!("run {run_id}")))
 }
 
+/// The event that proposed `milestone_id` in this log, if any. A retried
+/// proposal names the same milestone, so it must become a no-op.
+fn proposal_event<'a>(events: &'a [Event], milestone_id: &str) -> Option<&'a Event> {
+    events.iter().find(|e| match &e.payload {
+        EventPayload::MilestoneProposed { milestone_id: id, .. } => id == milestone_id,
+        _ => false,
+    })
+}
+
 impl Service {
     pub fn new(store: Store, categories: Vec<Category>) -> Self {
         Self {
@@ -233,7 +242,17 @@ impl Service {
                 }
                 return Ok((existing, false));
             }
-            let run = fold(tx, &req.run_id)?;
+            let events = tx.reader().run_events(&req.run_id)?;
+            if let EventPayload::MilestoneProposed { milestone_id, .. } = &req.payload
+                && let Some(existing) = proposal_event(&events, milestone_id)
+            {
+                // A retained proposal is a retry, not a conflict: it may have
+                // been spooled while the daemon was unreachable, and flush
+                // must deliver it as a no-op instead of rejecting it.
+                return Ok((existing.clone(), false));
+            }
+            let run = RunView::fold(&events, Utc::now())
+                .ok_or_else(|| Error::NotFound(format!("run {}", req.run_id)))?;
             run.check(&req.payload).map_err(Error::Conflict)?;
             let at = CLOCK
                 .admit(
