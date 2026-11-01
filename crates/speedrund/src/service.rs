@@ -13,6 +13,7 @@ use speedrun_core::{
     redact::redact,
 };
 
+use crate::clock::ClockWindow;
 use crate::store::{Store, Tx, UnreadableRow};
 use crate::verify;
 
@@ -21,8 +22,8 @@ use crate::verify;
 /// ones, such as spooled claims replayed hours afterwards, are dated when
 /// the evidence was actually checked.
 const VERIFY_GRACE: Duration = Duration::minutes(10);
-/// Client clocks may run ahead by this much before being clamped.
-const MAX_CLOCK_SKEW: Duration = Duration::minutes(5);
+/// The daemon's tolerance for client clocks, in one place.
+const CLOCK: ClockWindow = ClockWindow::DAEMON;
 const MAX_ID_LEN: usize = 128;
 
 #[derive(Debug)]
@@ -76,11 +77,6 @@ pub struct Service {
     pb_cache: HashMap<(String, String, u32), PbGroup>,
 }
 
-fn clamp_time(t: Option<DateTime<Utc>>) -> DateTime<Utc> {
-    let now = Utc::now();
-    t.map_or(now, |t| t.min(now + MAX_CLOCK_SKEW))
-}
-
 fn check_id(name: &str, id: &str) -> Result<()> {
     if id.is_empty() || id.len() > MAX_ID_LEN || id.chars().any(char::is_control) {
         return Err(Error::BadRequest(format!(
@@ -129,7 +125,7 @@ impl Service {
                     ))),
                 };
             }
-            let at = clamp_time(req.occurred_at);
+            let at = CLOCK.clamp(req.occurred_at, Utc::now());
             let current = match tx.reader().latest_run(&req.project_id)? {
                 Some(run_id) => Some(fold(tx, &run_id)?),
                 None => None,
@@ -239,12 +235,14 @@ impl Service {
             }
             let run = fold(tx, &req.run_id)?;
             run.check(&req.payload).map_err(Error::Conflict)?;
-            let e = tx.insert(
-                &req.run_id,
-                &req.event_id,
-                clamp_time(req.occurred_at),
-                req.payload.clone(),
-            )?;
+            let at = CLOCK
+                .admit(
+                    req.occurred_at,
+                    tx.reader().last_occurred_at(&req.run_id)?,
+                    Utc::now(),
+                )
+                .map_err(Error::BadRequest)?;
+            let e = tx.insert(&req.run_id, &req.event_id, at, req.payload.clone())?;
             Ok((e, true))
         })?;
 

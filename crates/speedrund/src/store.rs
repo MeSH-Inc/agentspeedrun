@@ -161,6 +161,24 @@ impl Reader<'_> {
         rows.map(|b| parse(&b?)).collect()
     }
 
+    /// When the run's newest event (by `seq`) says it happened. The daemon
+    /// compares a new event's time against this, so a replay is judged
+    /// against the log as it stands rather than against wall-clock now.
+    pub fn last_occurred_at(&self, run_id: &str) -> rusqlite::Result<Option<DateTime<Utc>>> {
+        let body: Option<String> = self
+            .0
+            .query_row(
+                "SELECT body FROM events WHERE run_id = ?1 ORDER BY seq DESC LIMIT 1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match body {
+            Some(body) => Ok(Some(parse(&body)?.occurred_at)),
+            None => Ok(None),
+        }
+    }
+
     /// Read a run's log without failing on a row that does not decode: the
     /// rows that did are returned as events, and the rest are named here so
     /// the caller can report them instead of dropping them silently.
