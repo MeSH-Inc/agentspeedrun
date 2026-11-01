@@ -195,6 +195,80 @@ enum Cmd {
     },
 }
 
+/// Command-line parsing at the process boundary.
+///
+/// One decision varies: host adapters (`hook`, `ingest`) are called by editors and
+/// agents that treat a non-zero exit as a blocking failure, so their argument errors
+/// are swallowed. Every other subcommand keeps clap's strict parsing.
+mod invocation {
+    use std::ffi::OsString;
+
+    use clap::Parser;
+
+    use super::Cli;
+
+    /// Subcommands whose argv comes from an editor or agent host.
+    const HOST_COMMANDS: [&str; 2] = ["hook", "ingest"];
+
+    /// Flags `ingest` understands; anything else may come from a newer adapter.
+    const INGEST_FLAGS: [&str; 3] = ["--host", "--session", "--model"];
+
+    /// Parse argv, returning `None` when a host adapter's command line is unusable.
+    ///
+    /// `None` means "exit successfully without dispatching": the host must never be
+    /// blocked by an argument speedrun did not understand.
+    pub(super) fn parse() -> Option<Cli> {
+        let args: Vec<OsString> = std::env::args_os().collect();
+        if !is_host_command(&args) {
+            return Some(Cli::parse());
+        }
+        match Cli::try_parse_from(relaxed(&args)) {
+            Ok(cli) => Some(cli),
+            Err(err) => {
+                report(&err);
+                None
+            }
+        }
+    }
+
+    fn is_host_command(args: &[OsString]) -> bool {
+        args.get(1)
+            .and_then(|arg| arg.to_str())
+            .is_some_and(|name| HOST_COMMANDS.contains(&name))
+    }
+
+    /// Drop arguments a newer host plugin may have added.
+    fn relaxed(args: &[OsString]) -> Vec<OsString> {
+        match args.get(1).and_then(|arg| arg.to_str()) {
+            // `hook <host> <event>`: whatever follows the event is optional for speedrun.
+            Some("hook") => args.iter().take(4).cloned().collect(),
+            // `ingest <kind> --host .. --session .. [--model ..]`: keep the fields we know
+            // and discard unknown flags instead of failing the adapter.
+            Some("ingest") => args
+                .iter()
+                .filter(|arg| match arg.to_str() {
+                    Some(arg) => !arg.starts_with('-') || is_ingest_flag(arg),
+                    None => true,
+                })
+                .cloned()
+                .collect(),
+            _ => args.to_vec(),
+        }
+    }
+
+    fn is_ingest_flag(arg: &str) -> bool {
+        let name = arg.split_once('=').map_or(arg, |(name, _)| name);
+        INGEST_FLAGS.contains(&name)
+    }
+
+    /// Argument errors are noise for hosts unless someone is debugging the adapter.
+    fn report(err: &clap::Error) {
+        if std::env::var_os("SPEEDRUN_DEBUG").is_some() {
+            eprintln!("speedrun: ignoring host adapter arguments: {err}");
+        }
+    }
+}
+
 fn main() {
     // `speedrun status | head` closes stdout early; stop quietly instead of panicking.
     let default_hook = std::panic::take_hook();
@@ -210,7 +284,11 @@ fn main() {
         }
         default_hook(info);
     }));
-    let cli = Cli::parse();
+    // Host adapters own their own argv policy; `None` means their command line was
+    // unusable and the host must not see a failure.
+    let Some(cli) = invocation::parse() else {
+        return;
+    };
     // Hooks must never fail the host.
     if let Cmd::Hook { host, event } = &cli.command {
         match host.as_str() {
