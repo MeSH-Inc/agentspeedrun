@@ -114,9 +114,26 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .with_state(state)
 }
 
+impl AppState {
+    fn token_policy(&self) -> TokenPolicy<'_> {
+        TokenPolicy {
+            full: self.token.as_str(),
+            display: self.display_token.as_str(),
+        }
+    }
+}
+
 /// Constant-time comparison so the token cannot be guessed byte by byte.
 fn token_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// A secret and the channel that carried it.
+enum Credential<'a> {
+    /// An `Authorization: Bearer ...` header.
+    Header(&'a str),
+    /// A `?token=...` query parameter.
+    Query(&'a str),
 }
 
 fn bearer(req: &Request) -> Option<&str> {
@@ -124,6 +141,51 @@ fn bearer(req: &Request) -> Option<&str> {
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+fn query_token(req: &Request) -> Option<&str> {
+    req.uri()
+        .query()?
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("token="))
+}
+
+/// The first credential the request offers: a bearer header, else `?token=`.
+fn credential(req: &Request) -> Option<Credential<'_>> {
+    bearer(req)
+        .map(Credential::Header)
+        .or_else(|| query_token(req).map(Credential::Query))
+}
+
+/// The only place that decides which token is acceptable in which channel.
+struct TokenPolicy<'a> {
+    full: &'a str,
+    display: &'a str,
+}
+
+impl TokenPolicy<'_> {
+    fn is_full(&self, candidate: &str) -> bool {
+        token_eq(candidate.as_bytes(), self.full.as_bytes())
+    }
+
+    fn is_display(&self, candidate: &str) -> bool {
+        token_eq(candidate.as_bytes(), self.display.as_bytes())
+    }
+
+    /// Full access is header-only: the full token must never be written into a URL.
+    fn allows_full_access(&self, presented: Option<Credential<'_>>) -> bool {
+        matches!(presented, Some(Credential::Header(token)) if self.is_full(token))
+    }
+
+    /// Display routes take either token in the header, but only the display
+    /// token as `?token=` (browsers' EventSource cannot set headers).
+    fn allows_display(&self, presented: Option<Credential<'_>>) -> bool {
+        match presented {
+            Some(Credential::Header(token)) => self.is_full(token) || self.is_display(token),
+            Some(Credential::Query(token)) => self.is_display(token),
+            None => false,
+        }
+    }
 }
 
 fn unauthorized() -> Response {
@@ -136,28 +198,23 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
-/// Full access: header only.
+/// Full access: the full token, in the header only.
 async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    match bearer(&req) {
-        Some(t) if token_eq(t.as_bytes(), state.token.as_bytes()) => next.run(req).await,
-        _ => unauthorized(),
+    if state.token_policy().allows_full_access(credential(&req)) {
+        next.run(req).await
+    } else {
+        unauthorized()
     }
 }
 
-/// Read-only display routes: either token, in the header or as `?token=`
-/// (browsers' EventSource cannot set headers).
+/// Read-only display routes: either token in the header, or the display token
+/// as `?token=` (browsers' EventSource cannot set headers).
 async fn display_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let from_query = req.uri().query().and_then(|q| {
-        q.split('&')
-            .find_map(|kv| kv.strip_prefix("token="))
-            .map(str::to_string)
-    });
-    let presented = bearer(&req).map(str::to_string).or(from_query);
-    let ok = presented.is_some_and(|t| {
-        token_eq(t.as_bytes(), state.display_token.as_bytes())
-            || token_eq(t.as_bytes(), state.token.as_bytes())
-    });
-    if ok { next.run(req).await } else { unauthorized() }
+    if state.token_policy().allows_display(credential(&req)) {
+        next.run(req).await
+    } else {
+        unauthorized()
+    }
 }
 
 /// Wake live streams after a write.
