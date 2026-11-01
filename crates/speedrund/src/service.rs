@@ -568,6 +568,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
             at,
             EventPayload::MilestoneAccepted {
                 milestone_id: m.key.clone(),
+                required_trust: None,
             },
         )?;
     }

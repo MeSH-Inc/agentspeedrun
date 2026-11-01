@@ -24,9 +24,10 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | M6.b | A `ci_run` whose head commit predates run start does not verify | loop | | `audit_m6_b_*` |
 | M7.a | Redaction covers the shapes listed in M7 | loop | | `audit_a1_2_*` |
 | M7.b | The client redacts before sending or spooling; `rejected.jsonl` is capped | loop | | `audit_m7_b_*` |
+| M7.c | Spool and `rejected.jsonl` write failures are counted and `doctor` shows them; trimming `rejected.jsonl` loses no line under concurrent refusals | loop | | |
 | M8 | A hook records its own event first and flushes the spool within about 3 s | leader | | |
 | M9.a | A user's claim satisfies `agent_claimed` on a non-predefined milestone | loop | | `audit_a6_5_*` |
-| M9.b | `accept` can set `required_trust` | loop | | |
+| M9.b | `accept` can set `required_trust` | leader | | `audit_m9_b_*` |
 | M10 | The docs claim only what the code does | leader | | |
 | W1.a | `speedrun verify` passes on a frozen v0.2 fixture DB after a dummy optional field is added | leader | | |
 | W1.b | One corrupt row yields a 200 from `/v1/live` with an error entry | loop | | `audit_w1_b_*` |
@@ -36,6 +37,7 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W2.a | Mocked-verifier scenarios of A3-1/2/3/4 fail closed under the current category rules | leader | D4 | |
 | W2.b | A verification job whose claim was invalidated and re-made does not verify | loop | | `audit_a2_2_*` |
 | W2.c | A backdated claim gets 400 | loop | | `audit_w2_c_*` |
+| W2.d | A marked spool replay older than the run's last event is accepted; the lower bound also applies to the prompt route | leader | | |
 | W3.a | start@0, start@60 in one session gives agent time well under 60 min | loop | | `audit_a2_3_*` |
 | W3.b | start@0, start@60, end@30, end@80 gives 50 min | loop | | `audit_a2_4_*` |
 | W3.c | A paused run with agent work gives non-zero `agent_ms` | loop | | `audit_a6_1_agent_turn_while_paused_*` |

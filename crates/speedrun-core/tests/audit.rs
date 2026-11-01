@@ -179,6 +179,7 @@ fn milestone(origin: MilestoneOrigin) -> Vec<(i64, EventPayload)> {
             1,
             EventPayload::MilestoneAccepted {
                 milestone_id: "m".into(),
+                required_trust: None,
             },
         ),
         (
@@ -296,7 +297,6 @@ fn accepted(accepted: serde_json::Value) -> RunView {
 }
 
 #[test]
-#[ignore = "audit A3-5, A6-5"]
 fn audit_m9_b_accept_sets_required_trust() {
     // END_STATE M9.b; V0.2 M9: "Let `accept` set required_trust", raising or lowering it.
     for (wire, trust) in [

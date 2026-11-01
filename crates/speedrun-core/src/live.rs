@@ -50,7 +50,6 @@ pub struct LiveRun {
     /// Rows of this run's log that could not be decoded. Reported rather than
     /// dropped; empty in a healthy log, and omitted from JSON then.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(skip)]
     pub errors: Vec<SnapshotError>,
 }
 
@@ -268,6 +267,7 @@ mod tests {
                 0,
                 EventPayload::MilestoneAccepted {
                     milestone_id: key.into(),
+                    required_trust: None,
                 },
             ));
         }

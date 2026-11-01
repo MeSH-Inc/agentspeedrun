@@ -41,7 +41,7 @@ fn ensure_token(path: &Path) -> Result<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    logging::init()?;
+    logging::init();
 
     let dir = paths::data_dir();
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;

@@ -379,9 +379,15 @@ impl RunView {
                         split: None,
                     });
                 }
-                EventPayload::MilestoneAccepted { milestone_id } => {
+                EventPayload::MilestoneAccepted {
+                    milestone_id,
+                    required_trust,
+                } => {
                     if let Some(m) = index.get(milestone_id).map(|&i| &mut view.milestones[i]) {
                         m.state = MilestoneState::Accepted;
+                        if let Some(required) = required_trust {
+                            m.required_trust = *required;
+                        }
                     }
                 }
                 EventPayload::MilestoneRejected { milestone_id, .. } => {
@@ -620,7 +626,7 @@ impl RunView {
                 }
                 Ok(())
             }
-            P::MilestoneAccepted { milestone_id } | P::MilestoneRejected { milestone_id, .. } => {
+            P::MilestoneAccepted { milestone_id, .. } | P::MilestoneRejected { milestone_id, .. } => {
                 match state_of(milestone_id)? {
                     S::Proposed => Ok(()),
                     s => Err(format!("milestone is {s:?}, not proposed").to_lowercase()),
@@ -714,6 +720,7 @@ mod tests {
                 0,
                 EventPayload::MilestoneAccepted {
                     milestone_id: id.into(),
+                    required_trust: None,
                 },
             ),
         ]

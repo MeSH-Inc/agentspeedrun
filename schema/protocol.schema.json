@@ -279,6 +279,17 @@
             },
             "milestone_id": {
               "type": "string"
+            },
+            "required_trust": {
+              "description": "Replaces the trust the proposal required, raising or lowering it.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Trust"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -1263,6 +1274,13 @@
               "type": "null"
             }
           ]
+        },
+        "errors": {
+          "description": "Rows of this run's log that could not be decoded. Reported rather than\ndropped; empty in a healthy log, and omitted from JSON then.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnapshotError"
+          }
         }
       },
       "required": [
@@ -1447,6 +1465,27 @@
       "required": [
         "run_id",
         "timing"
+      ]
+    },
+    "SnapshotError": {
+      "description": "A stored event row the daemon could not decode while building a snapshot.\nCarried on the run it belongs to so damage is visible, never silently gone.",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "event_id": {
+          "description": "The row's `event_id` column, known even when its body is truncated.",
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "event_id",
+        "message"
       ]
     },
     "ErrorBody": {

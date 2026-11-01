@@ -95,6 +95,9 @@ enum Cmd {
     /// Accept an agent-proposed milestone.
     Accept {
         milestone: String,
+        /// Change the trust the milestone requires.
+        #[arg(long, value_parser = ["self_declared", "agent_claimed", "evidence_verified"])]
+        required_trust: Option<String>,
     },
     /// Reject an agent-proposed milestone.
     Reject {
@@ -394,13 +397,25 @@ fn run(cmd: Cmd) -> Result<()> {
                 &p,
                 EventPayload::MilestoneAccepted {
                     milestone_id: milestone_id.clone(),
+                    required_trust: None,
                 },
             )?;
             println!("Added {milestone_id}");
         }
-        Cmd::Accept { milestone } => milestone_event(&c, &cwd, &milestone, |milestone_id| {
-            EventPayload::MilestoneAccepted { milestone_id }
-        })?,
+        Cmd::Accept {
+            milestone,
+            required_trust,
+        } => {
+            let required_trust = required_trust
+                .map(|t| serde_json::from_value::<Trust>(serde_json::Value::String(t)))
+                .transpose()?;
+            milestone_event(&c, &cwd, &milestone, |milestone_id| {
+                EventPayload::MilestoneAccepted {
+                    milestone_id,
+                    required_trust,
+                }
+            })?
+        }
         Cmd::Reject { milestone, reason } => milestone_event(&c, &cwd, &milestone, |milestone_id| {
             EventPayload::MilestoneRejected { milestone_id, reason }
         })?,

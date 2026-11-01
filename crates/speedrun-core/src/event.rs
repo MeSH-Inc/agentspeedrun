@@ -71,6 +71,9 @@ pub enum EventPayload {
     },
     MilestoneAccepted {
         milestone_id: String,
+        /// Replaces the trust the proposal required, raising or lowering it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_trust: Option<Trust>,
     },
     MilestoneRejected {
         milestone_id: String,
