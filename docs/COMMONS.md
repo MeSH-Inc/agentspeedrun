@@ -382,7 +382,7 @@ crawler, not the data.
 
 ### P0 — foundations (this is `V0.2.md`, plus signing)
 
-Deliverables: socket + peer-UID auth; device ed25519 keypair; `device_id` =
+Deliverables: port-file transport with token HMAC client auth (D3); device ed25519 keypair; `device_id` =
 fingerprint; per-`(run, device)` chains; `sig` on every event; disclosure key +
 commitment in `RunStarted`; ruleset digest; `observed` facts in
 `MilestoneVerified`; per-run disclosure tier field locally.
@@ -437,17 +437,20 @@ external anchor. Explicitly deferred until there is more than one steward.
 - Ranking by token spend.
 - Windows-native support (unchanged from v0.1: use WSL).
 
-## 16. Decisions needed from the owner
+## 16. Owner decisions
 
-| # | Decision | Options | Blocks |
-|---|---|---|---|
-| **C1** | Identity unit | person (recommended) vs device | P0 chains, P1 accounts, PB pools |
-| **C2** | Steward | MeSH-Inc as steward vs neutral foundation vs single-person hobby | P2 disputes, P3 governance |
-| **C3** | Default publication | T1 on `speedrun finish` (prompted) vs always manual | P1 uploads |
-| **C4** | Server language | reuse Rust (`axum` + `sqlx`) vs separate stack | P1 |
-| **C5** | Moderation capacity | who answers disputes, expected SLA | P3 |
-| **C6** | Rules repo | part of this repo vs separate `agentspeedrun/rules` | P3 |
-| **C7** | Funding | sponsorship vs hosting the steward pays for | P3+ |
+C1, C3 and C4 were made by the owner on 2026-11-01. The rest block only P2 and later,
+which `END_STATE.md` puts out of scope, and are deferred until then.
+
+| # | Decision | Options | Blocks | Choice |
+|---|---|---|---|---|
+| **C1** | Identity unit | person vs device | P0 chains, P1 accounts, PB pools | person; devices are revocable keys |
+| **C2** | Steward | MeSH-Inc as steward vs neutral foundation vs single-person hobby | P2 disputes, P3 governance | deferred |
+| **C3** | Default publication | T1 on `speedrun finish` (prompted) vs always manual | P1 uploads | always manual: nothing leaves the machine until `speedrun publish` |
+| **C4** | Server language | reuse Rust (`axum` + `sqlx`) vs separate stack | P1 | Rust, `axum` + `sqlx`, a crate in this workspace sharing the verifier library |
+| **C5** | Moderation capacity | who answers disputes, expected SLA | P3 | deferred |
+| **C6** | Rules repo | part of this repo vs separate `agentspeedrun/rules` | P3 | deferred |
+| **C7** | Funding | sponsorship vs hosting the steward pays for | P3+ | deferred |
 
 ## 17. Relationship to `V0.2.md`
 

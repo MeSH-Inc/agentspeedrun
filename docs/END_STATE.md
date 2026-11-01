@@ -20,7 +20,6 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | M3 | Daemon logs reach stderr or a capped file | loop | | |
 | M4 | SIGTERM with an SSE stream open ends the daemon within about 2 s | leader | | |
 | M5.a | Agent work while paused counts; a prompt or turn start resumes the run; pausing with an open turn is rejected | loop | | `audit_a6_1_*` |
-| M5.b | v0.1 PBs whose value changes under M5 are labelled | leader | D4 | |
 | M6.a | `git_commit` evidence from before run start does not verify | loop | | `audit_a3_1_*` |
 | M6.b | A `ci_run` whose head commit predates run start does not verify | loop | | |
 | M7.a | Redaction covers the shapes listed in M7 | loop | | `audit_a1_2_*` |
@@ -29,11 +28,12 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | M9.a | A user's claim satisfies `agent_claimed` on a non-predefined milestone | loop | | `audit_a6_5_*` |
 | M9.b | `accept` can set `required_trust` | loop | | |
 | M10 | The docs claim only what the code does | leader | | |
-| W1.a | `speedrun verify` passes on a frozen v0.1 fixture DB after a dummy optional field is added | leader | | |
+| W1.a | `speedrun verify` passes on a frozen v0.2 fixture DB after a dummy optional field is added | leader | | |
 | W1.b | One corrupt row yields a 200 from `/v1/live` with an error entry | loop | | |
-| W1.c | A v0.1 binary opening a v0.2 DB exits non-zero with a clear log line | leader | | |
+| W1.c | A binary opening a DB with a newer schema than its own exits non-zero with a clear log line | leader | | |
 | W1.d | A v2 run whose prompt text was deleted still verifies | leader | D7 | |
-| W2.a | Mocked-verifier scenarios of A3-1/2/3/4 fail closed under the v2 category rules; the same evidence differs under @1 and @2 | leader | | |
+| W1.e | Nothing reads v1 events, bare milestone ids or unsigned events; an unsigned event fails `speedrun verify`; each built-in category has one version | leader | D4 | |
+| W2.a | Mocked-verifier scenarios of A3-1/2/3/4 fail closed under the current category rules | leader | D4 | |
 | W2.b | A verification job whose claim was invalidated and re-made does not verify | loop | | `audit_a2_2_*` |
 | W2.c | A backdated claim gets 400 | loop | | |
 | W3.a | start@0, start@60 in one session gives agent time well under 60 min | loop | | `audit_a2_3_*` |
@@ -50,11 +50,10 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W7.b | Upgrading the binary does not change a project's category version; the snapshot has a `protocol` field | leader | | |
 | W8 | Reproducible packaging, no publish on a failing test, release attestation | leader | D1 | |
 | W9.a | A log edited and re-hashed fails `speedrun verify` with a signature error | | | holds: `rewriting_and_rehashing_an_event_fails_the_signature_check` |
-| W9.b | A frozen v1 fixture log verifies as unsigned | leader | | (constructed log: `unsigned_v1_logs_are_reported_not_failed`) |
 | W9.c | Two device keys append to one run; key rotation keeps earlier events valid | leader | C1 | |
 | W9.d | `speedrun export --tier 2` yields a re-derivable commitment and no prompt text | leader | | |
 | P0.a | A run verifies with only public keys | leader | C1 | |
-| P0.b | The daemon authenticates clients by socket peer UID | leader | D3 | |
+| P0.b | Clients find the daemon through `$DATA_DIR/addr` and authenticate by HMAC over the data-dir token | leader | D3 | |
 
 ## P1, a public record
 
@@ -65,5 +64,6 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | P1.c | An inclusion proof verifies in a standalone test | loop | C4 | |
 | P1.d | Deleting the local DB after publish loses nothing public | leader | C3, C4 | |
 
-Decisions are made when the first item they block is next. D2 (ranking clock) is decided with
-M5.b.
+The owner decided D1–D7 and C1, C3 and C4 on 2026-11-01; the choices are in `V0.2.md` §5 and
+`COMMONS.md` §16. D4 retires every v0.1 format, which removed the items for labelling v0.1 PBs
+(M5.b) and accepting unsigned v1 logs (W9.b) and added W1.e.
