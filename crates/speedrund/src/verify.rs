@@ -582,11 +582,33 @@ fn founder_emails(root: &str) -> BTreeSet<String> {
                 .unwrap_or_default()
                 .lines(),
         )
-        .map(|e| e.trim().to_ascii_lowercase())
+        .map(normalize_email)
         .filter(|e| e.contains('@'))
         .collect();
     out.remove("noreply@github.com");
     out
+}
+
+/// How a payment email is compared to a committer's: case, a `+tag` on the
+/// local part, and dots in Gmail addresses do not make a different person.
+/// This is the single definition of email identity for Stripe checks.
+fn normalize_email(raw: &str) -> String {
+    let email = raw.trim().to_ascii_lowercase();
+    match email.rsplit_once('@') {
+        Some((local, domain)) => {
+            let local = match local.split_once('+') {
+                Some((local, _tag)) => local,
+                None => local,
+            };
+            let local = if domain == "gmail.com" || domain == "googlemail.com" {
+                local.replace('.', "")
+            } else {
+                local.to_string()
+            };
+            format!("{local}@{domain}")
+        }
+        None => email,
+    }
 }
 
 // --- Stripe helpers ---------------------------------------------------------
@@ -599,6 +621,14 @@ struct Stripe<'a> {
     founders: BTreeSet<String>,
 }
 
+/// The Stripe API version every request pins, so a response's shape cannot
+/// change under a verifier that has already been reviewed.
+const STRIPE_API_VERSION: &str = "2024-06-20";
+
+/// A refund above this percentage of the captured amount counts as refunded;
+/// smaller partial refunds still leave real revenue.
+const REFUND_TOLERANCE_PERCENT: i64 = 10;
+
 const STRIPE_PAYMENT_EVENTS: &[&str] = &[
     "charge.succeeded",
     "payment_intent.succeeded",
@@ -610,7 +640,14 @@ const STRIPE_PAYMENT_EVENTS: &[&str] = &[
 impl Stripe<'_> {
     fn object(&self, path: &str) -> Result<Value, String> {
         let url = format!("https://api.stripe.com/v1/{path}");
-        let page = self.fetch.get(&url, &[("Authorization", &self.auth)], true)?;
+        let page = self.fetch.get(
+            &url,
+            &[
+                ("Authorization", self.auth.as_str()),
+                ("Stripe-Version", STRIPE_API_VERSION),
+            ],
+            true,
+        )?;
         match page.status {
             200 => serde_json::from_str(&page.body).map_err(|e| format!("Stripe sent unreadable JSON: {e}")),
             401 => Err(format!(
@@ -688,29 +725,33 @@ impl Stripe<'_> {
                 if s("payment_status") != "paid" || n("amount_total") <= 0 {
                     return Err(format!("checkout session {id} is not paid"));
                 }
-                self.not_founder(id, obj.pointer("/customer_details/email"))?;
+                let email = obj.pointer("/customer_details/email").and_then(Value::as_str);
+                self.not_founder(id, email)?;
                 self.after_start(id, n("created"))?;
-                match linked("payment_intent").or_else(|| linked("invoice")) {
-                    Some(next) => self.check(&next, depth + 1),
-                    None => Ok(()),
-                }
+                let payment = linked("payment_intent")
+                    .or_else(|| linked("invoice"))
+                    .ok_or_else(|| format!("checkout session {id} has no payment to check"))?;
+                self.check(&payment, depth + 1)
             }
             "in" => {
                 if s("status") != "paid" || n("amount_paid") <= 0 {
                     return Err(format!("invoice {id} is not paid"));
                 }
-                self.not_founder(id, obj.get("customer_email"))?;
+                if obj.get("paid_out_of_band").and_then(Value::as_bool) == Some(true) {
+                    return Err(format!("invoice {id} was paid out of band, not by a customer"));
+                }
+                let email = obj.get("customer_email").and_then(Value::as_str);
+                self.not_founder(id, email)?;
                 let paid_at = obj
                     .pointer("/status_transitions/paid_at")
                     .and_then(Value::as_i64)
                     .unwrap_or_else(|| n("created"));
                 self.after_start(id, paid_at)?;
-                match linked("charge") {
-                    Some(ch) => self.check(&ch, depth + 1),
-                    None => Ok(()),
-                }
+                let payment =
+                    invoice_payment(&obj).ok_or_else(|| format!("invoice {id} has no payment to check"))?;
+                self.check(&payment, depth + 1)
             }
-            _ => unreachable!("prefix checked above"),
+            _ => Err(format!("{id} is not a Stripe id")),
         }
     }
 
@@ -728,15 +769,26 @@ impl Stripe<'_> {
         if captured <= 0 {
             return Err(format!("charge {id} captured nothing"));
         }
-        if b("refunded") || n("amount_refunded") >= captured {
+        if b("refunded") || n("amount_refunded") * 100 > captured * REFUND_TOLERANCE_PERCENT {
             return Err(format!("charge {id} was refunded"));
         }
         if b("disputed") {
             return Err(format!("charge {id} is disputed"));
         }
         self.after_start(id, n("created"))?;
-        self.not_founder(id, ch.pointer("/billing_details/email"))?;
-        self.not_founder(id, ch.get("receipt_email"))
+        let emails = [
+            ch.pointer("/billing_details/email").and_then(Value::as_str),
+            ch.get("receipt_email").and_then(Value::as_str),
+        ];
+        let mut has_email = false;
+        for address in emails.into_iter().flatten() {
+            has_email = true;
+            self.not_founder(id, Some(address))?;
+        }
+        if !has_email {
+            return Err(format!("charge {id} has no customer email"));
+        }
+        Ok(())
     }
 
     fn after_start(&self, id: &str, created: i64) -> Result<(), String> {
@@ -746,14 +798,43 @@ impl Stripe<'_> {
         Ok(())
     }
 
-    fn not_founder(&self, id: &str, email: Option<&Value>) -> Result<(), String> {
-        match email.and_then(Value::as_str).map(str::to_ascii_lowercase) {
-            Some(e) if self.founders.contains(&e) => Err(format!(
+    fn not_founder(&self, id: &str, email: Option<&str>) -> Result<(), String> {
+        match email.map(normalize_email) {
+            Some(address) if self.founders.contains(&address) => Err(format!(
                 "{id} was paid by a committer to this project, not a customer"
             )),
             _ => Ok(()),
         }
     }
+}
+
+/// A Stripe id is either the id string itself or an expanded object's `id`.
+fn payment_object_id(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .or_else(|| value.get("id").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+/// The charge an invoice was ultimately paid by. Stripe versions expose this
+/// in different places, so follow `charge`, then `payment_intent`, then the
+/// invoice's own payment list. `None` means there is no payment to check, and
+/// the caller must fail closed rather than count the invoice on its own.
+fn invoice_payment(invoice: &Value) -> Option<String> {
+    let direct = invoice
+        .get("charge")
+        .and_then(payment_object_id)
+        .or_else(|| invoice.get("payment_intent").and_then(payment_object_id));
+    direct.or_else(|| {
+        let payments = invoice.pointer("/payments/data").and_then(Value::as_array)?;
+        payments.iter().find_map(|entry| {
+            let payment = entry.get("payment")?;
+            payment
+                .get("payment_intent")
+                .and_then(payment_object_id)
+                .or_else(|| payment.get("charge").and_then(payment_object_id))
+        })
+    })
 }
 
 // --- real network -----------------------------------------------------------
