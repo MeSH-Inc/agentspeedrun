@@ -226,6 +226,14 @@ mod invocation {
             Ok(cli) => Some(cli),
             Err(err) => {
                 report(&err);
+                // `ingest` adapters parse stdout, so it still prints its one JSON object.
+                if args.get(1).and_then(|arg| arg.to_str()) == Some("ingest") {
+                    let reply = serde_json::json!({
+                        "recorded": false,
+                        "error": format!("unusable arguments: {}", err.kind()),
+                    });
+                    println!("{reply}");
+                }
                 None
             }
         }

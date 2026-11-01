@@ -49,6 +49,15 @@ fn audit_a4_1_ingest_with_bad_arguments_exits_zero() {
 }
 
 #[test]
+fn audit_a4_1_ingest_with_bad_arguments_still_prints_its_json_object() {
+    // Adapters parse ingest's stdout: it is one JSON object even when nothing was recorded.
+    let out = speedrun(&["ingest", "prompt", "--bogus"]);
+    let reply: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON object");
+    assert_eq!(reply["recorded"], false);
+    assert!(reply["error"].is_string());
+}
+
+#[test]
 fn guard_hook_for_an_unknown_host_exits_zero() {
     assert_eq!(exit_code(&["hook", "x", "y"]), Some(0));
 }
