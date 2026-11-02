@@ -1552,7 +1552,6 @@ fn bundle_of(d: &Daemon, run: &str, tier: u8, bearer: &str) -> (u16, Value) {
 }
 
 #[test]
-#[ignore = "audit P1.e: no local path in the log"]
 fn audit_p1_e_new_runs_keep_the_project_root_out_of_the_log() {
     let d = Daemon::start();
     let root = tempfile::tempdir().unwrap();
@@ -1588,7 +1587,6 @@ fn audit_p1_e_new_runs_keep_the_project_root_out_of_the_log() {
 }
 
 #[test]
-#[ignore = "audit P1.e: the daemon bundles a finished run"]
 fn audit_p1_e_the_daemon_bundles_a_finished_run() {
     use speedrun_core::bundle::{self, Bundle};
     let d = Daemon::start();
@@ -1644,7 +1642,6 @@ fn audit_p1_e_the_daemon_bundles_a_finished_run() {
 }
 
 #[test]
-#[ignore = "audit P1.e: the daemon bundles a finished run"]
 fn audit_p1_e_only_a_finished_run_is_bundled_and_only_for_the_full_token() {
     let d = Daemon::start();
     let run = d.prompt("p1", "proj");

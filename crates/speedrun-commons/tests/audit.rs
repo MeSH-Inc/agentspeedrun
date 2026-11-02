@@ -398,7 +398,6 @@ fn guard_p1_the_commons_answers_health_with_its_key() {
 // --- P1.a: the commons judges claims itself ----------------------------------------------
 
 #[test]
-#[ignore = "audit P1.a: judgment"]
 fn audit_p1_a_a_forged_evidence_verified_claim_is_not_granted() {
     let commons = Commons::start();
     let by_commit = Log::start("01RUNFORGEDCOMMIT")
@@ -438,7 +437,6 @@ fn audit_p1_a_a_forged_evidence_verified_claim_is_not_granted() {
 }
 
 #[test]
-#[ignore = "audit P1.a: judgment"]
 fn audit_p1_a_a_judgment_is_signed_by_the_commons_key() {
     let commons = Commons::start();
     let health = commons.health();
@@ -535,7 +533,6 @@ fn judge_with(pages: Pages, log: &Log) -> Vec<speedrun_core::commons::MilestoneJ
 }
 
 #[test]
-#[ignore = "audit P1.a: judgment"]
 fn audit_p1_a_the_commons_grants_evidence_its_own_verifier_passes() {
     const DEMO: &str = "https://recipes.acme.dev/";
     let log = claimed_run(
@@ -571,7 +568,6 @@ fn audit_p1_a_the_commons_grants_evidence_its_own_verifier_passes() {
 // --- Ingest ------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "audit P1: ingest refuses what does not verify"]
 fn audit_p1_ingest_refuses_bundles_that_do_not_verify() {
     let commons = Commons::start();
     let log = plain_run("01RUNREFUSED");
@@ -661,7 +657,6 @@ fn audit_p1_ingest_refuses_bundles_that_do_not_verify() {
 }
 
 #[test]
-#[ignore = "audit P1: ingest is idempotent"]
 fn audit_p1_ingest_is_idempotent_on_the_bundle_digest() {
     let commons = Commons::start();
     let bundle = plain_run("01RUNTWICE").bundle(2);
@@ -676,7 +671,6 @@ fn audit_p1_ingest_is_idempotent_on_the_bundle_digest() {
 // --- P1.b: a published run is reproducible from its bundle alone --------------------------
 
 #[test]
-#[ignore = "audit P1.b: reproducible publication"]
 fn audit_p1_b_a_published_run_is_reproducible_from_its_bundle_alone() {
     let commons = Commons::start();
     let log = claimed_run("01RUNREPRODUCED", 5, "scaffold-runs", vec![]);
@@ -755,7 +749,6 @@ fn rfc_9162_verify(leaf: &[u8], index: u64, size: u64, path: &[Vec<u8>], root: &
 }
 
 #[test]
-#[ignore = "audit P1.c: log and inclusion proofs"]
 fn audit_p1_c_inclusion_proofs_verify_in_a_standalone_check() {
     let commons = Commons::start();
     let health = commons.health();
@@ -799,7 +792,6 @@ fn audit_p1_c_inclusion_proofs_verify_in_a_standalone_check() {
 }
 
 #[test]
-#[ignore = "audit P1.c: log and inclusion proofs"]
 fn audit_p1_c_the_empty_log_has_a_signed_head_of_the_empty_tree() {
     let commons = Commons::start();
     let health = commons.health();

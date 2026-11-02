@@ -756,7 +756,6 @@ fn hex_all(hashes: &[Vec<u8>]) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "audit P1.c: Merkle log"]
 fn audit_p1_c_a_leaf_is_the_rfc_9162_leaf_of_the_publication_text() {
     let (bundle, judgment) = ("ab".repeat(32), "cd".repeat(32));
     let expected = hex::encode(rfc_9162::leaf(format!("{bundle}:{judgment}").as_bytes()));
@@ -764,7 +763,6 @@ fn audit_p1_c_a_leaf_is_the_rfc_9162_leaf_of_the_publication_text() {
 }
 
 #[test]
-#[ignore = "audit P1.c: Merkle log"]
 fn audit_p1_c_roots_and_inclusion_proofs_match_rfc_9162() {
     use speedrun_core::merkle;
     for n in 0..=17usize {

@@ -1435,7 +1435,6 @@ impl Drop for CommonsServer {
 }
 
 #[test]
-#[ignore = "audit P1.d: speedrun publish"]
 fn audit_p1_d_deleting_the_local_data_after_publish_loses_nothing_public() {
     let commons = CommonsServer::start();
     let machine = Machine::new();
@@ -1483,7 +1482,6 @@ fn audit_p1_d_deleting_the_local_data_after_publish_loses_nothing_public() {
 }
 
 #[test]
-#[ignore = "audit P1.d: speedrun publish"]
 fn audit_p1_d_publish_without_a_commons_address_sends_nothing() {
     let machine = Machine::new();
     let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::ZERO));
