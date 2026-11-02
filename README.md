@@ -26,7 +26,7 @@ Claude Code / opencode / pi / VS Code / Zed      thin adapters (hooks, MCP)
 
 - **Local-first.** One daemon per machine owns the data, listening on loopback with a bearer token. No network needed.
 - **Event-sourced.** Runs are folds over an append-only log; the database rejects updates and deletes.
-- **Tamper-evident.** Each event hashes the previous one; `speedrun verify` checks the chain.
+- **Signed and chained.** Each event is signed by its device's key and hashes the one before; `speedrun verify` checks both with public keys only. Whoever holds a device's private key can still rewrite and re-sign that device's local runs; a published run cannot change ([docs/COMMONS.md](docs/COMMONS.md)).
 - **Idempotent and offline-safe.** Every write carries a client event id; writes made while the daemon is down are spooled and replayed.
 - **Trust levels.** A milestone counts only at its category's required trust: `self_declared` < `agent_claimed` < `evidence_verified`. Only daemon verifiers grant `evidence_verified`: git commits in the project's history, live public HTTPS pages (including terms and privacy content), passing GitHub Actions runs, and real live-mode Stripe payments.
 - **Several clocks.** Real time, timed (minus pauses), agent time (turns, unioned across sessions) and human time (gaps between turns, capped at 15 min each).
@@ -35,7 +35,7 @@ Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Building a widget,
 
 ## Quick start
 
-Prebuilt binaries for Linux (x86_64, arm64; static) and macOS (Apple silicon, Intel):
+Prebuilt binaries for Linux (x86_64, arm64; static) and macOS (Apple silicon, Intel). Windows is not supported; use WSL.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mesh-inc/agentspeedrun/main/install.sh | sh

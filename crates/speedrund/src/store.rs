@@ -35,7 +35,7 @@ BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER events_no_delete BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 
--- Index of runs per project; rebuilt from RunStarted events if lost.
+-- Index of runs per project, written with each run's RunStarted event.
 CREATE TABLE runs (
     run_id     TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,

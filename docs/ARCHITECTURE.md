@@ -3,7 +3,7 @@
 ## Goals
 
 1. **Never lose a prompt or a split**, even when the daemon is down or a host crashes.
-2. **Results are credible**: history cannot be silently edited and claims carry an explicit trust level.
+2. **Results are credible**: every event is signed by its device and chained to the one before, so anyone holding the device's public key sees an edit, unless the edit was re-signed with that device's private key, which its owner holds. A run is fixed once it is published, in the commons' public append-only log ([COMMONS.md](COMMONS.md)). Claims carry an explicit trust level.
 3. **Rules can evolve** without invalidating old runs.
 4. **Hosts are cheap to add**: adapters are a few lines that call `speedrun`.
 5. **Private by default**: data stays on the machine; secrets are redacted before storage.
@@ -77,7 +77,7 @@ sets `required_trust`. Verifiers (`speedrund/src/verify.rs`):
 | `git_commit`   | Commit exists and is an ancestor of `HEAD` in the project root. |
 | `url`          | `https://` on a public domain (no IP literals, local names or tunnels such as ngrok), resolves only to public addresses, answers 2xx after at most 5 redirects that stay on HTTPS, and is not a placeholder (server default page, parked domain, lorem ipsum). |
 | `ci_run`       | A GitHub Actions run URL of a repo that is a git remote of the project; the run completed with `success`, on a commit in the project's history, and started after the speedrun did. Token: `speedrun secret set github`, `GITHUB_TOKEN`/`GH_TOKEN`, or `gh auth token`. |
-| `stripe_event` | A Stripe event, charge, PaymentIntent, Checkout Session or invoice id, read back with the user's restricted live-mode key (`speedrun secret set stripe`): live mode, succeeded and captured, not refunded or disputed, paid after the speedrun started, and not paid by anyone who has committed to the repo. Events are re-read through their payment object so later refunds count. |
+| `stripe_event` | A Stripe event, charge, PaymentIntent, Checkout Session or invoice id, read back with the user's restricted live-mode key (`speedrun secret set stripe`): live mode, succeeded and captured, not refunded or disputed, paid after the speedrun started, and not paid from an email address that has committed to the repo (case, a `+tag` and Gmail dots are ignored; another address of the same person still passes). A refund above 10% of the captured amount, or a dispute, fails the check. An event is re-read through its payment object, so a refund made before the check counts; one made after it is not seen, because evidence is checked once, when it is claimed. |
 | `note`         | Context only, never proof. |
 
 Every attached item must pass. Some category keys also require a kind of
@@ -93,7 +93,8 @@ evidence, whatever trust the claim was made with:
 Verifier fetches go out with a fixed user agent, a 15 s timeout and a 2 MB
 body cap; nothing fetched is stored, only the references the client sent.
 Credentials live in `$SPEEDRUN_HOME/secrets/` (mode 0600), read at check
-time, never logged or sent anywhere but their own API.
+time, never logged or sent anywhere but their own API (for GitHub, the base
+`SPEEDRUN_GITHUB_API` names, by default `https://api.github.com`).
 
 Known gaps: a payment from a friend with an email outside the repo still
 counts, and the legal-page check is about presence, not legal adequacy.

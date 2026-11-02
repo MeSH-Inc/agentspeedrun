@@ -30,7 +30,7 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | M8.b | A timeout on a sent request is "delivered-unknown", not Unreachable; claim replays are idempotent by event id | leader | | `a_write_the_daemon_took_but_never_answered_is_delivery_unknown_and_spooled`, `a_retried_claim_is_answered_from_the_log_without_a_second_check` |
 | M9.a | A user's claim satisfies `agent_claimed` on a non-predefined milestone | loop | | `audit_a6_5_*` |
 | M9.b | `accept` can set `required_trust` | leader | | `audit_m9_b_*` |
-| M10 | The docs claim only what the code does | leader | | |
+| M10 | The docs claim only what the code does | leader | | holds: the lines the audit named were reworded on 2026-11-02 (no test can judge prose) |
 | W1.a | `speedrun verify` passes on an event carrying an optional field this build does not know; hashing covers the stored body | loop | | `audit_w1_a_*` |
 | W1.b | One corrupt row yields a 200 from `/v1/live` with an error entry | loop | | `audit_w1_b_*` |
 | W1.c | A binary opening a DB with a newer schema than its own exits non-zero with a clear log line | loop | | `audit_w1_c_*` |
