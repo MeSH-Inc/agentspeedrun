@@ -1260,14 +1260,16 @@ fn audit_w7_b_a_prompt_carries_the_pinned_category_version() {
     assert_eq!(prompts[0]["category_version"], 1, "{}", prompts[0]);
 }
 
-/// Whether `pid` names a process that has not exited (a zombie has).
+/// Whether `pid` names a process that has not exited, by `kill -0`. Not `ps`: it is
+/// setuid, and the ratchet's check sandbox refuses to execute it. The daemons these tests
+/// check are started by the CLI and reaped once it exits, so none is left a zombie.
 fn is_running(pid: u32) -> bool {
-    let out = Command::new("ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-        .unwrap();
-    let stat = String::from_utf8_lossy(&out.stdout);
-    !stat.trim().is_empty() && !stat.trim().starts_with('Z')
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
 }
 
 /// Kills the daemons a test started through the CLI, so a failed test leaves none behind.
