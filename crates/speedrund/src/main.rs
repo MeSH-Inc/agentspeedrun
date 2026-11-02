@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
-use speedrun_core::{category, paths, sign::pubkey_hex};
+use speedrun_core::{category, paths};
 
 fn ensure_token(path: &Path) -> Result<String> {
     if let Ok(t) = fs::read_to_string(path) {
@@ -50,10 +50,8 @@ async fn main() -> Result<()> {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
     let token = ensure_token(&paths::token_path())?;
     let display_token = ensure_token(&paths::display_token_path())?;
-    let device_key = keys::load_or_create(&paths::device_key_path())?;
-    let device_pubkey = pubkey_hex(&device_key);
-
-    let store = store::Store::open(&dir.join("speedrun.sqlite"), device_key)?;
+    let store = store::Store::open(&dir.join("speedrun.sqlite"), &paths::device_key_path())?;
+    let device_pubkey = store.device_pubkey();
     let service = service::Service::new(store, category::builtin());
 
     let addr: SocketAddr = paths::daemon_addr()

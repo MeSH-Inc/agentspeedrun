@@ -248,21 +248,8 @@ async fn record_prompt(
     res
 }
 
-/// Rotate the signing key. The file and database writes happen on the
-/// blocking pool, like every other store operation.
 async fn rotate_device(State(s): State<AppState>) -> impl IntoResponse {
-    let service = s.service.clone();
-    let rotated = tokio::task::spawn_blocking(move || {
-        let mut guard = service
-            .lock()
-            .map_err(|_| Error::Internal(anyhow::anyhow!("service lock poisoned")))?;
-        guard.rotate_device()
-    })
-    .await;
-    match rotated {
-        Ok(result) => result.map(Json),
-        Err(e) => Err(Error::Internal(e.into())),
-    }
+    call(&s, |svc| svc.rotate_device()).await
 }
 
 async fn append(

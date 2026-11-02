@@ -8,24 +8,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use ed25519_dalek::SigningKey;
-use serde::{Deserialize, Serialize};
 use speedrun_core::sign::{SEED_LEN, generate, parse_seed, seed_hex};
 
 /// File name of the prompt key beside the database in the data directory.
 pub const PROMPT_KEY_FILE: &str = "prompt.key";
-
-/// File name of the device key beside the database in the data directory.
-pub const DEVICE_KEY_FILE: &str = "device.key";
-
-/// One certified step from a previous device key to the next. The
-/// certificate is the previous key's signature over the new public key, so a
-/// chain that predates the switch still verifies from public keys alone.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Rotation {
-    pub old_pubkey: String,
-    pub new_pubkey: String,
-    pub certificate: String,
-}
 
 /// Read the device key, creating it with mode 0600 if it does not exist.
 ///

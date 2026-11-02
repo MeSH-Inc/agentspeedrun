@@ -807,9 +807,8 @@ mod tests {
 
     fn svc() -> (Service, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let key = speedrun_core::sign::parse_seed(&"07".repeat(32)).unwrap();
-        let store = Store::open(&dir.path().join("db.sqlite"), key).unwrap();
-        (Service::new(store, category::builtin()), dir)
+        std::fs::write(dir.path().join("device.key"), "07".repeat(32)).unwrap();
+        (open_in(&dir), dir)
     }
 
     fn prompt(id: &str) -> PromptRequest {
@@ -1328,5 +1327,91 @@ mod tests {
         })
         .unwrap();
         assert_eq!(live_pb(&mut s, "mine"), Some((own, "mine".to_string())));
+    }
+
+    fn rotations_in(s: &Service, run: &str) -> usize {
+        s.events(run)
+            .unwrap()
+            .iter()
+            .filter(|e| matches!(e.payload, EventPayload::DeviceRotated { .. }))
+            .count()
+    }
+
+    fn open_in(dir: &tempfile::TempDir) -> Service {
+        let store = Store::open(&dir.path().join("db.sqlite"), &dir.path().join("device.key")).unwrap();
+        Service::new(store, category::builtin())
+    }
+
+    /// W9.c guard: a run that did not write between two rotations gets both
+    /// certificates, in order, before its next event.
+    #[test]
+    fn guard_w9_c_two_rotations_between_writes_keep_the_run_verifiable() {
+        let (mut s, _d) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        s.rotate_device().unwrap();
+        s.rotate_device().unwrap();
+        s.record_prompt(prompt("p2")).unwrap();
+        let report = s.verify_chain(&run).unwrap();
+        assert!(report.ok, "{:?}", report.error);
+        assert_eq!(rotations_in(&s, &run), 2);
+    }
+
+    /// W9.c guard: a rotation is still carried to older chains after a restart.
+    #[test]
+    fn guard_w9_c_a_rotation_reaches_older_runs_after_a_restart() {
+        let (mut s, d) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        s.rotate_device().unwrap();
+        drop(s);
+        let mut s = open_in(&d);
+        s.record_prompt(prompt("p2")).unwrap();
+        let report = s.verify_chain(&run).unwrap();
+        assert!(report.ok, "{:?}", report.error);
+        assert_eq!(rotations_in(&s, &run), 1);
+    }
+
+    /// W9.c guard: a rotation that stopped before committing its events is
+    /// undone at the next start, and the completed rotation before it stands.
+    #[test]
+    fn guard_w9_c_an_interrupted_rotation_keeps_the_earlier_ones() {
+        let (mut s, d) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        let first = s.rotate_device().unwrap().device_pubkey;
+        drop(s);
+        // The second rotation wrote its new key, then stopped before its commit.
+        let pending = d.path().join("device.key.next");
+        std::fs::write(&pending, "09".repeat(32)).unwrap();
+        let mut s = open_in(&d);
+        assert!(!pending.exists(), "an uncommitted rotation's key is removed");
+        s.record_prompt(prompt("p2")).unwrap();
+        let report = s.verify_chain(&run).unwrap();
+        assert!(report.ok, "{:?}", report.error);
+        assert_eq!(rotations_in(&s, &run), 1);
+        let seed = std::fs::read_to_string(d.path().join("device.key")).unwrap();
+        let key = speedrun_core::sign::parse_seed(&seed).unwrap();
+        assert_eq!(speedrun_core::sign::pubkey_hex(&key), first);
+    }
+
+    /// W9.c guard: a rotation that committed its events but stopped before
+    /// renaming its key file is finished at the next start.
+    #[test]
+    fn guard_w9_c_a_committed_rotation_is_finished_at_the_next_start() {
+        let (s, d) = svc();
+        drop(s);
+        let next = speedrun_core::sign::parse_seed(&"09".repeat(32)).unwrap();
+        let next_pubkey = speedrun_core::sign::pubkey_hex(&next);
+        std::fs::write(d.path().join("device.key.next"), "09".repeat(32)).unwrap();
+        let conn = rusqlite::Connection::open(d.path().join("db.sqlite")).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('signing_pubkey', ?1)",
+            [&next_pubkey],
+        )
+        .unwrap();
+        drop(conn);
+        let s = open_in(&d);
+        assert_eq!(s.store.device_pubkey(), next_pubkey);
+        assert!(!d.path().join("device.key.next").exists());
+        let seed = std::fs::read_to_string(d.path().join("device.key")).unwrap();
+        assert_eq!(seed.trim(), "09".repeat(32));
     }
 }
