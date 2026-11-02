@@ -23,6 +23,9 @@ use speedrun_core::{
 pub enum CallError {
     /// The daemon could not be reached (not running, or no token yet).
     Unreachable(String),
+    /// A daemon answered, but not for this data directory: it could not
+    /// prove this data dir's token, or proved a different one.
+    WrongDataDir { addr: String },
     /// The daemon answered with an error status.
     Api { status: u16, message: String },
 }
@@ -31,6 +34,9 @@ impl std::fmt::Display for CallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unreachable(m) => write!(f, "speedrund unreachable: {m}"),
+            Self::WrongDataDir { addr } => {
+                write!(f, "daemon answers for another data directory ({addr})")
+            }
             Self::Api { status, message } => write!(f, "speedrund error {status}: {message}"),
         }
     }
@@ -46,7 +52,7 @@ impl CallError {
     /// mistake and is reported as it always was.
     fn should_spool(&self) -> bool {
         match self {
-            Self::Unreachable(_) => true,
+            Self::Unreachable(_) | Self::WrongDataDir { .. } => true,
             Self::Api { status, .. } => *status == 401 || *status >= 500,
         }
     }
@@ -73,7 +79,7 @@ fn spool_dir() -> PathBuf {
 /// Where the daemon listens: `SPEEDRUN_ADDR`, else `$DATA_DIR/addr`, else
 /// `paths::DEFAULT_ADDR`. Naming the addr file is core's business; reading
 /// it is this client's, so core stays free of I/O.
-fn resolve_addr() -> String {
+pub(crate) fn resolve_addr() -> String {
     if let Some(addr) = paths::configured_addr() {
         return addr;
     }
@@ -90,6 +96,76 @@ fn resolve_addr() -> String {
         Err(e) => report_io_error("read daemon address", &file, &e),
     }
     paths::DEFAULT_ADDR.to_string()
+}
+
+/// The numbers `doctor` reports from the spool directory and the failure
+/// counter. Their layout is this module's business, not the caller's.
+pub(crate) struct SpoolStats {
+    pub(crate) spooled: u64,
+    pub(crate) rejected: u64,
+    pub(crate) write_failures: u64,
+}
+
+/// Count the spooled, rejected and failed-write files as they are now.
+pub(crate) fn spool_stats() -> std::io::Result<SpoolStats> {
+    let dir = spool_dir();
+    let mut spooled = count_lines(&dir.join("pending.jsonl"))?;
+    match fs::read_dir(&dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let flushing = entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("flushing-"));
+                if flushing && entry.file_type()?.is_file() {
+                    spooled = spooled.saturating_add(count_lines(&entry.path())?);
+                }
+            }
+        }
+        // No spool directory yet: nothing has been spooled.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    Ok(SpoolStats {
+        spooled,
+        rejected: count_lines(&dir.join("rejected.jsonl"))?,
+        write_failures: read_count(&spool_write_failures_path())?,
+    })
+}
+
+fn count_lines(path: &Path) -> std::io::Result<u64> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    let newlines = bytes.iter().filter(|&&byte| byte == b'\n').count() as u64;
+    if bytes.last() == Some(&b'\n') {
+        Ok(newlines)
+    } else {
+        Ok(newlines + 1)
+    }
+}
+
+fn read_count(path: &Path) -> std::io::Result<u64> {
+    match fs::read_to_string(path) {
+        Ok(text) => text.trim().parse::<u64>().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not a decimal count: {e}", path.display()),
+            )
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
+fn spool_write_failures_path() -> PathBuf {
+    paths::data_dir().join("spool-write-failures")
 }
 
 /// Header the daemon reads to exempt a spooled write from its last-event
@@ -200,8 +276,9 @@ impl Client {
     /// The probe itself carries no token and is not retried on 401: it is
     /// what decides whether the daemon may see the token at all. On success
     /// the probed address becomes the only one requests are sent to.
-    fn verify_health(&self) -> Result<(), CallError> {
-        let base = format!("http://{}", resolve_addr());
+    pub(crate) fn verify_health(&self) -> Result<HealthResponse, CallError> {
+        let addr = resolve_addr();
+        let base = format!("http://{addr}");
         let nonce = speedrun_core::hash::sha256_hex(speedrun_core::new_id().as_bytes());
         let health: HealthResponse = match self.agent.get(&format!("{base}/v1/health?nonce={nonce}")).call() {
             Ok(response) => response
@@ -214,18 +291,15 @@ impl Client {
             }
             Err(ureq::Error::Transport(t)) => return Err(CallError::Unreachable(t.to_string())),
         };
-        let Some(proof) = health.proof else {
-            return Err(CallError::Unreachable(format!(
-                "daemon at {base} did not prove the token"
-            )));
+        let Some(proof) = health.proof.as_deref() else {
+            return Err(CallError::WrongDataDir { addr: addr.clone() });
         };
-        if proof == speedrun_core::digest::token_proof(&Self::token()?, &nonce) {
+        let expected = speedrun_core::digest::token_proof(&Self::token()?, &nonce);
+        if proof == expected.as_str() {
             *self.verified.borrow_mut() = Some(base);
-            Ok(())
+            Ok(health)
         } else {
-            Err(CallError::Unreachable(format!(
-                "daemon answers for another data directory ({base})"
-            )))
+            Err(CallError::WrongDataDir { addr })
         }
     }
 
@@ -234,7 +308,7 @@ impl Client {
     /// write sends its own event before the backlog, and `flush_spool` owns
     /// how long that backlog may take.
     pub fn ready(&self) -> Result<(), CallError> {
-        self.with_autostart(|| self.verify_health())
+        self.with_autostart(|| self.verify_health().map(|_| ()))
     }
 
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
@@ -488,13 +562,13 @@ fn spool(path: &str, body: &Value) {
     };
     match serde_json::to_string(&entry) {
         Ok(line) => append_line(&file, line.as_bytes()),
-        Err(e) => report_io_error("write spool file", &file, &std::io::Error::other(e)),
+        Err(e) => report_io_error("encode spool entry", &file, &std::io::Error::other(e)),
     }
 }
 
 fn append_line(file: &Path, line: &[u8]) {
     if let Err(e) = append_line_result(file, line) {
-        report_io_error("write spool file", file, &e);
+        report_spool_write_error("write spool file", file, &e);
     }
 }
 
@@ -526,6 +600,31 @@ fn report_io_error(action: &str, file: &Path, e: &std::io::Error) {
     }
 }
 
+/// Report a failed spool or rejected-log write and remember it in the data
+/// dir's counter, so `doctor` can show damage the daemon never saw.
+fn report_spool_write_error(action: &str, file: &Path, e: &std::io::Error) {
+    report_io_error(action, file, e);
+    if let Err(count_error) = increment_spool_write_failures() {
+        let counter = spool_write_failures_path();
+        report_io_error("record spool write failure", &counter, &count_error);
+    }
+}
+
+fn increment_spool_write_failures() -> std::io::Result<()> {
+    let path = spool_write_failures_path();
+    let next = read_count(&path)?.saturating_add(1);
+    let temp = path.with_file_name(format!(".spool-write-failures-{}.tmp", speedrun_core::new_id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp)?;
+    write!(file, "{next}")?;
+    file.sync_all()?;
+    fs::rename(&temp, &path)
+}
+
 /// Newest refused entries are kept for inspection, but the log must not grow
 /// without bound no matter how many the daemon refuses.
 const REJECTED_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -543,7 +642,7 @@ impl RejectedLog {
 
     fn append(&self, line: &[u8]) {
         if let Err(e) = self.try_append(line) {
-            report_io_error("write refused-event log", &self.file, &e);
+            report_spool_write_error("write refused-event log", &self.file, &e);
         }
     }
 

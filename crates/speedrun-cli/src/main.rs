@@ -1,6 +1,7 @@
 //! `speedrun`: CLI, host hook adapter and MCP server for agentspeedrun.
 
 mod client;
+mod doctor;
 mod hook;
 mod mcp;
 mod ops;
@@ -145,6 +146,8 @@ enum Cmd {
     },
     /// List available categories.
     Categories,
+    /// Print diagnostics: versions, daemon health, spool counts and the log tail.
+    Doctor,
     /// Deliver events spooled while the daemon was unreachable.
     Flush,
     /// Entry point for host hooks, e.g. `speedrun hook claude-code user-prompt-submit`.
@@ -520,6 +523,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 println!("{:<16} v{}  {} — {}", k.id, k.version, k.name, k.description);
             }
         }
+        Cmd::Doctor => doctor::print(&c)?,
         Cmd::Flush => {
             c.ready()?; // Starts the daemon and proves its token.
             println!("delivered {} spooled events", c.flush_spool(None));
