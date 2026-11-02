@@ -911,7 +911,6 @@ fn audit_w1_f_predefined_milestone_ids_are_namespaced() {
 }
 
 #[test]
-#[ignore = "audit D5"]
 fn audit_w9_c_rotating_the_device_key_keeps_every_run_verifiable() {
     let d = Daemon::start();
     let runs = [d.prompt("pa", "proj-a"), d.prompt("pb", "proj-b")];

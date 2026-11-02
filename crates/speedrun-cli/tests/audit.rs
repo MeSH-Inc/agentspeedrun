@@ -582,7 +582,6 @@ fn audit_w9_d_speedrun_export_prints_commitments_and_no_prompt_text() {
 }
 
 #[test]
-#[ignore = "audit D5"]
 fn audit_w9_c_speedrun_key_rotate_replaces_the_signing_key() {
     let machine = Machine::new();
     let _daemon = Daemon::start(&machine);
