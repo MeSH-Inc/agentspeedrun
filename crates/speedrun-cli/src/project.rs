@@ -162,12 +162,17 @@ impl Project {
 }
 
 /// Write `value` to `file` as pretty JSON, creating the enclosing directory.
+/// Write `project.json` whole or not at all: a temp file beside it, renamed
+/// over it, so an interrupted upgrade never leaves a truncated file.
 fn write_json(file: &Path, value: &serde_json::Value) -> Result<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let text = serde_json::to_string_pretty(value)?;
-    std::fs::write(file, text + "\n")?;
+    let mut temp = file.as_os_str().to_owned();
+    temp.push(".tmp");
+    std::fs::write(&temp, text + "\n")?;
+    std::fs::rename(&temp, file)?;
     Ok(())
 }
 

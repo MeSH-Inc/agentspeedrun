@@ -361,7 +361,9 @@ fn main() {
         return;
     }
     if let Err(e) = run(cli.command) {
-        eprintln!("error: {e:#}");
+        if !e.is::<AlreadyPrinted>() {
+            eprintln!("error: {e:#}");
+        }
         std::process::exit(1);
     }
 }
@@ -760,9 +762,22 @@ fn doctor_daemon_line(c: &Client) -> String {
 }
 
 /// Print a line doctor would print, then fail through `main`'s ordinary path.
+/// A failure whose message the command has already printed; `main` exits 1
+/// without printing it again.
+#[derive(Debug)]
+struct AlreadyPrinted;
+
+impl std::fmt::Display for AlreadyPrinted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the command printed its failure")
+    }
+}
+
+impl std::error::Error for AlreadyPrinted {}
+
 fn print_and_fail(line: String) -> anyhow::Error {
     println!("{line}");
-    anyhow::anyhow!("{line}")
+    AlreadyPrinted.into()
 }
 
 fn ingest(
