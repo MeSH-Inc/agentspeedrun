@@ -1,21 +1,22 @@
 #!/bin/sh
-# Install the speedrun CLI and daemon from a GitHub release of mesh-inc/agentspeedrun.
+# Install the speedrun CLI and daemon from a GitHub release of MeSH-Inc/agentspeedrun,
+# on Linux or macOS (Windows is not supported; use WSL).
 #
-#   curl -fsSL https://raw.githubusercontent.com/mesh-inc/agentspeedrun/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/main/install.sh | sh
 #
-# While the repository is private, fetch it with an authenticated GitHub CLI
-# instead; the script then downloads through `gh` too:
-#
-#   gh api repos/mesh-inc/agentspeedrun/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
+# With an authenticated GitHub CLI the script downloads through `gh`, and
+# checks the archive's build attestation with `gh attestation verify`.
 #
 # Environment:
 #   SPEEDRUN_VERSION      release tag to install, e.g. v0.1.0 (default: latest)
 #   SPEEDRUN_INSTALL_DIR  where to put the binaries (default: ~/.local/bin)
 #   SPEEDRUN_DOWNLOAD_URL base URL holding the release assets, for mirrors
 #                         and tests (needs SPEEDRUN_VERSION)
+#   SPEEDRUN_SKIP_ATTESTATION=1  skip the attestation check, for archives built
+#                         outside the release workflow (tests)
 set -eu
 
-repo="mesh-inc/agentspeedrun"
+repo="MeSH-Inc/agentspeedrun"
 version="${SPEEDRUN_VERSION:-}"
 dest="${SPEEDRUN_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -23,11 +24,12 @@ say() { printf 'speedrun-install: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
 
 case "$(uname -s)/$(uname -m)" in
+  MINGW*/* | MSYS*/* | CYGWIN*/*) die "Windows is not supported; install inside WSL" ;;
   Linux/x86_64 | Linux/amd64) target="x86_64-unknown-linux-musl" ;;
   Linux/aarch64 | Linux/arm64) target="aarch64-unknown-linux-musl" ;;
   Darwin/arm64) target="aarch64-apple-darwin" ;;
   Darwin/x86_64) target="x86_64-apple-darwin" ;;
-  *) die "no prebuilt binaries for $(uname -s) $(uname -m); build from source with cargo install --path crates/speedrun-cli --path crates/speedrund" ;;
+  *) die "no prebuilt binaries for $(uname -s) $(uname -m); build from source: git clone https://github.com/$repo && cd agentspeedrun && cargo install --locked --path crates/speedrun-cli && cargo install --locked --path crates/speedrund" ;;
 esac
 
 tmp="$(mktemp -d)"
@@ -70,6 +72,13 @@ archive="agentspeedrun-$version-$target.tar.gz"
   fi
 ) || die "checksum mismatch for $archive"
 
+# Provenance (V0.2 W8): the release workflow attests every archive it builds.
+if [ -z "${SPEEDRUN_SKIP_ATTESTATION:-}" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  gh attestation verify "$tmp/$archive" --repo "$repo" >/dev/null ||
+    die "$archive has no valid build attestation from $repo"
+  say "verified the build attestation of $archive"
+fi
+
 tar -xzf "$tmp/$archive" -C "$tmp"
 mkdir -p "$dest"
 for b in speedrun speedrund; do
@@ -85,6 +94,11 @@ case ":$PATH:" in
   *) say "add $dest to your PATH, e.g. echo 'export PATH=\"$dest:\$PATH\"' >> ~/.profile" ;;
 esac
 if pgrep -x speedrund >/dev/null 2>&1; then
-  say "a speedrund is running; restart it to use the new version: pkill -x speedrund (the CLI starts it again)"
+  # Replace the running daemon with the new one, waiting for the old to exit.
+  if "$dest/speedrun" daemon restart >/dev/null 2>&1; then
+    say "restarted speedrund on the new version"
+  else
+    say "a speedrund is running; restart it to use the new version: speedrun daemon restart"
+  fi
 fi
 say "next: cd into a project and run: speedrun init"

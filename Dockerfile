@@ -1,6 +1,6 @@
 # The commons server (docs/COMMONS.md §20). Railway builds this file; the
 # service mounts a volume at /data for the database and the commons key.
-FROM rust:1-bookworm AS build
+FROM rust:1.99.1-bookworm AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release --locked -p speedrun-commons

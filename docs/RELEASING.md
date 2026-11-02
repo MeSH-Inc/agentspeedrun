@@ -19,20 +19,37 @@ Claude Code plugin. `scripts/version.py check` (run in CI) fails if they drift.
 The `release` workflow then:
 
 - checks the tag matches the manifests;
+- runs `cargo fmt --check`, clippy and `cargo test --all --locked`; nothing is
+  built or published from a commit whose tests fail;
 - builds `speedrun` and `speedrund` for `x86_64-unknown-linux-musl`,
   `aarch64-unknown-linux-musl` (cross-built with zig), `aarch64-apple-darwin`
   and `x86_64-apple-darwin`, and runs `scripts/smoke.sh` on each (the arm64
   Linux build under QEMU): daemon autostart, a run, a verified split, the hash
   chain, the embedded adapters;
-- packages each as `agentspeedrun-vX.Y.Z-<target>.tar.gz` (`scripts/package.sh`);
+- packages each as `agentspeedrun-vX.Y.Z-<target>.tar.gz` (`scripts/package.sh`).
+  Archives are reproducible (`scripts/archive.py`): entries in name order,
+  owned by 0:0, dated by the tagged commit (`SOURCE_DATE_EPOCH`), and a gzip
+  header with no name or time, so packaging the same binaries twice gives the
+  same sha256. The toolchain is pinned in `rust-toolchain.toml`;
 - builds and tests the `.vsix` in a real VS Code, and builds the Zed extension;
 - writes `SHA256SUMS`, installs from those exact files with `install.sh` and
   smoke-tests the result;
+- attests build provenance for every archive and the `.vsix`
+  (`actions/attest-build-provenance`), which `install.sh` checks with
+  `gh attestation verify` when an authenticated `gh` is present. Attestations
+  need a public repository on the organization's plan;
 - publishes a GitHub release with generated notes. Tags with a `-` (e.g.
   `v0.2.0-rc.1`) become prereleases.
 
 Run the workflow by hand from the Actions tab (or `gh workflow run release.yml`)
-for a dry run that does everything except publish.
+for a dry run that does everything except attest and publish.
+
+Every action in both workflows is pinned by commit, with the release named in
+a comment; update one by resolving its new tag with
+`gh api repos/<owner>/<action>/commits/<tag> --jq .sha`. On every push, CI also
+runs the hooks in `plugins/claude-code/hooks/hooks.json` against the last
+released binary (`scripts/hooks_against_release.sh`), since the plugin's
+hooks reach users from `main` before the binary they call does.
 
 ## Distribution channels
 

@@ -16,7 +16,9 @@ mkdir "$stage/$name"
 cp "$bindir/speedrun" "$bindir/speedrund" "$stage/$name/"
 cp "$root/README.md" "$stage/$name/"
 mkdir -p "$root/dist"
-# Stable archives: fixed owner and order, so rebuilds of a tag compare equal.
-tar -C "$stage" --owner=0 --group=0 -czf "$root/dist/$name.tar.gz" "$name" 2>/dev/null ||
-  tar -C "$stage" -czf "$root/dist/$name.tar.gz" "$name" # BSD tar (macOS) has no --owner
+# Reproducible archives (scripts/archive.py): the same binaries give the same
+# bytes. Entries are dated by the packaged commit unless SOURCE_DATE_EPOCH says.
+SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$root" log -1 --format=%ct)}
+export SOURCE_DATE_EPOCH
+"$root/scripts/archive.py" "$stage" "$name" "$root/dist/$name.tar.gz"
 echo "dist/$name.tar.gz"

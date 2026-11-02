@@ -1,0 +1,6 @@
+# The one Rust toolchain every build and check uses: CI, release builds and
+# the commons image. Change it here; the Dockerfile's base image names it too.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
