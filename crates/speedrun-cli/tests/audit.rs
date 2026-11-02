@@ -509,6 +509,54 @@ fn audit_w2_d_spooled_event_older_than_the_runs_last_event_is_delivered_by_flush
     );
 }
 
+#[test]
+fn guard_an_unreadable_spool_line_loses_none_of_the_entries_after_it() {
+    // A line that is not UTF-8 used to end the read, and the spool file was then deleted
+    // with every later entry still in it.
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    let now = chrono::Utc::now();
+    let (status, body) = post(
+        &machine,
+        "/v1/prompts",
+        &serde_json::json!({
+            "event_id": "p1", "project_id": PROJECT, "project_root": null,
+            "category_id": "any-percent", "session_id": "s", "host": "test", "model": null,
+            "content": "build it", "occurred_at": (now - chrono::Duration::minutes(10)).to_rfc3339(),
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let run = body["run_id"].as_str().unwrap().to_string();
+
+    let spool = machine.data_dir().join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    let entry = serde_json::json!({
+        "path": format!("/v1/projects/{PROJECT}/events"),
+        "body": {
+            "event_id": "after-the-bad-line",
+            "occurred_at": now.to_rfc3339(),
+            "payload": {"type": "agent_turn_ended", "session_id": "s"},
+        },
+    });
+    let mut bytes = b"{\"path\": \"\xff\xfe\"}\n".to_vec();
+    bytes.extend_from_slice(format!("{entry}\n").as_bytes());
+    std::fs::write(spool.join("pending.jsonl"), bytes).unwrap();
+
+    machine.speedrun(&["flush"], b"");
+    let events = ureq::get(&format!("http://{}/v1/runs/{run}/events", machine.addr))
+        .set("Authorization", "Bearer audit-test-token")
+        .call()
+        .unwrap()
+        .into_string()
+        .unwrap();
+    assert!(events.contains("after-the-bad-line"), "{events}");
+    let kept = std::fs::read(spool.join("rejected.jsonl")).unwrap_or_default();
+    assert!(
+        kept.windows(2).any(|w| w == b"\xff\xfe"),
+        "the unreadable line must be kept for inspection"
+    );
+}
+
 // --- Wave 2b: export and key rotation from the command line ------------------------------
 
 #[test]

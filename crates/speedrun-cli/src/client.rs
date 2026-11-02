@@ -242,26 +242,60 @@ impl Client {
         let rejected = RejectedLog::new(dir.join("rejected.jsonl"));
         let mut delivered = 0;
         for file in files {
-            let Ok(f) = fs::File::open(&file) else { continue };
-            let mut lines = BufReader::new(f).lines().map_while(Result::ok);
-            for line in lines.by_ref() {
-                let Ok(entry) = serde_json::from_str::<SpoolEntry>(&line) else {
+            let f = match fs::File::open(&file) {
+                Ok(f) => f,
+                // Another flush claimed it first.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    report_io_error("read spool file", &file, &e);
                     continue;
+                }
+            };
+            let mut lines = BufReader::new(f).split(b'\n');
+            let mut keep_file = false;
+            while let Some(read) = lines.next() {
+                let bytes = match read {
+                    Ok(bytes) => bytes,
+                    // Keep the file: a later flush retries it once it is stale, and every
+                    // entry carries an event_id, so the ones already delivered are not doubled.
+                    Err(e) => {
+                        report_io_error("read spool file", &file, &e);
+                        keep_file = true;
+                        break;
+                    }
+                };
+                // A line that is not text or not an entry can never be delivered; keep it
+                // for inspection and go on with the rest of the file.
+                let entry = match serde_json::from_slice::<SpoolEntry>(&bytes) {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        rejected.append(&bytes);
+                        continue;
+                    }
                 };
                 match self.send::<Value>("POST", &entry.path, Some(&entry.body), true) {
                     Ok(_) => delivered += 1,
                     Err(CallError::Unreachable(_)) => {
-                        append_line(&live, &line);
+                        append_line(&live, &bytes);
                         for rest in lines.by_ref() {
-                            append_line(&live, &rest);
+                            match rest {
+                                Ok(rest) => append_line(&live, &rest),
+                                Err(e) => {
+                                    report_io_error("read spool file", &file, &e);
+                                    keep_file = true;
+                                    break;
+                                }
+                            }
                         }
                         break;
                     }
                     // The daemon refused it; keep it for inspection rather than retrying forever.
-                    Err(CallError::Api { .. }) => rejected.append(&line),
+                    Err(CallError::Api { .. }) => rejected.append(&bytes),
                 }
             }
-            let _ = fs::remove_file(&file);
+            if !keep_file && let Err(e) = fs::remove_file(&file) {
+                report_io_error("remove spool file", &file, &e);
+            }
         }
         delivered
     }
@@ -273,17 +307,17 @@ fn spool(path: &str, body: &Value) {
         body: body.clone(),
     })
     .expect("spool entry serializes");
-    append_line(&spool_dir().join("pending.jsonl"), &line);
+    append_line(&spool_dir().join("pending.jsonl"), line.as_bytes());
 }
 
-fn append_line(file: &Path, line: &str) {
+fn append_line(file: &Path, line: &[u8]) {
     if let Err(e) = append_line_result(file, line) {
-        report_write_error("spool file", file, &e);
+        report_io_error("write spool file", file, &e);
     }
 }
 
 /// One write per line with O_APPEND keeps concurrent writers from interleaving.
-fn append_line_result(file: &Path, line: &str) -> std::io::Result<()> {
+fn append_line_result(file: &Path, line: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -292,12 +326,15 @@ fn append_line_result(file: &Path, line: &str) -> std::io::Result<()> {
         .append(true)
         .mode(0o600)
         .open(file)?;
-    f.write_all(format!("{line}\n").as_bytes())
+    let mut record = Vec::with_capacity(line.len() + 1);
+    record.extend_from_slice(line);
+    record.push(b'\n');
+    f.write_all(&record)
 }
 
-fn report_write_error(what: &str, file: &Path, e: &std::io::Error) {
+fn report_io_error(action: &str, file: &Path, e: &std::io::Error) {
     if std::env::var_os("SPEEDRUN_DEBUG").is_some() {
-        eprintln!("speedrun: could not write {what} {}: {e}", file.display());
+        eprintln!("speedrun: could not {action} {}: {e}", file.display());
     }
 }
 
@@ -316,13 +353,13 @@ impl RejectedLog {
         Self { file }
     }
 
-    fn append(&self, line: &str) {
+    fn append(&self, line: &[u8]) {
         if let Err(e) = self.try_append(line) {
-            report_write_error("refused-event log", &self.file, &e);
+            report_io_error("write refused-event log", &self.file, &e);
         }
     }
 
-    fn try_append(&self, line: &str) -> std::io::Result<()> {
+    fn try_append(&self, line: &[u8]) -> std::io::Result<()> {
         let current = match fs::metadata(&self.file) {
             Ok(meta) => meta.len(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
@@ -337,7 +374,8 @@ impl RejectedLog {
     /// Keep the newest entries that fit in half the cap; the rest of the
     /// headroom amortizes trimming over several appends.
     fn trim_to_newest(&self) -> std::io::Result<()> {
-        let text = match fs::read_to_string(&self.file) {
+        // Bytes, not text: a refused line need not be UTF-8.
+        let text = match fs::read(&self.file) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
@@ -347,8 +385,8 @@ impl RejectedLog {
         }
         let keep = REJECTED_MAX_BYTES / 2;
         let mut total = 0u64;
-        let mut kept: Vec<&str> = Vec::new();
-        for line in text.lines().rev() {
+        let mut kept: Vec<&[u8]> = Vec::new();
+        for line in text.strip_suffix(b"\n").unwrap_or(&text).split(|&b| b == b'\n').rev() {
             let len = line.len() as u64 + 1;
             if !kept.is_empty() && total.saturating_add(len) > keep {
                 break;
@@ -357,8 +395,8 @@ impl RejectedLog {
             kept.push(line);
         }
         kept.reverse();
-        let mut out = kept.join("\n");
-        out.push('\n');
+        let mut out = kept.join(&b'\n');
+        out.push(b'\n');
         fs::write(&self.file, out)
     }
 }
