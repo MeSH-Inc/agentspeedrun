@@ -41,11 +41,21 @@ fn read_input() -> Result<impl Fn(&str, &str) -> Option<String>> {
     })
 }
 
+/// The project enclosing the hook's working directory, if the user has
+/// trusted it for this data directory.
 fn find_project(cwd: Option<String>) -> Result<Option<Project>> {
-    let cwd = cwd
-        .map(std::path::PathBuf::from)
-        .unwrap_or(std::env::current_dir()?);
-    Project::find(&cwd)
+    let dir = match cwd {
+        Some(cwd) => std::path::PathBuf::from(cwd),
+        None => std::env::current_dir()?,
+    };
+    let Some(project) = Project::find(&dir)? else {
+        return Ok(None);
+    };
+    if project.is_trusted()? {
+        Ok(Some(project))
+    } else {
+        Ok(None)
+    }
 }
 
 /// GitHub Copilot agent hooks, used by VS Code's agent and the Copilot CLI.
@@ -94,11 +104,8 @@ fn claude_code_inner(event: &str) -> Result<()> {
     std::io::stdin().read_to_string(&mut input)?;
     let v: Value = serde_json::from_str(&input)?;
     let str_of = |k: &str| v.get(k).and_then(Value::as_str);
-    let cwd = str_of("cwd")
-        .map(std::path::PathBuf::from)
-        .unwrap_or(std::env::current_dir()?);
-    let Some(project) = Project::find(&cwd)? else {
-        return Ok(()); // Not a tracked project.
+    let Some(project) = find_project(str_of("cwd").map(String::from))? else {
+        return Ok(()); // Not a tracked, trusted project.
     };
     let session = str_of("session_id").unwrap_or("unknown");
     let client = Client::new();

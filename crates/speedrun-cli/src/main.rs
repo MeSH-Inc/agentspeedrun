@@ -9,6 +9,7 @@ mod redacted;
 mod secret;
 mod setup;
 mod tools;
+mod trust;
 mod watch;
 
 use std::io::Read;
@@ -63,6 +64,10 @@ enum Cmd {
         category: String,
         #[arg(long)]
         force: bool,
+        /// Trust the project found from the working directory without creating
+        /// or changing its project.json, and without contacting the daemon.
+        #[arg(long)]
+        trust: bool,
     },
     /// Show the current run.
     Status {
@@ -338,7 +343,22 @@ fn run(cmd: Cmd) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let c = Client::new();
     match cmd {
-        Cmd::Init { category, force } => {
+        Cmd::Init {
+            category,
+            force,
+            trust,
+        } => {
+            if trust {
+                let project = Project::find(&cwd)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "not in a speedrun project (no {} found); run `speedrun init`",
+                        speedrun_core::paths::PROJECT_FILE
+                    )
+                })?;
+                project.trust()?;
+                println!("Trusted {}", project.root.display());
+                return Ok(());
+            }
             let cats: CategoriesResponse = c.get("/v1/categories")?;
             if !cats.categories.iter().any(|k| k.id == category) {
                 let ids: Vec<_> = cats.categories.iter().map(|k| k.id.as_str()).collect();

@@ -19,6 +19,7 @@ pub fn record_prompt(
     model: Option<&str>,
     content: &str,
 ) -> Result<Option<PromptResponse>> {
+    p.require_trusted()?;
     let content = RedactedText::new(content);
     let body = json!({
         "event_id": speedrun_core::new_id(),
@@ -37,6 +38,7 @@ pub fn record_prompt(
 
 /// Append to the project's active run; spooled if the daemon is down.
 pub fn append(c: &Client, p: &Project, payload: EventPayload) -> Result<Option<AppendResponse>> {
+    p.require_trusted()?;
     let body = json!({
         "event_id": speedrun_core::new_id(),
         "occurred_at": chrono::Utc::now(),

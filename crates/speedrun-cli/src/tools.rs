@@ -60,6 +60,15 @@ fn proposed_milestone_id(project_id: &str, title: &str) -> String {
     speedrun_core::hash::content_id(&["milestone", project_id, title])
 }
 
+/// Why a recording tool does nothing for an unlisted project. The refusal is
+/// a normal result, not an error: hosts and adapters treat it as success.
+fn untrusted_message(project: &Project) -> String {
+    format!(
+        "This project is not trusted for this data directory; run `speedrun init --trust` in {} to record for it.",
+        project.root.display()
+    )
+}
+
 /// Run a tool against the project enclosing `dir`.
 pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
     let project = Project::require(dir)?;
@@ -70,6 +79,9 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
             None => "No active run yet; it starts with the first prompt.".into(),
         }),
         "speedrun_propose_milestones" => {
+            if !project.is_trusted()? {
+                return Ok(untrusted_message(&project));
+            }
             let items = args
                 .get("milestones")
                 .and_then(Value::as_array)
@@ -115,6 +127,9 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
             ))
         }
         "speedrun_claim_milestone" => {
+            if !project.is_trusted()? {
+                return Ok(untrusted_message(&project));
+            }
             let run = ops::require_run(&client, &project)?;
             let key = args.get("milestone").and_then(Value::as_str).unwrap_or_default();
             let milestone_id = ops::milestone_id(&run, key)?;
