@@ -140,21 +140,22 @@ pub fn format_status(run: &RunView) -> String {
             (false, MilestoneState::Rejected) => "✗",
             (false, MilestoneState::Accepted) => "·",
         };
-        let split = m
-            .split
-            .map(|s| format!("  @ {} (agent {})", fmt_ms(s.wall_ms), fmt_ms(s.agent_ms)))
-            .unwrap_or_default();
-        let trust = m
-            .trust
-            .map(|t| format!(" [{:?} / needs {:?}]", t, m.required_trust))
-            .unwrap_or_else(|| format!(" [needs {:?}]", m.required_trust));
-        out += &format!(
-            "  {mark} {:<26} {}{}{}\n",
-            m.key.clone().unwrap_or_else(|| m.milestone_id.clone()),
-            m.title,
-            trust,
-            split
-        );
+        // A milestone without a split, trust or key is in an ordinary state
+        // (not yet counted, not yet claimed, not from the category); each
+        // `None` has its own wording.
+        let split = match m.split {
+            Some(s) => format!("  @ {} (agent {})", fmt_ms(s.wall_ms), fmt_ms(s.agent_ms)),
+            None => String::new(),
+        };
+        let trust = match m.trust {
+            Some(t) => format!(" [{:?} / needs {:?}]", t, m.required_trust),
+            None => format!(" [needs {:?}]", m.required_trust),
+        };
+        let name = match &m.key {
+            Some(key) => key,
+            None => &m.milestone_id,
+        };
+        out += &format!("  {mark} {name:<26} {}{trust}{split}\n", m.title);
     }
     out
 }
