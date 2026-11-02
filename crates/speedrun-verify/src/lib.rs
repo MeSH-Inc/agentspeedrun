@@ -1033,7 +1033,16 @@ fn invoice_payment(invoice: &Value) -> Option<String> {
 pub struct Net {
     pages: ureq::Agent,
     api: ureq::Agent,
+    /// Where GitHub's API is, when it is not [`GITHUB_API`]: the base named by
+    /// `SPEEDRUN_GITHUB_API`, and an agent that may reach it over plain HTTP
+    /// on this machine. The variable is the operator's, as every other
+    /// setting of the process is; a local judgment it sways is not one the
+    /// commons accepts, because the commons judges again with its own.
+    github: Option<(String, ureq::Agent)>,
 }
+
+/// The GitHub API every verifier request names.
+const GITHUB_API: &str = "https://api.github.com";
 
 fn is_public(ip: IpAddr) -> bool {
     match ip {
@@ -1064,7 +1073,18 @@ fn is_public(ip: IpAddr) -> bool {
 }
 
 impl Net {
+    /// The verifier's network, with GitHub's API where `SPEEDRUN_GITHUB_API`
+    /// says, if it says.
     pub fn new() -> Self {
+        let github_api = std::env::var("SPEEDRUN_GITHUB_API")
+            .ok()
+            .map(|base| base.trim().trim_end_matches('/').to_string())
+            .filter(|base| !base.is_empty() && base != GITHUB_API);
+        Self::with_github_api(github_api)
+    }
+
+    /// The verifier's network, with GitHub's API at `github_api` when given.
+    pub fn with_github_api(github_api: Option<String>) -> Self {
         let proxy = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
             .iter()
             .find_map(|v| std::env::var(v).ok().filter(|s| !s.is_empty()))
@@ -1097,9 +1117,19 @@ impl Net {
             }
             b.build()
         };
+        let github = github_api.map(|base| {
+            let agent = ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(5))
+                .timeout(Duration::from_secs(15))
+                .redirects(0)
+                .user_agent(concat!("agentspeedrun-verifier/", env!("CARGO_PKG_VERSION")))
+                .build();
+            (base, agent)
+        });
         Self {
             pages: build(5),
             api: build(0),
+            github,
         }
     }
 }
@@ -1112,7 +1142,15 @@ impl Default for Net {
 
 impl Fetch for Net {
     fn get(&self, url: &str, headers: &[(&str, &str)], api: bool) -> Result<Page, String> {
-        let agent = if api { &self.api } else { &self.pages };
+        let redirected = match (&self.github, url.strip_prefix(GITHUB_API)) {
+            (Some((base, agent)), Some(rest)) if api => Some((format!("{base}{rest}"), agent)),
+            _ => None,
+        };
+        let (url, agent) = match &redirected {
+            Some((url, agent)) => (url.as_str(), *agent),
+            None if api => (url, &self.api),
+            None => (url, &self.pages),
+        };
         let mut req = agent.get(url);
         for (k, v) in headers {
             req = req.set(k, v);
@@ -1372,6 +1410,40 @@ mod tests {
             "status": "completed", "conclusion": conclusion, "head_sha": sha, "created_at": created
         })
         .to_string()
+    }
+
+    #[test]
+    fn the_github_api_variable_moves_api_requests_and_nothing_else() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let mut stream = stream;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+            line
+        });
+        let net = Net::with_github_api(Some(base));
+        let page = net
+            .get("https://api.github.com/repos/a/b/actions/runs/1", &[], true)
+            .unwrap();
+        assert_eq!((page.status, page.body.as_str()), (200, "{}"));
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .starts_with("GET /repos/a/b/actions/runs/1 ")
+        );
+        // A page fetch is a user's URL, never GitHub's API: it keeps the public-only rule.
+        let refused = match net.get("https://127.0.0.1:9/", &[], false) {
+            Ok(page) => panic!("a private page was fetched: HTTP {}", page.status),
+            Err(e) => e,
+        };
+        assert!(refused.contains("could not fetch"), "{refused}");
     }
 
     #[test]

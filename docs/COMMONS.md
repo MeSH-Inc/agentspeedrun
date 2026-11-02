@@ -589,7 +589,8 @@ and running the commons on a host. Decisions taken here, each with its reason:
 **Configuration.** `SPEEDRUN_GITHUB_CLIENT_ID` names the GitHub OAuth app (device flow enabled);
 without it `POST /v1/links` answers 503 and nothing else changes. `SPEEDRUN_GITHUB_URL` (default
 `https://github.com`) is the base of `/login/device/code` and `/login/oauth/access_token`;
-`SPEEDRUN_GITHUB_API` (default `https://api.github.com`) the base of `/user`. Every GitHub request
+`SPEEDRUN_GITHUB_API` (default `https://api.github.com`) the base of `/user`, and of the CI-run
+requests every verifier makes, the commons' and `speedrund`'s alike (`speedrun_verify::Net`). Every GitHub request
 sends `Accept: application/json` and `User-Agent: speedrun-commons`, and no email address anywhere.
 When `SPEEDRUN_COMMONS_ADDR` is unset and `PORT` is set, the commons listens on `0.0.0.0:$PORT`
 (a `PORT` that is not a port number is an error); with neither, on `127.0.0.1:7478`.
