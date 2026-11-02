@@ -24,6 +24,7 @@ use speedrun_core::Claimant;
 use speedrun_core::api::{
     ActiveRunResponse, AppendRequest, CategoriesResponse, ErrorBody, ProjectAppendRequest, PromptRequest,
 };
+use speedrun_core::commons::LinkClaim;
 use tokio::sync::watch;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -126,6 +127,8 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .route("/v1/runs/{run_id}/events", get(events))
         .route_layer(middleware::from_fn_with_state(state.clone(), participant_auth));
     let api = Router::new()
+        .route("/v1/device", get(device))
+        .route("/v1/link-claims", post(link_claim))
         .route("/v1/prompts", post(record_prompt))
         .route("/v1/device/rotate", post(rotate_device))
         .route("/v1/shutdown", post(shutdown_daemon))
@@ -328,6 +331,16 @@ async fn record_prompt(
 
 async fn rotate_device(State(s): State<AppState>) -> impl IntoResponse {
     call(&s, |svc| svc.rotate_device()).await
+}
+
+/// `/v1/device`: the key this daemon signs with now, and its fingerprint.
+async fn device(State(s): State<AppState>) -> impl IntoResponse {
+    call(&s, |svc| svc.device_key()).await
+}
+
+/// `/v1/link-claims`: the device's half of a GitHub link (COMMONS.md §20).
+async fn link_claim(State(s): State<AppState>, Json(claim): Json<LinkClaim>) -> impl IntoResponse {
+    call(&s, move |svc| svc.sign_link_claim(&claim)).await
 }
 
 /// `/v1/shutdown`: stop the daemon by the path a signal takes. The router's

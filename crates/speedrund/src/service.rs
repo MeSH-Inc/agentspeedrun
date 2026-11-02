@@ -13,6 +13,7 @@ use speedrun_core::{
     },
     bundle::Bundle,
     category,
+    commons::{DeviceKey, DeviceSignature, LinkClaim},
     hash::verify_stored_chain,
     live::{LIVE_PROTOCOL_VERSION, LiveRun, LiveSnapshot, LiveSource, LiveSourceKind, SnapshotError},
     redact::redact,
@@ -236,6 +237,21 @@ impl Service {
 
     pub fn categories(&self) -> &[Category] {
         &self.categories
+    }
+
+    /// The key identity `/v1/device` reports, through the module that owns
+    /// what a GitHub link may present and sign.
+    pub fn device_key(&self) -> Result<DeviceKey> {
+        crate::link::device_key(&self.store).map_err(Error::Internal)
+    }
+
+    /// Sign a link claim this daemon agrees to, and nothing else.
+    pub fn sign_link_claim(&self, claim: &LinkClaim) -> Result<DeviceSignature> {
+        match crate::link::sign(&self.store, claim) {
+            Ok(signature) => Ok(signature),
+            Err(crate::link::LinkError::Refused(reason)) => Err(Error::BadRequest(reason.to_string())),
+            Err(crate::link::LinkError::Internal(e)) => Err(Error::Internal(e)),
+        }
     }
 
     /// Replace this device's signing key. Runs that have not written since

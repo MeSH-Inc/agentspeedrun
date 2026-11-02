@@ -8,6 +8,7 @@ mod disclosure;
 mod health;
 mod http;
 mod keys;
+mod link;
 mod logging;
 mod provenance;
 mod service;
