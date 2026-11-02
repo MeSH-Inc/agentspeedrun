@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 use speedrun_core::{
     EventPayload, MilestoneOrigin, RunOutcome, Trust,
-    api::{CategoriesResponse, ChainReport},
+    api::{CategoriesResponse, ChainReport, RotateResponse},
     category::DEFAULT_CATEGORY,
 };
 
@@ -46,6 +46,13 @@ enum SecretCmd {
         name: secret::Name,
     },
     List,
+}
+
+#[derive(Subcommand)]
+enum KeyCmd {
+    /// Replace this device's signing key. The daemon certifies the new key
+    /// with the old one, so runs signed before the rotation still verify.
+    Rotate,
 }
 
 #[derive(Subcommand)]
@@ -202,6 +209,11 @@ enum Cmd {
     Secret {
         #[command(subcommand)]
         action: SecretCmd,
+    },
+    /// Manage this device's signing key.
+    Key {
+        #[command(subcommand)]
+        action: KeyCmd,
     },
 }
 
@@ -566,6 +578,12 @@ fn run(cmd: Cmd) -> Result<()> {
             SecretCmd::Set { name } => secret::set(name)?,
             SecretCmd::Rm { name } => secret::remove(name)?,
             SecretCmd::List => secret::list(),
+        },
+        Cmd::Key { action } => match action {
+            KeyCmd::Rotate => {
+                let r: RotateResponse = c.post("/v1/device/rotate", &serde_json::json!({}))?;
+                println!("rotated: {} replaces {}", r.device_pubkey, r.previous_pubkey);
+            }
         },
         Cmd::Mcp { project_dir } => mcp::serve(project_dir.as_deref())?,
         Cmd::Schema => println!(
