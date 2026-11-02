@@ -50,19 +50,43 @@ pub fn run(client: &Client, tier: u8, run_id: &str, to: Option<&str>) -> Result<
     // Resolve the destination first: an unnamed commons leaves the daemon
     // untouched, so nothing is fetched or sent.
     let destination = Destination::resolve(to)?;
-    let bundle: Bundle = client.get(&format!("/v1/runs/{run_id}/bundle?tier={tier}"))?;
+    let path = format!("/v1/runs/{}/bundle?tier={tier}", path_segment(run_id));
+    let bundle: Bundle = client.get(&path)?;
     let receipt = post_bundle(&destination, &bundle)?;
     print_receipt(&receipt);
     Ok(())
+}
+
+/// `text` as one URL path segment: everything but RFC 3986's unreserved
+/// characters is percent-encoded, so a `/`, `?` or `#` in a run id cannot
+/// reshape the request.
+fn path_segment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// The commons is not the daemon: a plain request, no `Authorization`
 /// header, nothing but the bundle itself.
 fn post_bundle(destination: &Destination, bundle: &Bundle) -> Result<PublishReceipt> {
     let url = destination.bundles_url();
-    let response = ureq::post(&url)
-        .send_json(bundle)
-        .map_err(|e| anyhow::anyhow!("posting the bundle to {url}: {e}"))?;
+    let response = match ureq::post(&url).send_json(bundle) {
+        Ok(response) => response,
+        // A refusal carries the commons' reason in its body; show it.
+        Err(ureq::Error::Status(code, response)) => {
+            let reason = response
+                .into_string()
+                .with_context(|| format!("reading the refusal from {url}"))?;
+            bail!("the commons at {url} refused the bundle (HTTP {code}): {reason}")
+        }
+        Err(e) => bail!("posting the bundle to {url}: {e}"),
+    };
     response
         .into_json::<PublishReceipt>()
         .with_context(|| format!("reading the receipt from {url}"))
@@ -96,5 +120,14 @@ fn trust_name(trust: Trust) -> &'static str {
         Trust::SelfDeclared => "self_declared",
         Trust::AgentClaimed => "agent_claimed",
         Trust::EvidenceVerified => "evidence_verified",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_run_id_stays_one_path_segment() {
+        assert_eq!(super::path_segment("01JABC"), "01JABC");
+        assert_eq!(super::path_segment("a/b?c#d e"), "a%2Fb%3Fc%23d%20e");
     }
 }
