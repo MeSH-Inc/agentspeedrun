@@ -33,13 +33,10 @@ pub fn root(leaves: &[String]) -> Option<String> {
 /// `leaves`, ordered from the leaf's sibling up. `None` when `index` is not a
 /// leaf of the tree.
 pub fn inclusion_proof(index: u64, leaves: &[String]) -> Option<Vec<String>> {
-    let index = match usize::try_from(index) {
-        Ok(index) => index,
-        Err(_) => return None,
-    };
-    if index >= leaves.len() {
-        return None;
-    }
+    // An index past the tree, however large, names no leaf.
+    let index = usize::try_from(index)
+        .ok()
+        .filter(|index| *index < leaves.len())?;
     let hashes = parse_leaves(leaves)?;
     let proof = audit_path(index, &hashes);
     Some(proof.iter().map(hex::encode).collect())

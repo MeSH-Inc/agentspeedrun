@@ -528,7 +528,8 @@ there are problems.
 
 - `POST /v1/bundles` takes a `Bundle`. It is refused with 400 and nothing stored unless all of
   these hold: `format` is 1 and `tier` at most 2; the signature verifies over `digest`; at tier 0,
-  `events` and `prompts` are empty and `chain_heads` is not; at tiers 1 and 2, `chain_heads` is
+  `events` and `prompts` are empty, `chain_heads` is not, no two heads name the same `device_id`,
+  and each head's `hash` is 64 lowercase hex digits; at tiers 1 and 2, `chain_heads` is
   empty, every event names the bundle's `run_id`, `hash::verify_stored_chain` passes,
   `sign::verify_event_signatures` passes, the publisher key signs one of the run's chains, the run
   folds and is finished, no `RunStarted` holds a `project_root`, and `prompts` is empty at tier 1
@@ -536,7 +537,8 @@ there are problems.
   body exactly as received, judged, signed, and appended as the next leaf; the answer is a
   `PublishReceipt` with the new signed tree head and the leaf's inclusion proof against it. A
   bundle whose digest is already stored is answered with its existing judgment and leaf, a current
-  tree head and a proof against it, and adds no leaf.
+  tree head and a proof against it, and adds no leaf. A tier 0 bundle has no events to fold, so
+  its judgment has no milestones and its published run has no `view`.
 - *Judging* (`judge::judge`). For each milestone of the folded run, in order: `claimed` is its
   trust. If its current claim (the last `milestone_reached` since the last invalidation) carries
   checkable evidence, the commons builds a `speedrun_verify::Job` from that claim (its event id,

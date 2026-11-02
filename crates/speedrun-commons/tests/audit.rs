@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use speedrun_core::api::PromptCommitment;
-use speedrun_core::bundle::{self, BUNDLE_FORMAT, Bundle};
+use speedrun_core::bundle::{self, BUNDLE_FORMAT, Bundle, ChainHead};
 use speedrun_core::commons::{
     CommonsHealth, InclusionProof, PublishReceipt, PublishedRun, TreeHead, judgment_digest, tree_head_digest,
 };
@@ -195,6 +195,34 @@ impl Log {
             events: self.bodies(),
             chain_heads: vec![],
             prompts,
+            publisher_pubkey: String::new(),
+            signature: String::new(),
+        };
+        signed(unsigned, &self.key)
+    }
+}
+
+impl Log {
+    /// The head of this log's chain: its last event's device, sequence number and hash.
+    fn head(&self) -> ChainHead {
+        let bodies = self.bodies();
+        let last = bodies.last().expect("a log has events");
+        ChainHead {
+            device_id: last["device_id"].as_str().unwrap().to_string(),
+            seq: last["seq"].as_u64().unwrap(),
+            hash: last["hash"].as_str().unwrap().to_string(),
+        }
+    }
+
+    /// A tier 0 bundle anchoring `heads`, signed by this log's key.
+    fn heads_bundle(&self, heads: Vec<ChainHead>) -> Bundle {
+        let unsigned = Bundle {
+            format: BUNDLE_FORMAT,
+            run_id: self.run_id.clone(),
+            tier: 0,
+            events: vec![],
+            chain_heads: heads,
+            prompts: vec![],
             publisher_pubkey: String::new(),
             signature: String::new(),
         };
@@ -575,6 +603,18 @@ fn audit_p1_ingest_refuses_bundles_that_do_not_verify() {
         serde_json::to_value(signed(format_2, &log.key)).unwrap(),
     ));
 
+    let head = log.head();
+    cases.push((
+        "tier 0 naming one device twice",
+        serde_json::to_value(log.heads_bundle(vec![head.clone(), head.clone()])).unwrap(),
+    ));
+    let mut malformed = head.clone();
+    malformed.hash = "not a hash".into();
+    cases.push((
+        "tier 0 with a malformed head hash",
+        serde_json::to_value(log.heads_bundle(vec![malformed])).unwrap(),
+    ));
+
     for (case, body) in &cases {
         let (status, answer) = commons.post("/v1/bundles", body);
         assert_eq!(status, 400, "{case}: {answer}");
@@ -582,6 +622,11 @@ fn audit_p1_ingest_refuses_bundles_that_do_not_verify() {
     assert_eq!(commons.health().tree_size, 0, "a refused bundle added a leaf");
     let (accepted, body) = commons.post("/v1/bundles", &serde_json::to_value(log.bundle(1)).unwrap());
     assert_eq!(accepted, 200, "the untouched bundle: {body}");
+    let (anchored, body) = commons.post(
+        "/v1/bundles",
+        &serde_json::to_value(log.heads_bundle(vec![head])).unwrap(),
+    );
+    assert_eq!(anchored, 200, "the run's own chain head at tier 0: {body}");
 }
 
 #[test]

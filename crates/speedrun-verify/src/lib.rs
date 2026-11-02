@@ -301,17 +301,17 @@ impl Verifier {
                 ));
             }
         };
-        let field = |k: &str| run.get(k).and_then(Value::as_str).unwrap_or_default();
-        if field("status") != "completed" {
-            return Err(format!(
-                "CI run {id} has not finished (status {})",
-                field("status")
-            ));
+        let what = format!("CI run {id}");
+        let field = |k: &str| required_str(&run, k, &what);
+        let status = field("status")?;
+        if status != "completed" {
+            return Err(format!("CI run {id} has not finished (status {status})"));
         }
-        if field("conclusion") != "success" {
-            return Err(format!("CI run {id} concluded {}", field("conclusion")));
+        let conclusion = field("conclusion")?;
+        if conclusion != "success" {
+            return Err(format!("CI run {id} concluded {conclusion}"));
         }
-        let sha = field("head_sha");
+        let sha = field("head_sha")?;
         if !git_commit_in_history(root, sha) {
             return Err(format!(
                 "CI run {id} tested {sha}, which is not in this project's history"
@@ -322,7 +322,7 @@ impl Verifier {
                 "CI run {id} tested commit {sha}, which predates this speedrun"
             ));
         }
-        let created = DateTime::parse_from_rfc3339(field("created_at"))
+        let created = DateTime::parse_from_rfc3339(field("created_at")?)
             .map_err(|_| format!("CI run {id} has no readable created_at"))?;
         if created < job.run_started_at {
             return Err(format!("CI run {id} ran before this speedrun started"));
@@ -343,11 +343,11 @@ impl Verifier {
             fetch: &*self.fetch,
             auth: format!("Bearer {key}"),
             since: job.run_started_at.timestamp(),
-            founders: job
-                .project_root
-                .as_deref()
-                .map(founder_emails)
-                .unwrap_or_default(),
+            // Without a project there are no committers to tell apart from customers.
+            founders: match job.project_root.as_deref() {
+                Some(root) => founder_emails(root),
+                None => BTreeSet::new(),
+            },
         };
         stripe.check(id, 0)
     }
@@ -629,15 +629,42 @@ impl LegalCoverage {
 }
 
 fn api_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|v| {
-            v.pointer("/error/message")
-                .or_else(|| v.get("message"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "no details".into())
+    let message = serde_json::from_str::<Value>(body).ok().and_then(|v| {
+        v.pointer("/error/message")
+            .or_else(|| v.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    // An error body need not carry a message; this only words an error already found.
+    match message {
+        Some(message) => message,
+        None => "no details".into(),
+    }
+}
+
+/// A string field the API always sends. Its absence means the response is not
+/// the object that was asked for, so the evidence does not verify.
+fn required_str<'a>(object: &'a Value, key: &str, what: &str) -> Result<&'a str, String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{what} has no {key}"))
+}
+
+/// An integer field the API always sends; see [`required_str`].
+fn required_i64(object: &Value, key: &str, what: &str) -> Result<i64, String> {
+    object
+        .get(key)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{what} has no {key}"))
+}
+
+/// A boolean field the API always sends; see [`required_str`].
+fn required_bool(object: &Value, key: &str, what: &str) -> Result<bool, String> {
+    object
+        .get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("{what} has no {key}"))
 }
 
 // --- GitHub helpers ---------------------------------------------------------
@@ -712,15 +739,16 @@ fn git_commit_evidence(root: &str, sha: &str, run_started_secs: i64) -> Result<(
 
 /// Everyone who has committed to the project: payments from them are not revenue.
 fn founder_emails(root: &str) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = git_output(root, &["log", "--format=%ae%n%ce"])
-        .unwrap_or_default()
-        .lines()
-        .chain(
-            git_output(root, &["config", "user.email"])
-                .as_deref()
-                .unwrap_or_default()
-                .lines(),
-        )
+    // A project with no commits yet has no log, and one with no user.email has
+    // no configured committer; either way that source lists nobody.
+    let sources = [
+        git_output(root, &["log", "--format=%ae%n%ce"]),
+        git_output(root, &["config", "user.email"]),
+    ];
+    let mut out: BTreeSet<String> = sources
+        .iter()
+        .flatten()
+        .flat_map(|text| text.lines())
         .map(normalize_email)
         .filter(|e| e.contains('@'))
         .collect();
@@ -814,7 +842,10 @@ impl Stripe<'_> {
         if !well_formed || depth > 3 {
             return Err(format!("{id} is not a Stripe id"));
         }
-        let prefix = id.split('_').next().unwrap_or_default();
+        let prefix = match id.split_once('_') {
+            Some((prefix, _)) => prefix,
+            None => id,
+        };
         let path = match prefix {
             "evt" => format!("events/{id}"),
             "ch" | "py" => format!("charges/{id}"),
@@ -831,8 +862,9 @@ impl Stripe<'_> {
         if obj.get("livemode").and_then(Value::as_bool) != Some(true) {
             return Err(format!("{id} is a test-mode object, not real revenue"));
         }
-        let s = |k: &str| obj.get(k).and_then(Value::as_str).unwrap_or_default();
-        let n = |k: &str| obj.get(k).and_then(Value::as_i64).unwrap_or_default();
+        let what = format!("Stripe object {id}");
+        let s = |k: &str| required_str(&obj, k, &what);
+        let n = |k: &str| required_i64(&obj, k, &what);
         let linked = |k: &str| {
             obj.get(k)
                 .and_then(|v| v.as_str().or_else(|| v.get("id").and_then(Value::as_str)))
@@ -840,8 +872,9 @@ impl Stripe<'_> {
         };
         match prefix {
             "evt" => {
-                if !STRIPE_PAYMENT_EVENTS.contains(&s("type")) {
-                    return Err(format!("{id} is a {} event, not a payment", s("type")));
+                let kind = s("type")?;
+                if !STRIPE_PAYMENT_EVENTS.contains(&kind) {
+                    return Err(format!("{id} is a {kind} event, not a payment"));
                 }
                 let inner = obj
                     .pointer("/data/object/id")
@@ -852,8 +885,9 @@ impl Stripe<'_> {
             }
             "ch" | "py" => self.check_charge(id, &obj),
             "pi" => {
-                if s("status") != "succeeded" {
-                    return Err(format!("payment {id} is {}", s("status")));
+                let status = s("status")?;
+                if status != "succeeded" {
+                    return Err(format!("payment {id} is {status}"));
                 }
                 let charge = linked("latest_charge")
                     .or_else(|| {
@@ -865,19 +899,19 @@ impl Stripe<'_> {
                 self.check(&charge, depth + 1)
             }
             "cs" => {
-                if s("payment_status") != "paid" || n("amount_total") <= 0 {
+                if s("payment_status")? != "paid" || n("amount_total")? <= 0 {
                     return Err(format!("checkout session {id} is not paid"));
                 }
                 let email = obj.pointer("/customer_details/email").and_then(Value::as_str);
                 self.not_founder(id, email)?;
-                self.after_start(id, n("created"))?;
+                self.after_start(id, n("created")?)?;
                 let payment = linked("payment_intent")
                     .or_else(|| linked("invoice"))
                     .ok_or_else(|| format!("checkout session {id} has no payment to check"))?;
                 self.check(&payment, depth + 1)
             }
             "in" => {
-                if s("status") != "paid" || n("amount_paid") <= 0 {
+                if s("status")? != "paid" || n("amount_paid")? <= 0 {
                     return Err(format!("invoice {id} is not paid"));
                 }
                 if obj.get("paid_out_of_band").and_then(Value::as_bool) == Some(true) {
@@ -885,10 +919,11 @@ impl Stripe<'_> {
                 }
                 let email = obj.get("customer_email").and_then(Value::as_str);
                 self.not_founder(id, email)?;
-                let paid_at = obj
-                    .pointer("/status_transitions/paid_at")
-                    .and_then(Value::as_i64)
-                    .unwrap_or_else(|| n("created"));
+                // An invoice marked paid without a transition time was paid when it was created.
+                let paid_at = match obj.pointer("/status_transitions/paid_at").and_then(Value::as_i64) {
+                    Some(paid_at) => paid_at,
+                    None => n("created")?,
+                };
                 self.after_start(id, paid_at)?;
                 let payment =
                     invoice_payment(&obj).ok_or_else(|| format!("invoice {id} has no payment to check"))?;
@@ -899,26 +934,26 @@ impl Stripe<'_> {
     }
 
     fn check_charge(&self, id: &str, ch: &Value) -> Result<(), String> {
-        let b = |k: &str| ch.get(k).and_then(Value::as_bool).unwrap_or_default();
-        let n = |k: &str| ch.get(k).and_then(Value::as_i64).unwrap_or_default();
-        if !b("paid") || ch.get("status").and_then(Value::as_str) != Some("succeeded") || !b("captured") {
+        let what = format!("charge {id}");
+        let b = |k: &str| required_bool(ch, k, &what);
+        let n = |k: &str| required_i64(ch, k, &what);
+        if !b("paid")? || ch.get("status").and_then(Value::as_str) != Some("succeeded") || !b("captured")? {
             return Err(format!("charge {id} did not succeed"));
         }
-        let captured = if n("amount_captured") > 0 {
-            n("amount_captured")
-        } else {
-            n("amount")
+        let captured = match n("amount_captured")? {
+            captured if captured > 0 => captured,
+            _ => n("amount")?,
         };
         if captured <= 0 {
             return Err(format!("charge {id} captured nothing"));
         }
-        if b("refunded") || n("amount_refunded") * 100 > captured * REFUND_TOLERANCE_PERCENT {
+        if b("refunded")? || n("amount_refunded")? * 100 > captured * REFUND_TOLERANCE_PERCENT {
             return Err(format!("charge {id} was refunded"));
         }
-        if b("disputed") {
+        if b("disputed")? {
             return Err(format!("charge {id} is disputed"));
         }
-        self.after_start(id, n("created"))?;
+        self.after_start(id, n("created")?)?;
         let emails = [
             ch.pointer("/billing_details/email").and_then(Value::as_str),
             ch.get("receipt_email").and_then(Value::as_str),
@@ -1079,7 +1114,10 @@ impl Fetch for Net {
             Err(ureq::Error::Transport(t)) => {
                 return Err(format!(
                     "could not fetch {url}: {}",
-                    t.message().unwrap_or(&t.kind().to_string())
+                    match t.message() {
+                        Some(message) => message.to_string(),
+                        None => t.kind().to_string(),
+                    }
                 ));
             }
         };
@@ -1456,6 +1494,33 @@ mod tests {
         };
         let out = no_key.verify(&job(Some("first-payment"), None, vec![stripe("ch_ok")]));
         assert!(out.problems[0].contains("not a live-mode key"));
+    }
+
+    #[test]
+    fn a_response_missing_a_field_the_api_always_sends_does_not_verify() {
+        use serde_json::json;
+        let (_d, root, _) = repo();
+        let api = "https://api.stripe.com/v1";
+        let without = |field: &str| {
+            let mut c: Value = serde_json::from_str(&charge("ch_x", json!({}))).unwrap();
+            c.as_object_mut().unwrap().remove(field);
+            c.to_string()
+        };
+        let v = verifier(
+            Fake::default()
+                .with(&format!("{api}/charges/ch_norefund"), 200, without("refunded"))
+                .with(&format!("{api}/charges/ch_nodispute"), 200, without("disputed")),
+        );
+        let pay = |id: &str| v.verify(&job(Some("first-payment"), Some(&root), vec![stripe(id)]));
+        for (id, field) in [("ch_norefund", "refunded"), ("ch_nodispute", "disputed")] {
+            let out = pay(id);
+            assert!(!out.verified(), "{id} verified without {field}");
+            assert!(
+                out.problems.join(" ").contains(&format!("has no {field}")),
+                "{id}: {:?}",
+                out.problems
+            );
+        }
     }
 
     #[test]
