@@ -50,7 +50,7 @@ pub fn startup(addr: SocketAddr, data_dir: &Path, device_pubkey: &str) {
 /// A verification that did not verify, with the verifier's reasons. `info`
 /// is the level the default filter shows; only problem strings are logged,
 /// never prompts, tokens or evidence payloads.
-pub fn verification_failed(outcome: &crate::verify::Outcome) {
+pub fn verification_failed(outcome: &speedrun_verify::Outcome) {
     if !outcome.verified() {
         tracing::info!(problems = ?outcome.problems, "evidence not verified");
     }

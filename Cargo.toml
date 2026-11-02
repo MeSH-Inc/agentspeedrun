@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/speedrun-core", "crates/speedrund", "crates/speedrun-cli"]
+members = ["crates/speedrun-core", "crates/speedrun-verify", "crates/speedrund", "crates/speedrun-cli"]
 
 [workspace.package]
 version = "0.1.0"

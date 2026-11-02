@@ -1,6 +1,11 @@
 //! Evidence verifiers. A milestone reaches `evidence_verified` only when the
-//! daemon itself has checked every piece of verifiable evidence attached,
+//! verifier itself has checked every piece of verifiable evidence attached,
 //! and the evidence covers what the milestone's category key asks for.
+//!
+//! One library for both judges: the local daemon's preview and the commons
+//! server's judgment (COMMONS.md §6). If the two drifted, every published
+//! number would be arguable. A job without a project root, as on the server,
+//! cannot check git commits or match a CI repository against git remotes.
 //!
 //! Network checks (URLs, GitHub Actions, Stripe) run off the store lock;
 //! see `Service::finish_verification`. Nothing fetched here is stored: the
@@ -12,6 +17,8 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
+
+pub mod git;
 
 use crate::git::{commit_time as git_commit_time, output as git_output};
 use chrono::{DateTime, Utc};
@@ -1048,6 +1055,12 @@ impl Net {
             pages: build(5),
             api: build(0),
         }
+    }
+}
+
+impl Default for Net {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

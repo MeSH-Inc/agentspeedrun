@@ -30,7 +30,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::health::Health;
 use crate::provenance::admit;
 use crate::service::{Appended, Error, Service};
-use crate::verify::Verifier;
+use speedrun_verify::Verifier;
 
 #[derive(Clone)]
 pub struct AppState {

@@ -19,7 +19,7 @@ use speedrun_core::{
 
 use crate::clock::ClockWindow;
 use crate::store::{Reader, Store, Tx, UnreadableRow};
-use crate::verify;
+use speedrun_verify as verify;
 
 /// A verification that finishes within this long of the claim is dated at
 /// the claim (verifier latency does not count against the runner); later
@@ -787,7 +787,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
     let run_id = speedrun_core::new_id();
     let base = &req.event_id;
     let (start_head, start_head_committed_at) = match req.project_root.as_deref() {
-        Some(root) => match crate::git::head(root) {
+        Some(root) => match speedrun_verify::git::head(root) {
             Ok(Some(head)) => (Some(head.sha), Some(head.committed_at)),
             Ok(None) => (None, None),
             Err(e) => return Err(Error::Internal(anyhow::Error::msg(e))),

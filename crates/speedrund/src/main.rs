@@ -4,7 +4,6 @@
 mod clock;
 mod datadir_lock;
 mod disclosure;
-mod git;
 mod health;
 mod http;
 mod keys;
@@ -14,7 +13,6 @@ mod service;
 mod shutdown;
 mod startup;
 mod store;
-mod verify;
 
 use std::sync::{Arc, Mutex};
 
@@ -61,7 +59,7 @@ async fn main() -> Result<()> {
             display_token: Arc::new(display_token),
             agent_token: Arc::new(agent_token),
             health: Arc::new(health),
-            verifier: Arc::new(verify::Verifier::default()),
+            verifier: Arc::new(speedrun_verify::Verifier::default()),
             changes: Arc::new(tokio::sync::watch::channel(0).0),
             shutdown: shutdown.clone(),
         },
