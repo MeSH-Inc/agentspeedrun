@@ -1396,7 +1396,7 @@ mod tests {
 
     fn open_in(dir: &tempfile::TempDir) -> Service {
         let store = Store::open(&dir.path().join("db.sqlite"), &dir.path().join("device.key")).unwrap();
-        Service::new(store, category::builtin())
+        Service::new(store, category::builtin().unwrap())
     }
 
     /// W9.c guard: a run that did not write between two rotations gets both

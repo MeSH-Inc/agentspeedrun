@@ -1185,7 +1185,7 @@ fn audit_w6_a_speedrun_confirm_makes_an_agent_claim_count() {
 }
 
 fn latest_version(category_id: &str) -> u32 {
-    let all = speedrun_core::category::builtin();
+    let all = speedrun_core::category::builtin().unwrap();
     speedrun_core::category::find(&all, category_id, None)
         .expect("a built-in category")
         .version

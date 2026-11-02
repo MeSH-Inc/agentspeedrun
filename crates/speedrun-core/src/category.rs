@@ -34,12 +34,10 @@ const BUILTIN: &[&str] = &[
 
 pub const DEFAULT_CATEGORY: &str = "any-percent";
 
-/// Categories shipped with the binary.
-pub fn builtin() -> Vec<Category> {
-    BUILTIN
-        .iter()
-        .map(|s| serde_json::from_str(s).expect("builtin category JSON is valid"))
-        .collect()
+/// Categories shipped with the binary. The files are compiled in, and a unit test
+/// parses every one, so an error here means a build from an edited checkout.
+pub fn builtin() -> Result<Vec<Category>, serde_json::Error> {
+    BUILTIN.iter().map(|s| serde_json::from_str(s)).collect()
 }
 
 /// Latest version of a category by id, or an exact version if given.
@@ -61,7 +59,7 @@ mod tests {
 
     #[test]
     fn builtins_parse_and_have_unique_keys() {
-        let all = builtin();
+        let all = builtin().unwrap();
         assert_eq!(all.len(), 3);
         for c in &all {
             let mut keys: Vec<_> = c.milestones.iter().map(|m| &m.key).collect();
