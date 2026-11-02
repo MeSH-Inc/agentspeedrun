@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use speedrun_commons::{http, judge, keys, store};
+use speedrun_commons::{github, http, judge, keys, store};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:7478";
 
@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
         key: Arc::new(key),
         verifier: Arc::new(judge::verifier()),
         publishing: Arc::new(tokio::sync::Mutex::new(())),
+        github: Arc::new(github::GitHubConfig::from_env()),
     });
     axum::serve(listener, app).await?;
     Ok(())

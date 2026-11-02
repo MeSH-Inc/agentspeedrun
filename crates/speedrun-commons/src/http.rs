@@ -25,6 +25,7 @@ pub struct AppState {
     /// Held for the whole of one publication, so two concurrent requests
     /// cannot both compute the same next leaf index.
     pub publishing: Arc<tokio::sync::Mutex<()>>,
+    pub github: Arc<crate::github::GitHubConfig>,
 }
 
 pub fn router(state: AppState) -> Router {

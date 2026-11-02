@@ -5,6 +5,7 @@
 //!
 //! The contract is COMMONS.md §19.
 
+pub mod github;
 pub mod http;
 pub mod judge;
 pub mod keys;
