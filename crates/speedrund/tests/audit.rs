@@ -1711,3 +1711,76 @@ fn audit_p1_f_the_daemon_signs_link_claims_for_its_own_key_only() {
     assert_eq!(sign(&claim, &d.agent_token()).0, 401);
     assert_eq!(sign(&claim, &d.display_token).0, 401);
 }
+
+// --- V0.2 W4 (A5-5): a consistent copy of the log while the daemon runs ----------
+
+/// Events in the database file at `path`, read without writing to it.
+fn event_count(path: &Path) -> i64 {
+    let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("open the database read-only");
+    conn.query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+        .expect("count events")
+}
+
+#[test]
+fn backup_copies_every_event_into_a_new_private_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = Daemon::start();
+    d.prompt("p1", "proj");
+    d.prompt("p2", "proj");
+    let copy = d.output.path().join("backup.sqlite");
+    let (status, body) = d.post("/v1/backup", &json!({ "path": copy }));
+    assert_eq!(status, 200, "{body}");
+    let live = event_count(&d.home.path().join("speedrun.sqlite"));
+    assert!(live > 0);
+    assert_eq!(event_count(&copy), live, "the copy lacks events");
+    assert_eq!(body["events"], live, "{body}");
+    assert_eq!(body["path"], json!(copy), "{body}");
+    let mode = fs::metadata(&copy).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "the copy holds prompt text, so only its owner may read it"
+    );
+}
+
+#[test]
+fn backup_refuses_a_relative_path_an_existing_file_and_the_agent_token() {
+    let d = Daemon::start();
+    d.prompt("p1", "proj");
+    let (status, body) = d.post("/v1/backup", &json!({ "path": "relative.sqlite" }));
+    assert_eq!(status, 400, "{body}");
+    let existing = d.output.path().join("existing.sqlite");
+    fs::write(&existing, "keep me").unwrap();
+    let (status, body) = d.post("/v1/backup", &json!({ "path": existing }));
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(fs::read_to_string(&existing).unwrap(), "keep me");
+    let agent = fs::read_to_string(d.home.path().join("agent-token")).unwrap();
+    let (status, _) = request(
+        "POST",
+        &format!("{}/v1/backup", d.base),
+        Some(agent.trim()),
+        Some(&json!({ "path": d.output.path().join("agent.sqlite") })),
+    );
+    assert_eq!(status, 401, "an agent may not write files through the daemon");
+}
+
+#[test]
+fn stopping_the_daemon_folds_the_write_ahead_log_into_the_database() {
+    let mut d = Daemon::start();
+    d.prompt("p1", "proj");
+    let status = Command::new("kill")
+        .args(["-TERM", &d.child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        wait_for(Duration::from_secs(5), || matches!(
+            d.child.try_wait(),
+            Ok(Some(_))
+        )),
+        "the daemon did not exit"
+    );
+    let wal = d.home.path().join("speedrun.sqlite-wal");
+    let wal_len = fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    assert_eq!(wal_len, 0, "the write-ahead log still holds {wal_len} bytes");
+}

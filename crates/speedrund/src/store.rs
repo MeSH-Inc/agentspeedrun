@@ -127,6 +127,36 @@ impl Store {
         })
     }
 
+    /// Copy the whole database to `target`, a file that must not exist yet,
+    /// and return how many events the copy holds. `VACUUM INTO` reads one
+    /// consistent snapshot, so writes in the write-ahead log are included and
+    /// none arrives half-way. The copy is created 0600 first, because it
+    /// holds prompt text; a failed copy leaves no file behind.
+    pub fn backup(&self, target: &Path) -> std::io::Result<u64> {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(target)?;
+        let copied = self.copy_into(target);
+        if copied.is_err()
+            && let Err(e) = std::fs::remove_file(target)
+        {
+            tracing::warn!("could not remove the failed backup {}: {e}", target.display());
+        }
+        copied.map_err(std::io::Error::other)
+    }
+
+    fn copy_into(&self, target: &Path) -> rusqlite::Result<u64> {
+        let name = target.to_string_lossy();
+        self.conn.execute("VACUUM INTO ?1", [name.as_ref()])?;
+        let copy = Connection::open_with_flags(target, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let events: i64 = copy.query_row("SELECT count(*) FROM events", [], |r| r.get(0))?;
+        // A count is never negative, so this is exact.
+        Ok(events.unsigned_abs())
+    }
+
     /// Run `f` in an IMMEDIATE transaction; commit only if it returns Ok.
     pub fn transaction<T, E: From<rusqlite::Error>>(
         &mut self,

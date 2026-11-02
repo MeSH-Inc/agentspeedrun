@@ -23,7 +23,7 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 use speedrun_core::{
     Claimant, EventPayload, MilestoneOrigin, RunOutcome, Trust,
-    api::{CategoriesResponse, ChainReport, HealthResponse, RotateResponse},
+    api::{BackupResponse, CategoriesResponse, ChainReport, HealthResponse, RotateResponse},
     category::DEFAULT_CATEGORY,
 };
 
@@ -272,6 +272,12 @@ enum Cmd {
     Key {
         #[command(subcommand)]
         action: KeyCmd,
+    },
+    /// Copy the whole event log to a new file while the daemon runs. The copy
+    /// verifies with public keys alone; the device's keys stay where they are.
+    Backup {
+        /// Where to write the copy; it must not exist yet.
+        file: std::path::PathBuf,
     },
 }
 
@@ -681,6 +687,16 @@ fn run(cmd: Cmd) -> Result<()> {
                 println!("rotated: {} replaces {}", r.device_pubkey, r.previous_pubkey);
             }
         },
+        Cmd::Backup { file } => {
+            let file = cwd.join(file);
+            let path = file
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("{} is not valid UTF-8", file.display()))?;
+            // A large log takes a while to copy; the daemon answers when it is done.
+            let r: BackupResponse =
+                Client::patient().post("/v1/backup", &serde_json::json!({ "path": path }))?;
+            println!("backed up {} events to {}", r.events, r.path);
+        }
         Cmd::Mcp { project_dir } => mcp::serve(project_dir.as_deref())?,
         Cmd::Schema { bundle } => {
             let schema = if bundle {

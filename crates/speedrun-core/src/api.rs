@@ -202,6 +202,22 @@ pub struct PromptCommitment {
     pub redacted: bool,
 }
 
+/// `POST /v1/backup` (full token only): copy the database to `path`, an
+/// absolute path where no file exists yet.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BackupRequest {
+    pub path: String,
+}
+
+/// The copy `POST /v1/backup` made: a consistent snapshot of the whole log,
+/// readable only by its owner.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BackupResponse {
+    pub path: String,
+    /// Events in the copy.
+    pub events: u64,
+}
+
 /// `POST /v1/device/rotate`: the device's signing key was replaced.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RotateResponse {

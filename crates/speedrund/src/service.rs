@@ -8,8 +8,8 @@ use speedrun_core::{
     Category, Event, EventPayload, Evidence, MilestoneOrigin, MilestoneState, RunOutcome, RunStatus, RunView,
     Trust,
     api::{
-        AppendRequest, AppendResponse, ChainReport, ExportResponse, ProjectAppendRequest, PromptCommitment,
-        PromptRequest, PromptResponse, RotateResponse,
+        AppendRequest, AppendResponse, BackupRequest, BackupResponse, ChainReport, ExportResponse,
+        ProjectAppendRequest, PromptCommitment, PromptRequest, PromptResponse, RotateResponse,
     },
     bundle::Bundle,
     category,
@@ -256,6 +256,33 @@ impl Service {
 
     /// Replace this device's signing key. Runs that have not written since
     /// the rotation record a DeviceRotated before their next event.
+    /// Copy the database to the absolute path `req` names, where nothing
+    /// exists yet. The daemon runs as the user, so it writes nowhere the user
+    /// could not; only the full token reaches this.
+    pub fn backup(&self, req: &BackupRequest) -> Result<BackupResponse> {
+        let target = std::path::Path::new(&req.path);
+        if !target.is_absolute() {
+            return Err(Error::BadRequest(format!("{} is not an absolute path", req.path)));
+        }
+        match self.store.backup(target) {
+            Ok(events) => Ok(BackupResponse {
+                path: req.path.clone(),
+                events,
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::BadRequest(format!(
+                "{} already exists; a backup never replaces a file",
+                req.path
+            ))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::BadRequest(format!(
+                "the directory of {} does not exist",
+                req.path
+            ))),
+            Err(e) => Err(Error::Internal(
+                anyhow::Error::new(e).context(format!("backing up to {}", req.path)),
+            )),
+        }
+    }
+
     pub fn rotate_device(&mut self) -> Result<RotateResponse> {
         self.store.rotate_key().map_err(Error::Internal)
     }

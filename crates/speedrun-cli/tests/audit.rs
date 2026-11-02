@@ -1601,3 +1601,30 @@ fn audit_p1_f_link_without_a_commons_address_sends_nothing() {
     );
     assert!(daemon.received().is_empty(), "it asked the daemon for its key");
 }
+
+#[test]
+fn backup_writes_a_copy_beside_the_user_and_says_how_many_events_it_holds() {
+    // V0.2 W4 (A5-5): `speedrun backup <file>`, a path relative to where it runs.
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    assert!(machine.prompt("add a search box").status.success());
+    let out = machine.speedrun(&["backup", "copy.sqlite"], b"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The CLI resolves the name against its working directory, as the OS reports it.
+    let copy = machine.project_root().canonicalize().unwrap().join("copy.sqlite");
+    assert!(copy.exists(), "no copy at {}", copy.display());
+    assert!(
+        stdout.starts_with("backed up ")
+            && stdout
+                .trim_end()
+                .ends_with(&format!("events to {}", copy.display())),
+        "{stdout}"
+    );
+    let again = machine.speedrun(&["backup", "copy.sqlite"], b"");
+    assert!(!again.status.success(), "a second backup replaced the first");
+}

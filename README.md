@@ -77,7 +77,30 @@ speedrun pause / speedrun resume
 speedrun verify                              # check the hash chain
 speedrun watch                               # live view of all active runs
 speedrun display                             # read-only token + URLs for widgets
+speedrun backup ~/speedrun-backup.sqlite     # copy the whole log, daemon running
 ```
+
+### Backups
+
+Everything lives in the data directory: `$SPEEDRUN_HOME`, else
+`$XDG_DATA_HOME/agentspeedrun`, else `~/.local/share/agentspeedrun`.
+`speedrun backup <file>` copies the event log there while the daemon runs:
+one consistent snapshot (SQLite `VACUUM INTO`), written to a new file that only
+you can read, because it holds your prompt text. Every run in the copy verifies
+with public keys alone. The secret keys are not in it: `device.key` (signs as
+this device), `prompt.key`, and the per-run keys in `disclosure/` (needed to
+export a run's prompt commitments). Keep those with your other secrets.
+
+To restore on the same machine, stop the daemon, put the copy in place and
+remove any write-ahead files beside it; the next command starts the daemon again:
+
+```bash
+speedrun daemon stop
+cp ~/speedrun-backup.sqlite ~/.local/share/agentspeedrun/speedrun.sqlite
+rm -f ~/.local/share/agentspeedrun/speedrun.sqlite-wal ~/.local/share/agentspeedrun/speedrun.sqlite-shm
+```
+
+Moving a log to another machine is not supported yet.
 
 ## Layout
 

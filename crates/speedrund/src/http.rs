@@ -22,7 +22,8 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use speedrun_core::Claimant;
 use speedrun_core::api::{
-    ActiveRunResponse, AppendRequest, CategoriesResponse, ErrorBody, ProjectAppendRequest, PromptRequest,
+    ActiveRunResponse, AppendRequest, BackupRequest, CategoriesResponse, ErrorBody, ProjectAppendRequest,
+    PromptRequest,
 };
 use speedrun_core::commons::LinkClaim;
 use tokio::sync::watch;
@@ -132,6 +133,7 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .route("/v1/prompts", post(record_prompt))
         .route("/v1/device/rotate", post(rotate_device))
         .route("/v1/shutdown", post(shutdown_daemon))
+        .route("/v1/backup", post(backup))
         .route("/v1/runs/{run_id}/verify", get(verify))
         .route("/v1/runs/{run_id}/export", get(export))
         .route("/v1/runs/{run_id}/bundle", get(bundle))
@@ -327,6 +329,12 @@ async fn record_prompt(
     .await;
     notify(&s);
     res
+}
+
+/// `/v1/backup`: copy the database. Behind the full-token `auth` layer: an
+/// agent may not make the daemon write files.
+async fn backup(State(s): State<AppState>, Json(req): Json<BackupRequest>) -> impl IntoResponse {
+    call(&s, move |svc| svc.backup(&req)).await
 }
 
 async fn rotate_device(State(s): State<AppState>) -> impl IntoResponse {
