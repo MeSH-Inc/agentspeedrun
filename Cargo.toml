@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/speedrun-core", "crates/speedrun-verify", "crates/speedrund", "crates/speedrun-cli"]
+members = ["crates/speedrun-core", "crates/speedrun-verify", "crates/speedrund", "crates/speedrun-cli", "crates/speedrun-commons"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.94"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
