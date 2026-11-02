@@ -90,6 +90,73 @@ impl MilestoneView {
             && matches!(self.state, MilestoneState::Reached | MilestoneState::Verified)
             && self.meets_trust_requirement()
     }
+
+    /// A fresh claim. A user's claim clears pending at once; an agent's claim
+    /// on a `self_declared` milestone holds it for confirmation and therefore
+    /// stops counting until then (D6).
+    fn record_claim(&mut self, trust: Trust, evidence: &[Evidence], claimant: Claimant, at: DateTime<Utc>) {
+        if self.state != MilestoneState::Verified {
+            self.state = MilestoneState::Reached;
+        }
+        self.pending_confirmation = claimant == Claimant::Agent && self.required_trust == Trust::SelfDeclared;
+        self.reached_at.get_or_insert(at);
+        self.trust = Some(self.trust.map_or(trust, |current| current.max(trust)));
+        self.extends_evidence(evidence);
+        if self.pending_confirmation {
+            self.counted_at = None;
+        } else if self.counted_at.is_none() && self.counts() {
+            self.counted_at = Some(at);
+        }
+    }
+
+    /// A verification raises trust but never clears pending: only the user's
+    /// confirmation can release an agent's claim on a self_declared milestone.
+    fn record_verification(&mut self, trust: Trust, evidence: &[Evidence], at: DateTime<Utc>) {
+        self.state = MilestoneState::Verified;
+        self.reached_at.get_or_insert(at);
+        self.trust = Some(self.trust.map_or(trust, |current| current.max(trust)));
+        self.extends_evidence(evidence);
+        if self.counted_at.is_none() && self.counts() {
+            self.counted_at = Some(at);
+        }
+    }
+
+    /// Whether the user's confirmation is legal now. The run's rules answer
+    /// 409 for anything else, exactly as they do for other refused events.
+    fn may_confirm(&self) -> bool {
+        self.pending_confirmation
+    }
+
+    /// The user's confirmation releases an agent's claim, and the milestone
+    /// counts from this event's time.
+    fn confirm(&mut self, at: DateTime<Utc>) {
+        if !self.pending_confirmation {
+            return;
+        }
+        self.pending_confirmation = false;
+        if self.counts() {
+            self.counted_at = Some(at);
+        }
+    }
+
+    fn extends_evidence(&mut self, evidence: &[Evidence]) {
+        for item in evidence {
+            if !self.evidence.contains(item) {
+                self.evidence.push(item.clone());
+            }
+        }
+    }
+
+    /// A fresh invalidation clears the claim's state and any pending
+    /// confirmation, so a later agent claim starts pending again.
+    fn invalidate(&mut self) {
+        self.state = MilestoneState::Accepted;
+        self.trust = None;
+        self.evidence.clear();
+        self.reached_at = None;
+        self.counted_at = None;
+        self.pending_confirmation = false;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -439,53 +506,32 @@ impl RunView {
                     milestone_id,
                     trust,
                     evidence,
-                    ..
+                    claimant,
+                } => {
+                    if let Some(m) = index.get(milestone_id).map(|&i| &mut view.milestones[i]) {
+                        m.record_claim(*trust, evidence, *claimant, t);
+                    }
                 }
-                | EventPayload::MilestoneVerified {
+                EventPayload::MilestoneVerified {
                     milestone_id,
                     trust,
                     evidence,
                     ..
                 } => {
                     if let Some(m) = index.get(milestone_id).map(|&i| &mut view.milestones[i]) {
-                        let verified = matches!(e.payload, EventPayload::MilestoneVerified { .. });
-                        if verified || m.state != MilestoneState::Verified {
-                            m.state = if verified {
-                                MilestoneState::Verified
-                            } else {
-                                MilestoneState::Reached
-                            };
-                        }
-                        // Only a fresh claim moves the milestone to pending; a
-                        // verification of an agent's claim leaves it pending (D6).
-                        if let EventPayload::MilestoneReached { claimant, .. } = &e.payload {
-                            m.pending_confirmation =
-                                *claimant == Claimant::Agent && m.required_trust == Trust::SelfDeclared;
-                        }
-                        m.reached_at.get_or_insert(t);
-                        m.trust = Some(m.trust.map_or(*trust, |cur| cur.max(*trust)));
-                        for ev in evidence {
-                            if !m.evidence.contains(ev) {
-                                m.evidence.push(ev.clone());
-                            }
-                        }
-                        if m.counted_at.is_none() && m.counts() {
-                            m.counted_at = Some(t);
-                        }
+                        m.record_verification(*trust, evidence, t);
+                    }
+                }
+                EventPayload::MilestoneConfirmed { milestone_id } => {
+                    if let Some(m) = index.get(milestone_id).map(|&i| &mut view.milestones[i]) {
+                        m.confirm(t);
                     }
                 }
                 EventPayload::MilestoneInvalidated { milestone_id, .. } => {
                     if let Some(m) = index.get(milestone_id).map(|&i| &mut view.milestones[i]) {
-                        m.state = MilestoneState::Accepted;
-                        m.trust = None;
-                        m.evidence.clear();
-                        m.reached_at = None;
-                        m.counted_at = None;
-                        m.pending_confirmation = false;
+                        m.invalidate();
                     }
                 }
-                // Not yet folded: see W6.a in docs/V0.2.md.
-                EventPayload::MilestoneConfirmed { .. } => {}
                 EventPayload::RunPaused { .. } => {
                     if pause_open.is_none() {
                         pause_open = Some(t);
@@ -698,7 +744,13 @@ impl RunView {
                 S::Reached | S::Verified => Ok(()),
                 s => Err(format!("cannot invalidate a milestone that is {s:?}").to_lowercase()),
             },
-            P::MilestoneConfirmed { .. } => Err("milestone confirmation is not implemented".into()),
+            P::MilestoneConfirmed { milestone_id } => {
+                match self.milestones.iter().find(|m| &m.milestone_id == milestone_id) {
+                    Some(m) if m.may_confirm() => Ok(()),
+                    Some(_) => Err(format!("milestone {milestone_id} is not pending")),
+                    None => Err(format!("unknown milestone {milestone_id}")),
+                }
+            }
             P::RunPaused { .. } if self.open_turns > 0 => {
                 Err("cannot pause while an agent turn is open".into())
             }
