@@ -21,7 +21,7 @@ pub fn record_prompt(
 ) -> Result<Option<PromptResponse>> {
     p.require_trusted()?;
     let content = RedactedText::new(content);
-    let body = json!({
+    let mut body = json!({
         "event_id": speedrun_core::new_id(),
         "project_id": p.config.project_id,
         "project_root": p.root,
@@ -33,6 +33,14 @@ pub fn record_prompt(
         "occurred_at": chrono::Utc::now(),
         "starts_turn": true,
     });
+    // A project without a pin omits the field, so the daemon takes its latest.
+    if let Some(version) = p.config.category_version {
+        let body_object = match body.as_object_mut() {
+            Some(object) => object,
+            None => bail!("prompt request body is not a JSON object"),
+        };
+        body_object.insert("category_version".to_string(), json!(version));
+    }
     Ok(c.post_durable("/v1/prompts", &body)?)
 }
 

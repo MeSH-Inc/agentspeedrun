@@ -80,6 +80,10 @@ enum Cmd {
         /// or changing its project.json, and without contacting the daemon.
         #[arg(long)]
         trust: bool,
+        /// Move the project's pinned category version to the latest this binary
+        /// ships, ignoring the other init flags.
+        #[arg(long)]
+        upgrade_category: bool,
     },
     /// Show the current run.
     Status {
@@ -370,7 +374,21 @@ fn run(cmd: Cmd) -> Result<()> {
             category,
             force,
             trust,
+            upgrade_category,
         } => {
+            // `--upgrade-category` acts alone: it moves only the pinned version
+            // of the project found from the working directory, ignoring the
+            // other init flags.
+            if upgrade_category {
+                let mut project = Project::require(&cwd)?;
+                let (old, new) = project.upgrade_category()?;
+                let old = match old {
+                    Some(version) => version.to_string(),
+                    None => "unpinned".to_string(),
+                };
+                println!("{} {old} -> {new}", project.config.category_id);
+                return Ok(());
+            }
             if trust {
                 let project = Project::find(&cwd)?.ok_or_else(|| {
                     anyhow::anyhow!(
@@ -381,11 +399,6 @@ fn run(cmd: Cmd) -> Result<()> {
                 project.trust()?;
                 println!("Trusted {}", project.root.display());
                 return Ok(());
-            }
-            let cats: CategoriesResponse = c.get("/v1/categories")?;
-            if !cats.categories.iter().any(|k| k.id == category) {
-                let ids: Vec<_> = cats.categories.iter().map(|k| k.id.as_str()).collect();
-                bail!("unknown category {category}; available: {}", ids.join(", "));
             }
             let p = Project::init(&cwd, &category, force)?;
             println!(

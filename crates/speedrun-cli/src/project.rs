@@ -21,6 +21,20 @@ pub struct ProjectConfig {
     pub created_at: DateTime<Utc>,
 }
 
+/// The latest version this binary ships for `category_id`, from the category
+/// definitions it embeds. An id this binary does not ship is an error, never a
+/// fallback.
+fn latest_category_version(category_id: &str) -> Result<u32> {
+    let all = speedrun_core::category::builtin()?;
+    match speedrun_core::category::find(&all, category_id, None) {
+        Some(category) => Ok(category.version),
+        None => {
+            let ids: Vec<&str> = all.iter().map(|c| c.id.as_str()).collect();
+            bail!("unknown category {category_id}; available: {}", ids.join(", "))
+        }
+    }
+}
+
 pub struct Project {
     pub root: PathBuf,
     pub config: ProjectConfig,
@@ -109,15 +123,33 @@ impl Project {
         let config = ProjectConfig {
             project_id: speedrun_core::new_id(),
             category_id: category_id.to_string(),
-            category_version: None,
+            category_version: Some(latest_category_version(category_id)?),
             created_at: Utc::now(),
         };
-        std::fs::create_dir_all(file.parent().expect("has parent"))?;
-        std::fs::write(&file, serde_json::to_string_pretty(&config)? + "\n")?;
+        write_json(&file, &serde_json::to_value(&config)?)?;
         let project = Project { root, config };
         // `speedrun init` opts this project in for this data directory.
         project.trust()?;
         Ok(project)
+    }
+
+    /// Pin this project's category to the latest version this binary ships,
+    /// rewriting only `category_version`. Returns that field's old and new
+    /// value.
+    pub fn upgrade_category(&mut self) -> Result<(Option<u32>, u32)> {
+        let file = self.root.join(PROJECT_FILE);
+        let text = std::fs::read_to_string(&file)?;
+        let mut config: serde_json::Value = serde_json::from_str(&text)?;
+        let latest = latest_category_version(&self.config.category_id)?;
+        let previous = self.config.category_version;
+        let fields = match config.as_object_mut() {
+            Some(fields) => fields,
+            None => bail!("{} is not a JSON object", file.display()),
+        };
+        fields.insert("category_version".to_string(), serde_json::json!(latest));
+        write_json(&file, &config)?;
+        self.config.category_version = Some(latest);
+        Ok((previous, latest))
     }
 
     pub fn resolve_commit(&self, rev: &str) -> Result<String> {
@@ -127,6 +159,16 @@ impl Project {
         )
         .with_context(|| format!("{rev} is not a commit in {}", self.root.display()))
     }
+}
+
+/// Write `value` to `file` as pretty JSON, creating the enclosing directory.
+fn write_json(file: &Path, value: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let text = serde_json::to_string_pretty(value)?;
+    std::fs::write(file, text + "\n")?;
+    Ok(())
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
