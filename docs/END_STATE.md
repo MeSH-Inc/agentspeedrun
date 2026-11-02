@@ -15,7 +15,7 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | Item | Condition | Who | Decision | Test |
 |---|---|---|---|---|
 | M1.a | `speedrun hook`/`ingest` exit 0 on any argument error | loop | | `audit_a4_1_*` |
-| M1.b | The marketplace plugin source is pinned to release tags | leader | D1 | |
+| M1.b | The marketplace plugin source is pinned to release tags | leader | D1 | `scripts/version.py check` (CI) fails unless the source is pinned to the workspace version's tag |
 | M2 | Token creation follows the single-instance bind; the client spools on 401, 5xx, timeout | loop | D3 | `audit_m2_*` |
 | M3 | Daemon logs reach stderr or a capped file | loop | | `audit_m3_*` |
 | M4 | SIGTERM with an SSE stream open ends the daemon within about 2 s | loop | | `audit_m4_*` |

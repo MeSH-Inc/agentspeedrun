@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Package release binaries for one target into dist/:
 #   dist/agentspeedrun-v<version>-<target>.tar.gz
-# containing agentspeedrun-v<version>-<target>/{speedrun,speedrund,README.md}.
+# containing agentspeedrun-v<version>-<target>/{speedrun,speedrund,README.md,LICENSE-*}.
 # speedrun starts the speedrund next to it, so the two must stay together.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/$name"
 cp "$bindir/speedrun" "$bindir/speedrund" "$stage/$name/"
-cp "$root/README.md" "$stage/$name/"
+cp "$root/README.md" "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$stage/$name/"
 mkdir -p "$root/dist"
 # Reproducible archives (scripts/archive.py): the same binaries give the same
 # bytes. Entries are dated by the packaged commit unless SOURCE_DATE_EPOCH says.

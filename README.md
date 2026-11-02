@@ -38,19 +38,13 @@ Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Building a widget,
 Prebuilt binaries for Linux (x86_64, arm64; static) and macOS (Apple silicon, Intel). Windows is not supported; use WSL.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mesh-inc/agentspeedrun/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/main/install.sh | sh
 ```
 
-While the repository is private, go through an authenticated GitHub CLI instead:
+The installer checks the release's `SHA256SUMS`, and with an authenticated GitHub CLI also the archive's build attestation (`gh attestation verify`). It puts `speedrun` and `speedrund` in `~/.local/bin` (`SPEEDRUN_INSTALL_DIR` to change, `SPEEDRUN_VERSION=v0.2.0` to pin) and restarts a running daemon on the new version. Or build from source, in a clone:
 
 ```bash
-gh api repos/mesh-inc/agentspeedrun/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
-```
-
-The installer checks the release's `SHA256SUMS` and puts `speedrun` and `speedrund` in `~/.local/bin` (`SPEEDRUN_INSTALL_DIR` to change, `SPEEDRUN_VERSION=v0.1.0` to pin). Or build from source:
-
-```bash
-cargo install --path crates/speedrund && cargo install --path crates/speedrun-cli
+cargo install --locked --path crates/speedrund && cargo install --locked --path crates/speedrun-cli
 ```
 
 In the repo you want to time:
@@ -104,3 +98,7 @@ offline spool, live-display stream with read-only tokens and personal-best compa
 CLI), VS Code extension, Zed extension.
 Not yet: encryption of prompts at rest, prompt
 capture for Zed's native agent (no API), cloud sync and leaderboards.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.

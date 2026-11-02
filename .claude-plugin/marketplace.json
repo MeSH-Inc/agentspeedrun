@@ -1,10 +1,18 @@
 {
   "name": "agentspeedrun",
-  "owner": { "name": "mesh-inc" },
+  "owner": {
+    "name": "mesh-inc"
+  },
+  "description": "agentspeedrun: time agentic coding projects against milestone categories, with evidence the daemon checks.",
   "plugins": [
     {
       "name": "agentspeedrun",
-      "source": "./plugins/claude-code",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/MeSH-Inc/agentspeedrun.git",
+        "path": "plugins/claude-code",
+        "ref": "v0.2.0"
+      },
       "description": "Time agentic coding projects against milestone categories (any%, 100%, first revenue)."
     }
   ]

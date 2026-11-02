@@ -4,7 +4,10 @@ One version covers everything shipped from this repo: the Rust crates, the
 VS Code extension, the Zed extension, the opencode and pi packages and the
 Claude Code plugin. `scripts/version.py check` (run in CI) fails if they drift.
 
-1. Bump every manifest and the lockfiles:
+1. Bump every manifest and the lockfiles. This also pins the Claude Code
+   plugin in `.claude-plugin/marketplace.json` to the new tag (a `git-subdir`
+   source with `ref: vX.Y.Z`), so a hooks change on `main` reaches users only
+   with the release whose binary handles it:
 
    ```bash
    scripts/version.py set 0.2.0
@@ -55,8 +58,8 @@ hooks reach users from `main` before the binary they call does.
 
 | Channel | State |
 |---------|-------|
-| GitHub release + `install.sh` | Automated. Anonymous downloads need a public repo; until then `install.sh` downloads through `gh`. |
-| Claude Code plugin | Served from this repo's marketplace (`.claude-plugin/marketplace.json`); nothing to publish. |
+| GitHub release + `install.sh` | Automated. |
+| Claude Code plugin | This repo's marketplace (`.claude-plugin/marketplace.json`) serves the plugin from the release tag; `scripts/version.py set` moves the pin. A plugin from a tag is fetched only when it is enabled in user settings, not in a committed project `.claude/settings.json`. |
 | opencode, pi, oh-my-pi | Embedded in `speedrun` (`speedrun setup …`); pi also installs from git. |
 | VS Code | `.vsix` attached to each release. Marketplace/Open VSX publishing needs a publisher account and token (`VSCE_PAT`, `OVSX_PAT`). |
 | Zed | Not in the registry yet: submission is a PR to `zed-industries/extensions` and requires a public repo with an open-source license. |
