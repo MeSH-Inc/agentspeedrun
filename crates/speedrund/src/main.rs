@@ -2,6 +2,7 @@
 //! editor and agent plugin talks to it over loopback HTTP.
 
 mod clock;
+mod datadir_lock;
 mod disclosure;
 mod git;
 mod http;
@@ -9,6 +10,9 @@ mod keys;
 mod logging;
 mod service;
 mod shutdown;
+// The single-instance decision now lives in `datadir_lock`; the old type is
+// still here until it is deleted, and nothing calls it.
+#[allow(dead_code)]
 mod startup;
 mod store;
 mod verify;
@@ -27,10 +31,10 @@ async fn main() -> Result<()> {
 
     let dir = paths::data_dir();
     startup::prepare_dir(&dir)?;
-    // The lock is held for the whole process life, so a second daemon on this
-    // data directory exits before it can write anything. The operating system
-    // releases it however the process ends.
-    let _lock = startup::DataDirLock::acquire(&dir)?;
+    // One daemon owns a data directory for its whole life; a second one exits
+    // before it can write anything, and the operating system releases the lock
+    // however the first one ends.
+    let _lock = datadir_lock::DataDirLock::acquire(&dir)?;
     let (listener, addr) = startup::listen().await?;
     let token = startup::ensure_token(&paths::token_path())?;
     let display_token = startup::ensure_token(&paths::display_token_path())?;
