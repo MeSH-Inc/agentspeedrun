@@ -25,6 +25,7 @@ use speedrun_core::api::{
 use tokio::sync::watch;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use crate::health::Health;
 use crate::service::{Appended, Error, Service};
 use crate::verify::Verifier;
 
@@ -33,6 +34,8 @@ pub struct AppState {
     pub service: Arc<Mutex<Service>>,
     pub token: Arc<String>,
     pub display_token: Arc<String>,
+    /// What this daemon tells a client about itself, and how it proves it.
+    pub health: Arc<Health>,
     pub verifier: Arc<Verifier>,
     /// Bumped after every successful write; live streams wake on it.
     pub changes: Arc<watch::Sender<u64>>,
@@ -118,13 +121,22 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .route("/v1/runs/{run_id}/export", get(export))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
-        .route(
-            "/v1/health",
-            get(|| async { Json(serde_json::json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") })) }),
-        )
+        .route("/v1/health", get(health))
         .merge(api)
         .merge(display)
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct HealthQuery {
+    /// A fresh random value from the client; its presence makes this a proof request.
+    nonce: Option<String>,
+}
+
+/// `/v1/health`: the daemon's identity, and proof of its token when asked.
+/// Never the token itself.
+async fn health(State(s): State<AppState>, Query(q): Query<HealthQuery>) -> impl IntoResponse {
+    Json(s.health.response(s.token.as_str(), q.nonce.as_deref()))
 }
 
 impl AppState {

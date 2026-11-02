@@ -5,6 +5,7 @@ mod clock;
 mod datadir_lock;
 mod disclosure;
 mod git;
+mod health;
 mod http;
 mod keys;
 mod logging;
@@ -38,6 +39,7 @@ async fn main() -> Result<()> {
     let (listener, addr) = startup::listen().await?;
     let token = startup::ensure_token(&paths::token_path())?;
     let display_token = startup::ensure_token(&paths::display_token_path())?;
+    let health = health::Health::resolve(&dir)?;
     let store = store::Store::open(&dir.join("speedrun.sqlite"), &paths::device_key_path())?;
     let device_pubkey = store.device_pubkey();
     startup::write_addr(&dir, addr)?;
@@ -56,6 +58,7 @@ async fn main() -> Result<()> {
             service: Arc::new(Mutex::new(service)),
             token: Arc::new(token),
             display_token: Arc::new(display_token),
+            health: Arc::new(health),
             verifier: Arc::new(verify::Verifier::default()),
             changes: Arc::new(tokio::sync::watch::channel(0).0),
             shutdown: shutdown.watch(),

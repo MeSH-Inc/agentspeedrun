@@ -49,6 +49,12 @@ pub fn canonical_digest(v: &Value) -> String {
     hex::encode(Sha256::digest(canonical_json(v).as_bytes()))
 }
 
+/// sha256 (hex) of raw bytes: the stable identity of something that is not
+/// JSON, such as a canonical filesystem path.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
 /// A stable id derived from `parts`: their sha256, hex-encoded. Each part is
 /// NUL-terminated, so `["ab", "c"]` and `["a", "bc"]` differ. The same parts
 /// always give the same id, which lets a retried request name the same thing.
