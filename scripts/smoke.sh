@@ -34,6 +34,8 @@ sr init --category any-percent >/dev/null
 
 out=$(echo "build a todo app" | sr ingest prompt --host smoke --session s1)
 has "$out" '"run_started":true' || fail "prompt did not start a run: $out"
+# Commit evidence must be made after the run started, so commit once the prompt has started it.
+git -c user.name=smoke -c user.email=smoke@example.com commit -q --allow-empty -m scaffold
 
 sr split scaffold-runs --commit HEAD >/dev/null || fail "split"
 has "$(sr status)" "✔ scaffold-runs" || fail "split did not count: $(sr status)"
