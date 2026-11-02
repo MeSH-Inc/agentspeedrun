@@ -65,6 +65,14 @@ CREATE TABLE prompts (
     content  TEXT NOT NULL
 );
 "#,
+    r#"
+-- A run's project root is local state, never part of the published log.
+-- New runs record it here in the same transaction as their RunStarted.
+CREATE TABLE run_roots (
+    run_id       TEXT PRIMARY KEY,
+    project_root TEXT
+);
+"#,
 ];
 
 pub struct Store {
@@ -345,6 +353,48 @@ impl Reader<'_> {
             .optional()
     }
 
+    /// The project root a run started with, if it has one.
+    ///
+    /// New runs keep it in `run_roots`, outside the published log. A run
+    /// written before that table existed falls back to the root its
+    /// `RunStarted` stored; a row here, even with a NULL root, wins so a new
+    /// run never consults its log.
+    pub fn run_root(&self, run_id: &str) -> rusqlite::Result<Option<String>> {
+        let stored: Option<Option<String>> = self
+            .0
+            .query_row(
+                "SELECT project_root FROM run_roots WHERE run_id = ?1",
+                [run_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        match stored {
+            Some(root) => Ok(root),
+            None => self.legacy_run_root(run_id),
+        }
+    }
+
+    fn legacy_run_root(&self, run_id: &str) -> rusqlite::Result<Option<String>> {
+        let body: Option<String> = self
+            .0
+            .query_row(
+                "SELECT body FROM events WHERE run_id = ?1 AND type = 'run_started'
+                 ORDER BY seq ASC LIMIT 1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(body) = body else {
+            return Ok(None);
+        };
+        let body: serde_json::Value = parse_body(&body)?;
+        Ok(body
+            .get("payload")
+            .and_then(|payload| payload.get("project_root"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string))
+    }
+
     pub fn run_events(&self, run_id: &str) -> rusqlite::Result<Vec<Event>> {
         let mut stmt = self
             .0
@@ -530,6 +580,17 @@ impl Tx<'_> {
     /// in `RunStarted`. The key itself never enters the log.
     pub fn disclose(&self, run_id: &str) -> anyhow::Result<String> {
         self.disclosure.create(run_id)
+    }
+
+    /// Keep a run's project root beside the log. Every new run records a
+    /// row here, even when it has no root, so the log is never consulted for
+    /// a root this table is responsible for.
+    pub fn record_run_root(&self, run_id: &str, project_root: Option<&str>) -> rusqlite::Result<()> {
+        self.tx.execute(
+            "INSERT INTO run_roots (run_id, project_root) VALUES (?1, ?2)",
+            params![run_id, project_root],
+        )?;
+        Ok(())
     }
 
     /// Append to the end of a run's chain. The caller validates first.

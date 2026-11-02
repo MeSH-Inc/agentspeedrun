@@ -102,7 +102,16 @@ fn check_id(name: &str, id: &str) -> Result<()> {
 
 fn fold(tx: &Tx<'_>, run_id: &str) -> Result<RunView> {
     let events = tx.reader().run_events(run_id)?;
-    RunView::fold(&events, Utc::now()).ok_or_else(|| Error::NotFound(format!("run {run_id}")))
+    let view = RunView::fold(&events, Utc::now()).ok_or_else(|| Error::NotFound(format!("run {run_id}")))?;
+    attach_root(&tx.reader(), view)
+}
+
+/// Attach the local project root to a folded view. `RunView::fold` is pure
+/// and may read a root an old log stored; the store is the only place that
+/// knows where a new run's root lives.
+fn attach_root(reader: &Reader<'_>, mut view: RunView) -> Result<RunView> {
+    view.project_root = reader.run_root(&view.run_id)?;
+    Ok(view)
 }
 
 /// The run a new event for `project_id` joins: the project's newest run,
@@ -499,7 +508,7 @@ impl Service {
             return Ok(None);
         }
         let events = self.store.reader().run_events(&cause.run_id)?;
-        let Some(run) = RunView::fold(&events, Utc::now()) else {
+        let Some(run) = self.rooted_view(&events, Utc::now())? else {
             return Ok(None);
         };
         let Some(m) = run
@@ -612,7 +621,7 @@ impl Service {
         let mut views = Vec::new();
         for run_id in reader.latest_runs()? {
             let log = reader.run_log(&run_id)?;
-            let Some(view) = RunView::fold(&log.events, as_of) else {
+            let Some(view) = self.rooted_view(&log.events, as_of)? else {
                 continue;
             };
             if !view.closed && view.last_event_at >= as_of - window {
@@ -667,7 +676,7 @@ impl Service {
             for run_id in reader.runs_in_category_for_project(project_id, category_id, version)? {
                 let log = reader.run_log(&run_id)?;
                 unreadable.extend(log.unreadable);
-                if let Some(v) = RunView::fold(&log.events, now)
+                if let Some(v) = self.rooted_view(&log.events, now)?
                     && v.status == RunStatus::Completed
                 {
                     done.push(v);
@@ -687,16 +696,28 @@ impl Service {
         Ok(&self.pb_cache[&key])
     }
 
+    /// Fold events and attach the root the store keeps for the run. This is
+    /// the one path callers use to turn a log into a view with local state.
+    fn rooted_view(&self, events: &[Event], now: DateTime<Utc>) -> Result<Option<RunView>> {
+        let reader = self.store.reader();
+        let Some(view) = RunView::fold(events, now) else {
+            return Ok(None);
+        };
+        attach_root(&reader, view).map(Some)
+    }
+
     pub fn active_run(&self, project_id: &str) -> Result<Option<RunView>> {
         let r = self.store.reader();
         let Some(run_id) = r.latest_run(project_id)? else {
             return Ok(None);
         };
-        Ok(RunView::fold(&r.run_events(&run_id)?, Utc::now()).filter(|v| !v.closed))
+        let events = r.run_events(&run_id)?;
+        Ok(self.rooted_view(&events, Utc::now())?.filter(|v| !v.closed))
     }
 
     pub fn run(&self, run_id: &str) -> Result<RunView> {
-        RunView::fold(&self.store.reader().run_events(run_id)?, Utc::now())
+        let events = self.store.reader().run_events(run_id)?;
+        self.rooted_view(&events, Utc::now())?
             .ok_or_else(|| Error::NotFound(format!("run {run_id}")))
     }
 
@@ -802,7 +823,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
         at,
         EventPayload::RunStarted {
             project_id: req.project_id.clone(),
-            project_root: req.project_root.clone(),
+            project_root: None,
             category_id: cat.id.clone(),
             category_version: cat.version,
             device_pubkey: Some(tx.device_pubkey()),
@@ -812,6 +833,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
             disclosure_commitment: Some(disclosure_commitment),
         },
     )?;
+    tx.record_run_root(&run_id, req.project_root.as_deref())?;
     for m in &cat.milestones {
         // A predefined milestone's log id names the ruleset it came from, so a
         // later category edit (or a key shared with another category) cannot
