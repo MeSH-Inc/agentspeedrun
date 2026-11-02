@@ -27,7 +27,8 @@ impl Shutdown {
     /// daemon has any side effect, so startup can abort cleanly.
     pub fn install() -> Result<Self> {
         let (started, _keepalive) = watch::channel(false);
-        let tx = started.clone();
+        let shutdown = Self { started };
+        let signal = shutdown.clone();
         let mut term = tokio::signal::unix::signal(SignalKind::terminate())?;
         let _signal = tokio::spawn(async move {
             tokio::select! {
@@ -38,10 +39,19 @@ impl Shutdown {
                 }
                 _ = term.recv() => {}
             }
-            tracing::info!("shutting down");
-            tx.send_replace(true);
+            signal.request();
         });
-        Ok(Self { started })
+        Ok(shutdown)
+    }
+
+    /// Ask the daemon to stop, exactly as a signal does.
+    ///
+    /// This is the only stop a non-signal caller gets: it sets the same flag the
+    /// signal handlers set, so live streams end, the server drains, and `run`
+    /// applies the same deadline. Callers never see the channel that carries it.
+    pub fn request(&self) {
+        tracing::info!("shutting down");
+        self.started.send_replace(true);
     }
 
     /// A receiver that reports when shutdown has started. Live streams select

@@ -42,8 +42,9 @@ pub struct AppState {
     pub verifier: Arc<Verifier>,
     /// Bumped after every successful write; live streams wake on it.
     pub changes: Arc<watch::Sender<u64>>,
-    /// Changes when the daemon starts shutting down; live streams end on it.
-    pub shutdown: watch::Receiver<bool>,
+    /// The daemon's stop signal: live streams end on it, and `/v1/shutdown`
+    /// asks it to start. The channel stays inside `Shutdown`.
+    pub shutdown: crate::shutdown::Shutdown,
 }
 
 /// Live streams resend a snapshot at least this often, so displays
@@ -126,6 +127,7 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
     let api = Router::new()
         .route("/v1/prompts", post(record_prompt))
         .route("/v1/device/rotate", post(rotate_device))
+        .route("/v1/shutdown", post(shutdown_daemon))
         .route("/v1/runs/{run_id}/verify", get(verify))
         .route("/v1/runs/{run_id}/export", get(export))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
@@ -326,6 +328,14 @@ async fn rotate_device(State(s): State<AppState>) -> impl IntoResponse {
     call(&s, |svc| svc.rotate_device()).await
 }
 
+/// `/v1/shutdown`: stop the daemon by the path a signal takes. The router's
+/// full-token `auth` layer runs first, so an agent or display token never
+/// reaches here. Answer 202, then let the server drain.
+async fn shutdown_daemon(State(s): State<AppState>) -> impl IntoResponse {
+    s.shutdown.request();
+    StatusCode::ACCEPTED
+}
+
 async fn append(
     State(s): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -436,7 +446,7 @@ async fn live_stream(
     let stream = futures_util::stream::unfold((s, rx, true), move |(s, mut rx, first)| async move {
         if !first {
             // Wake on a write, the periodic refresh, or shutdown, whichever comes first.
-            let mut shutdown = s.shutdown.clone();
+            let mut shutdown = s.shutdown.watch();
             tokio::select! {
                 changed = rx.changed() => if changed.is_err() { return None },
                 () = shutdown_started(&mut shutdown) => return None,

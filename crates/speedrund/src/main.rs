@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
             health: Arc::new(health),
             verifier: Arc::new(verify::Verifier::default()),
             changes: Arc::new(tokio::sync::watch::channel(0).0),
-            shutdown: shutdown.watch(),
+            shutdown: shutdown.clone(),
         },
         &cors_origins,
     );
