@@ -50,7 +50,10 @@ test("first prompt starts a run and tells the agent about it", async () => {
   expect(run.open_turns).toBe(1);
   expect(run.hosts).toEqual(["opencode"]);
   const [prompt] = ofType(sb.events(), "prompt_submitted");
-  expect(prompt.payload.content).toBe("build a recipe box");
+  // The log keeps a commitment to the prompt, never its text; the length shows
+  // the synthetic part was left out.
+  expect(prompt.payload).not.toHaveProperty("content");
+  expect(prompt.payload.length).toBe("build a recipe box".length);
   expect(prompt.payload.model).toBe("anthropic/claude-x");
   expect((await system("ses_main")).join()).toContain("started a timed `any-percent` run");
   expect(await system("ses_other")).toEqual([]);
@@ -79,8 +82,13 @@ test("milestone tools go through the CLI", async () => {
   await hooks["tool.execute.after"]({ tool: "speedrun_propose_milestones", sessionID: "ses_main" }, {});
   expect(await system("ses_main")).toEqual([]);
 
+  sb.commit("scaffold");
   const claimed = await hooks.tool.speedrun_claim_milestone.execute({ milestone: "scaffold-runs", commit: "HEAD" }, ctx);
-  expect(claimed).toContain("it counts");
+  expect(claimed).toContain("Evidence verified (git)");
+  // An agent's claim on a self_declared milestone counts only once the user confirms it (D6).
+  expect(claimed).toContain("waits for the user to confirm it");
+  sb.cli("confirm", "scaffold-runs");
+  expect(sb.cli("status", "--line")).toMatch(/^⏱ any-percent 1\/2 · /);
   expect(await hooks.tool.speedrun_status.execute({}, ctx)).toContain("scaffold-runs");
   await expect(hooks.tool.speedrun_claim_milestone.execute({ milestone: "nope" }, ctx)).rejects.toThrow("no milestone");
 });

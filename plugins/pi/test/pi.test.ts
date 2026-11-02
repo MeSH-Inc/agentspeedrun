@@ -72,9 +72,14 @@ test("oh-my-pi: main agent recorded as omp; subagents and revives ignored", asyn
 test("milestone tools go through the CLI", async () => {
   const c = ctx("pi-1");
   const exec = (name: string, params: any) => tools.get(name).execute("call-1", params, undefined, undefined, c);
+  sb.commit("scaffold");
   const claimed = await exec("speedrun_claim_milestone", { milestone: "scaffold-runs", commit: "HEAD" });
-  expect(claimed.content[0].text).toContain("it counts");
-  expect(statuses.at(-1)).toMatch(/^⏱ any-percent 1\/2 · /);
+  expect(claimed.content[0].text).toContain("Evidence verified (git)");
+  // An agent's claim on a self_declared milestone counts only once the user confirms it (D6).
+  expect(claimed.content[0].text).toContain("waits for the user to confirm it");
+  expect(statuses.at(-1)).toMatch(/^⏱ any-percent 0\/2 · /);
+  sb.cli("confirm", "scaffold-runs");
+  expect(sb.cli("status", "--line")).toMatch(/^⏱ any-percent 1\/2 · /);
   await expect(exec("speedrun_claim_milestone", { milestone: "nope" })).rejects.toThrow("no milestone");
 });
 

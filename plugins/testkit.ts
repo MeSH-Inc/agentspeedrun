@@ -14,6 +14,10 @@ export type Sandbox = {
   project: string;
   /** Run the CLI in the project and return stdout. */
   cli: (...args: string[]) => string;
+  /** Commit to the project now. Commit evidence must be made after the run
+   * started, so a test that claims a commit makes one once a prompt has
+   * started the run. */
+  commit: (message: string) => void;
   status: () => any;
   events: () => any[];
   close: () => void;
@@ -38,13 +42,16 @@ export async function sandbox(): Promise<Sandbox> {
   }
   const project = join(root, "project");
   const git = (...a: string[]) => execFileSync("git", ["-C", project, ...a], { stdio: "pipe" });
+  const commit = (message: string) =>
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", message);
   execFileSync("git", ["init", "-q", project]);
-  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init");
+  commit("init");
   const cli = (...args: string[]) => execFileSync(SPEEDRUN, args, { cwd: project, encoding: "utf8" });
   cli("init", "--category", "any-percent");
   return {
     project,
     cli,
+    commit,
     status: () => JSON.parse(cli("status", "--json")),
     events: () =>
       cli("log")
