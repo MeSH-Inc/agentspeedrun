@@ -3,7 +3,7 @@
 //! Projections are pure functions of the log, so timing rules can change and
 //! old runs can be recomputed without migrating stored data.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use chrono::{DateTime, Duration, Utc};
 use schemars::JsonSchema;
@@ -246,11 +246,41 @@ fn subtract(a: &[Interval], b: &[Interval]) -> Vec<Interval> {
     merge(out)
 }
 
+/// The order `fold` reads a run's events in. A single device's chain is read
+/// exactly as given, so one chain is never reordered. Several chains are
+/// merged by `occurred_at`, each still in its own order, so clock skew can
+/// interleave devices but never reorder one device's chain.
+fn fold_order(events: &[Event]) -> Vec<&Event> {
+    let chains = crate::event::device_chains(events);
+    if chains.len() <= 1 {
+        return events.iter().collect();
+    }
+    let mut heads: Vec<VecDeque<&Event>> = chains.into_iter().map(VecDeque::from).collect();
+    let mut out = Vec::with_capacity(events.len());
+    loop {
+        let next = heads
+            .iter_mut()
+            .filter(|chain| !chain.is_empty())
+            .min_by_key(|chain| chain.front().map(|event| event.occurred_at));
+        let Some(chain) = next else {
+            break;
+        };
+        let Some(event) = chain.pop_front() else {
+            break;
+        };
+        out.push(event);
+    }
+    out
+}
+
 impl RunView {
-    /// Fold a run's events (ordered by seq). `now` closes any open turn or
-    /// pause. Returns `None` if the log does not start with `RunStarted`.
+    /// Fold a run's events, which may hold one chain per device. `now` closes
+    /// any open turn or pause. Returns `None` when the run has no
+    /// `RunStarted`, wherever in the input it sits.
     pub fn fold(events: &[Event], now: DateTime<Utc>) -> Option<RunView> {
-        let first = events.first()?;
+        let first = events
+            .iter()
+            .find(|e| matches!(e.payload, EventPayload::RunStarted { .. }))?;
         let EventPayload::RunStarted {
             project_id,
             project_root,
@@ -293,7 +323,7 @@ impl RunView {
         // (milestone index, time it started counting); splits computed after timing is known.
         let mut index: BTreeMap<String, usize> = BTreeMap::new();
 
-        for e in events {
+        for e in fold_order(events) {
             view.last_seq = e.seq;
             view.head_hash = Some(e.hash.clone());
             view.last_event_at = view.last_event_at.max(e.recorded_at);

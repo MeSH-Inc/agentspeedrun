@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,20 @@ pub struct Event {
     /// device's chain at this point. Required: an unsigned event fails verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sig: Option<String>,
+}
+
+/// A run's events split into one chain per device, as `device_id` names them.
+///
+/// Each chain keeps the order its events arrived in; callers pass a run's
+/// events with every chain already in `seq` order. Chains themselves are
+/// ordered by device id and are otherwise independent: a multi-device log is
+/// several chains interleaved, not one global sequence.
+pub(crate) fn device_chains(events: &[Event]) -> Vec<Vec<&Event>> {
+    let mut chains: BTreeMap<&str, Vec<&Event>> = BTreeMap::new();
+    for event in events {
+        chains.entry(event.device_id.as_str()).or_default().push(event);
+    }
+    chains.into_values().collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

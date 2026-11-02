@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -77,57 +79,73 @@ pub fn compute_stored_hash(body: &Value) -> String {
     hex::encode(Sha256::digest(canonical_json(&body).as_bytes()))
 }
 
-/// Check that stored event bodies (one run, ordered by seq) form an intact
-/// chain, hashing each body as stored ([`compute_stored_hash`]) rather than its
+/// Check that stored event bodies (one run) hold intact chains. Bodies are
+/// grouped by `device_id` and each device's chain is checked on its own,
+/// hashing each body as stored ([`compute_stored_hash`]) rather than its
 /// typed parse. The same checks and errors as [`verify_chain`].
 ///
 /// A body whose `seq`, `run_id` or `hash` is missing or the wrong shape cannot
 /// be part of an intact chain, so it is reported as tampered at its position.
 pub fn verify_stored_chain(bodies: &[Value]) -> Result<(), ChainError> {
-    let mut prev_hash: Option<&str> = None;
-    let mut run_id: Option<&str> = None;
-    for (i, body) in bodies.iter().enumerate() {
-        let expected = i as u64 + 1;
-        let seq = body
-            .get("seq")
-            .and_then(Value::as_u64)
-            .ok_or(ChainError::Tampered { seq: expected })?;
-        if seq != expected {
-            return Err(ChainError::Gap { seq, expected });
-        }
-        let found_run = body
-            .get("run_id")
-            .and_then(Value::as_str)
-            .ok_or(ChainError::Tampered { seq })?;
-        if let Some(expected_run) = run_id {
-            if found_run != expected_run {
+    let expected_run = bodies
+        .first()
+        .and_then(|body| body.get("run_id"))
+        .and_then(Value::as_str);
+    for chain in stored_device_chains(bodies) {
+        let mut prev_hash: Option<&str> = None;
+        for (i, body) in chain.into_iter().enumerate() {
+            let expected = i as u64 + 1;
+            let seq = body
+                .get("seq")
+                .and_then(Value::as_u64)
+                .ok_or(ChainError::Tampered { seq: expected })?;
+            if seq != expected {
+                return Err(ChainError::Gap { seq, expected });
+            }
+            let found_run = body
+                .get("run_id")
+                .and_then(Value::as_str)
+                .ok_or(ChainError::Tampered { seq })?;
+            if let Some(expected_run) = expected_run
+                && found_run != expected_run
+            {
                 return Err(ChainError::WrongRun {
                     seq,
                     found: found_run.to_string(),
                     expected: expected_run.to_string(),
                 });
             }
-        } else {
-            run_id = Some(found_run);
+            let linked = match body.get("prev_hash") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(hash)) => Some(hash.as_str()),
+                Some(_) => return Err(ChainError::BrokenLink { seq }),
+            };
+            if linked != prev_hash {
+                return Err(ChainError::BrokenLink { seq });
+            }
+            let stored = body
+                .get("hash")
+                .and_then(Value::as_str)
+                .ok_or(ChainError::Tampered { seq })?;
+            if compute_stored_hash(body) != stored {
+                return Err(ChainError::Tampered { seq });
+            }
+            prev_hash = Some(stored);
         }
-        let linked = match body.get("prev_hash") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(hash)) => Some(hash.as_str()),
-            Some(_) => return Err(ChainError::BrokenLink { seq }),
-        };
-        if linked != prev_hash {
-            return Err(ChainError::BrokenLink { seq });
-        }
-        let stored = body
-            .get("hash")
-            .and_then(Value::as_str)
-            .ok_or(ChainError::Tampered { seq })?;
-        if compute_stored_hash(body) != stored {
-            return Err(ChainError::Tampered { seq });
-        }
-        prev_hash = Some(stored);
     }
     Ok(())
+}
+
+/// Stored bodies split into one chain per device, keyed by `device_id`. A
+/// body that predates the field shares the `None` chain, exactly how a
+/// single-device log was read before chains were per device.
+fn stored_device_chains(bodies: &[Value]) -> Vec<Vec<&Value>> {
+    let mut chains: BTreeMap<Option<&str>, Vec<&Value>> = BTreeMap::new();
+    for body in bodies {
+        let device = body.get("device_id").and_then(Value::as_str);
+        chains.entry(device).or_default().push(body);
+    }
+    chains.into_values().collect()
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -146,30 +164,37 @@ pub enum ChainError {
     },
 }
 
-/// Check that `events` (one run, ordered by seq) form an intact chain.
+/// Check that `events` (one run) hold intact chains. Events are grouped by
+/// `device_id` and each device's chain is checked on its own: seq starts at 1
+/// and is gapless, every `prev_hash` links the previous event of the same
+/// chain, and every stored hash matches. Chains may arrive in any order, so a
+/// multi-device run is several chains rather than one global sequence.
 pub fn verify_chain(events: &[Event]) -> Result<(), ChainError> {
-    let mut prev: Option<&Event> = None;
-    for (i, e) in events.iter().enumerate() {
-        let expected = i as u64 + 1;
-        if e.seq != expected {
-            return Err(ChainError::Gap { seq: e.seq, expected });
+    let expected_run = events.first().map(|event| event.run_id.as_str());
+    for chain in crate::event::device_chains(events) {
+        let mut prev: Option<&Event> = None;
+        for (i, e) in chain.into_iter().enumerate() {
+            let expected = i as u64 + 1;
+            if e.seq != expected {
+                return Err(ChainError::Gap { seq: e.seq, expected });
+            }
+            if let Some(expected_run) = expected_run
+                && e.run_id.as_str() != expected_run
+            {
+                return Err(ChainError::WrongRun {
+                    seq: e.seq,
+                    found: e.run_id.clone(),
+                    expected: expected_run.to_string(),
+                });
+            }
+            if e.prev_hash.as_deref() != prev.map(|p| p.hash.as_str()) {
+                return Err(ChainError::BrokenLink { seq: e.seq });
+            }
+            if compute_hash(e) != e.hash {
+                return Err(ChainError::Tampered { seq: e.seq });
+            }
+            prev = Some(e);
         }
-        if let Some(first) = events.first()
-            && e.run_id != first.run_id
-        {
-            return Err(ChainError::WrongRun {
-                seq: e.seq,
-                found: e.run_id.clone(),
-                expected: first.run_id.clone(),
-            });
-        }
-        if e.prev_hash.as_deref() != prev.map(|p| p.hash.as_str()) {
-            return Err(ChainError::BrokenLink { seq: e.seq });
-        }
-        if compute_hash(e) != e.hash {
-            return Err(ChainError::Tampered { seq: e.seq });
-        }
-        prev = Some(e);
     }
     Ok(())
 }
