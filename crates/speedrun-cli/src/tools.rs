@@ -167,9 +167,11 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
                 m.trust.unwrap_or(Trust::AgentClaimed),
                 m.required_trust,
                 if m.counts() {
-                    "it counts"
+                    "it counts".to_string()
+                } else if m.pending_confirmation {
+                    format!("it waits for the user to confirm it (`speedrun confirm {key}`)")
                 } else {
-                    "it does not count yet"
+                    "it does not count yet".to_string()
                 },
                 if resp
                     .derived
