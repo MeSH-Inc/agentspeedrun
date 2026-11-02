@@ -1042,3 +1042,228 @@ fn audit_w9_e_run_started_names_its_head_and_rules() {
     let canonical = speedrun_core::hash::canonical_json(category);
     assert_eq!(started["ruleset_digest"], json!(sha256_hex(canonical.as_bytes())));
 }
+
+// --- Wave 3a: one daemon per data dir, its address file, health proof, shutdown -----------
+// V0.2 M2, M4, W4 and decision D3.
+
+/// A speedrund process killed when dropped, started without the `Daemon` helper's
+/// assumptions (an address, a token it can read at once).
+struct Running(Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Start speedrund on `home`, at `addr` if given (otherwise it chooses), with its output
+/// in files under `output` named by `label`.
+fn spawn_speedrund(home: &Path, addr: Option<&str>, output: &Path, label: &str) -> Running {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_speedrund"));
+    command
+        .env("SPEEDRUN_HOME", home)
+        .env_remove("SPEEDRUN_LOG")
+        .env_remove("RUST_LOG")
+        .env_remove("SPEEDRUN_DEVICE_KEY")
+        .env_remove("SPEEDRUN_CORS_ORIGINS")
+        .env_remove("SPEEDRUN_ALLOW_NON_LOOPBACK")
+        .stdin(Stdio::null())
+        .stdout(File::create(output.join(format!("{label}.stdout"))).unwrap())
+        .stderr(File::create(output.join(format!("{label}.stderr"))).unwrap());
+    match addr {
+        Some(addr) => command.env("SPEEDRUN_ADDR", addr),
+        None => command.env_remove("SPEEDRUN_ADDR"),
+    };
+    Running(command.spawn().expect("spawn speedrund"))
+}
+
+/// Wait until `child` exits or `limit` passes; its exit status if it exited.
+fn exit_within(child: &mut Child, limit: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+fn terminate(child: &Child) {
+    let ok = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(ok.success(), "kill -TERM failed");
+}
+
+/// Open the live stream with the display token and wait for its first snapshot. The
+/// returned connection keeps the stream open until it is dropped.
+fn open_live_stream(d: &Daemon) -> std::net::TcpStream {
+    use std::io::{Read, Write};
+    let host = d.base.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(host).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(
+        stream,
+        "GET /v1/live/stream?token={} HTTP/1.1\r\nHost: {host}\r\nAccept: text/event-stream\r\n\r\n",
+        d.display_token
+    )
+    .unwrap();
+    let mut seen = Vec::new();
+    let mut buffer = [0u8; 4096];
+    while !String::from_utf8_lossy(&seen).contains("snapshot") {
+        let n = stream.read(&mut buffer).expect("the live stream sent nothing");
+        assert!(
+            n > 0,
+            "the live stream closed: {}",
+            String::from_utf8_lossy(&seen)
+        );
+        seen.extend_from_slice(&buffer[..n]);
+    }
+    stream
+}
+
+#[test]
+#[ignore = "audit M4"]
+fn audit_m4_sigterm_with_a_live_stream_open_ends_the_daemon_within_3_seconds() {
+    let mut d = Daemon::start();
+    let stream = open_live_stream(&d);
+    terminate(&d.child);
+    let exited = exit_within(&mut d.child, Duration::from_secs(3));
+    drop(stream);
+    assert!(
+        exited.is_some(),
+        "speedrund was still running 3 s after SIGTERM with a stream open"
+    );
+}
+
+#[test]
+fn guard_m4_sigterm_without_a_stream_ends_the_daemon() {
+    let mut d = Daemon::start();
+    terminate(&d.child);
+    assert!(
+        exit_within(&mut d.child, Duration::from_secs(3)).is_some(),
+        "speedrund ignored SIGTERM"
+    );
+}
+
+#[test]
+#[ignore = "audit D3"]
+fn audit_w4_a_daemon_writes_the_address_it_listens_on_to_the_data_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let _daemon = spawn_speedrund(home.path(), None, output.path(), "d");
+    let file = home.path().join("addr");
+    let deadline = Instant::now() + STARTUP_LIMIT;
+    while !fs::read_to_string(&file).is_ok_and(|a| !a.trim().is_empty()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let addr = fs::read_to_string(&file).unwrap_or_default();
+    assert!(!addr.trim().is_empty(), "no address in {}", file.display());
+    let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "addr file mode {mode:o}");
+    let (status, _) = request("GET", &format!("http://{}/v1/health", addr.trim()), None, None);
+    assert_eq!(status, 200, "nothing answers at {}", addr.trim());
+}
+
+#[test]
+#[ignore = "audit P0.b"]
+fn audit_p0_b_health_proves_the_token_without_sending_it() {
+    use sha2::Digest;
+    let d = Daemon::start();
+    let nonce = "0123abcd";
+    let (status, body) = d.get(&format!("/v1/health?nonce={nonce}"), None);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["proof"],
+        json!(speedrun_core::digest::token_proof(&d.token, nonce)),
+        "{body}"
+    );
+    assert_eq!(
+        body["protocol_version"],
+        json!(speedrun_core::api::PROTOCOL_VERSION),
+        "{body}"
+    );
+    let canonical = d.home.path().canonicalize().unwrap();
+    let expected = hex::encode(sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes()));
+    assert_eq!(body["data_dir_id"], json!(expected), "{body}");
+    let text = body.to_string();
+    assert!(
+        !text.contains(&d.token) && !text.contains(&d.display_token),
+        "health carries a token"
+    );
+}
+
+#[test]
+fn guard_p0_b_health_without_a_nonce_answers_without_a_proof() {
+    let d = Daemon::start();
+    let (status, body) = d.get("/v1/health", None);
+    assert_eq!(status, 200);
+    assert_eq!(body["ok"], true);
+    assert!(body["proof"].is_null(), "{body}");
+}
+
+#[test]
+#[ignore = "audit M2"]
+fn audit_m2_a_daemon_that_cannot_bind_leaves_its_data_dir_untouched() {
+    // V0.2 M2: bind (or lock) first, then create the token, then migrate.
+    let first = Daemon::start();
+    let addr = first.base.trim_start_matches("http://").to_string();
+    let home = tempfile::tempdir().unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let mut second = spawn_speedrund(home.path(), Some(&addr), output.path(), "second");
+    let status = exit_within(&mut second.0, STARTUP_LIMIT);
+    assert!(
+        status.is_some_and(|s| !s.success()),
+        "a second daemon on a taken port kept running: {status:?}"
+    );
+    let written: Vec<String> = ["token", "display-token", "speedrun.sqlite"]
+        .into_iter()
+        .filter(|name| home.path().join(name).exists())
+        .map(str::to_string)
+        .collect();
+    assert!(
+        written.is_empty(),
+        "a daemon that never listened wrote {written:?}"
+    );
+}
+
+#[test]
+#[ignore = "audit M2"]
+fn audit_m2_concurrent_starts_on_one_data_dir_give_no_token_mismatch() {
+    // END_STATE W4.a: two daemons started concurrently 50 times give 0 token mismatches.
+    for start in 0..50 {
+        let home = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let addr = format!("127.0.0.1:{}", free_port());
+        let mut daemons = [
+            spawn_speedrund(home.path(), Some(&addr), output.path(), "a"),
+            spawn_speedrund(home.path(), Some(&addr), output.path(), "b"),
+        ];
+        let deadline = Instant::now() + STARTUP_LIMIT;
+        while request("GET", &format!("http://{addr}/v1/health"), None, None).0 != 200 {
+            assert!(Instant::now() < deadline, "start {start}: no daemon answered");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let token = fs::read_to_string(home.path().join("token")).unwrap_or_default();
+        let (status, _) = request(
+            "GET",
+            &format!("http://{addr}/v1/projects/p/active-run"),
+            Some(token.trim()),
+            None,
+        );
+        assert_eq!(
+            status, 200,
+            "start {start}: the daemon answering does not hold the token on disk"
+        );
+        let alive = daemons
+            .iter_mut()
+            .map(|d| exit_within(&mut d.0, Duration::from_millis(500)).is_none())
+            .filter(|running| *running)
+            .count();
+        assert_eq!(alive, 1, "start {start}: {alive} daemons serve one data dir");
+    }
+}

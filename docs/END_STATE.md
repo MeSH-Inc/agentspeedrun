@@ -8,7 +8,7 @@ This is an index of the acceptance items in `V0.2.md` and `COMMONS.md` §14, whi
 them. **Who**: `loop` means a bounded change a test can judge, which an automated proposer
 can make once the test exists; `leader` means it needs design, a schema or category change,
 or code outside the Rust workspace. **Test**: the test that shows the item holds, or an ignored
-objective test that fails until it does. Every named `audit_` test passes as of 2026-11-01.
+objective test that fails until it does. A named `audit_` test that is still ignored is the open objective of its item.
 
 ## v0.2 (COMMONS P0)
 
@@ -16,16 +16,18 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 |---|---|---|---|---|
 | M1.a | `speedrun hook`/`ingest` exit 0 on any argument error | loop | | `audit_a4_1_*` |
 | M1.b | The marketplace plugin source is pinned to release tags | leader | D1 | |
-| M2 | Token creation follows the single-instance bind; the client spools on 401, 5xx, timeout | leader | | |
+| M2 | Token creation follows the single-instance bind; the client spools on 401, 5xx, timeout | loop | D3 | `audit_m2_*` |
 | M3 | Daemon logs reach stderr or a capped file | loop | | `audit_m3_*` |
-| M4 | SIGTERM with an SSE stream open ends the daemon within about 2 s | leader | | |
+| M4 | SIGTERM with an SSE stream open ends the daemon within about 2 s | loop | | `audit_m4_*` |
 | M5.a | Agent work while paused counts; a prompt or turn start resumes the run; pausing with an open turn is rejected | loop | | `audit_a6_1_*` |
 | M6.a | `git_commit` evidence from before run start does not verify | loop | | `audit_a3_1_*` |
 | M6.b | A `ci_run` whose head commit predates run start does not verify | loop | | `audit_m6_b_*` |
 | M7.a | Redaction covers the shapes listed in M7 | loop | | `audit_a1_2_*` |
 | M7.b | The client redacts before sending or spooling; `rejected.jsonl` is capped | loop | | `audit_m7_b_*` |
-| M7.c | Spool and `rejected.jsonl` write failures are counted and `doctor` shows them; trimming `rejected.jsonl` loses no line under concurrent refusals | loop | | |
-| M8 | A hook records its own event first and flushes the spool within about 3 s | leader | | |
+| M7.c | Spool and `rejected.jsonl` write failures are counted and `doctor` shows them | loop | | `audit_m7_c_*` |
+| M7.d | Trimming `rejected.jsonl` loses no line under concurrent refusals | leader | | |
+| M8 | A hook records its own event first and flushes the spool within about 3 s | loop | | `audit_m8_*` |
+| M8.b | A timeout on a sent request is "delivered-unknown", not Unreachable; claim replays are idempotent by event id | leader | | |
 | M9.a | A user's claim satisfies `agent_claimed` on a non-predefined milestone | loop | | `audit_a6_5_*` |
 | M9.b | `accept` can set `required_trust` | leader | | `audit_m9_b_*` |
 | M10 | The docs claim only what the code does | leader | | |
@@ -42,13 +44,14 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W3.a | start@0, start@60 in one session gives agent time well under 60 min | loop | | `audit_a2_3_*` |
 | W3.b | start@0, start@60, end@30, end@80 gives 50 min | loop | | `audit_a2_4_*` |
 | W3.c | A paused run with agent work gives non-zero `agent_ms` | loop | | `audit_a6_1_agent_turn_while_paused_*` |
-| W4.a | Two daemons started concurrently 50 times give 0 token mismatches; a mismatched data dir spools and `doctor` says why | leader | D3 | |
+| W4.a | Two daemons started concurrently 50 times give 0 token mismatches; a mismatched data dir spools and `doctor` says why | loop | D3 | `audit_m2_concurrent_*`, `audit_w4_a_*`, `audit_p0_b_client_*` |
+| W4.d | `speedrun doctor` shows versions, the data-dir match, spool, rejected and write-failure counts | loop | | `audit_w4_doctor_*`, `audit_m7_c_*` |
 | W4.b | An upgrade with an SSE client open leaves exactly one daemon | leader | | |
 | W4.c | `GET /v1/live?token=<full>` returns 401 | loop | | `audit_w4_c_*` |
 | W5.a | Adapter tool schemas come from `definitions()`, with a drift test; opencode or pi reach `evidence_verified` on tests-green | leader | | |
 | W5.b | A repeated propose during an outage gives no duplicate milestones | loop | | `audit_w5_b_*` |
 | W6.a | An agent-token claim on `tax-compliance` does not count until the user confirms | leader | D6 | |
-| W6.b | A cloned repo with `project.json` records nothing until `speedrun init --trust` | leader | | |
+| W6.b | A cloned repo with `project.json` records nothing until `speedrun init --trust`; the project search stops at the git toplevel and `$HOME` | loop | | `audit_w6_b_*` |
 | W7.a | The PB shown comes from the same project | loop | | `audit_w7_a_*` |
 | W7.b | Upgrading the binary does not change a project's category version; the snapshot has a `protocol` field | leader | | |
 | W8 | Reproducible packaging, no publish on a failing test, release attestation | leader | D1 | |
@@ -57,7 +60,7 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W9.d | `speedrun export --tier 2` yields a re-derivable commitment and no prompt text | loop | C3 | `audit_w9_d_*` |
 | W9.e | `RunStarted` names the start HEAD, its committer time, and the digest of the rules it pinned | loop | | `audit_w9_e_*` |
 | P0.a | A run verifies with only public keys | loop | C1 | `audit_w9_c_rotated_chain_*`, `audit_w9_c_two_device_*` |
-| P0.b | Clients find the daemon through `$DATA_DIR/addr` and authenticate by HMAC over the data-dir token | leader | D3 | |
+| P0.b | Clients find the daemon through `$DATA_DIR/addr` and authenticate by HMAC over the data-dir token | loop | D3 | `audit_p0_b_*`, `audit_w4_a_*` |
 
 ## P1, a public record
 

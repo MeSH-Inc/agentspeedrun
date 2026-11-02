@@ -83,8 +83,26 @@ struct Machine {
     addr: String,
 }
 
+/// The project every machine tracks, as its committed `.speedrun/project.json` names it.
+const PROJECT: &str = "01KAUDITPROJECT0000000000";
+
 impl Machine {
+    /// A machine whose user has trusted its project (V0.2 W6): the allowlist in the data
+    /// directory names the project id and its root.
     fn new() -> Self {
+        let machine = Self::untrusted();
+        let root = machine.project_root().canonicalize().unwrap();
+        let entry = serde_json::json!([{ "project_id": PROJECT, "root": root }]);
+        std::fs::write(
+            machine.data_dir().join("trusted-projects.json"),
+            entry.to_string(),
+        )
+        .unwrap();
+        machine
+    }
+
+    /// A machine with a cloned project the user has not trusted yet.
+    fn untrusted() -> Self {
         let root = tempfile::tempdir().unwrap();
         let config = root.path().join("project/.speedrun");
         std::fs::create_dir_all(&config).unwrap();
@@ -108,15 +126,31 @@ impl Machine {
         self.root.path().join("data")
     }
 
+    fn project_root(&self) -> PathBuf {
+        self.root.path().join("project")
+    }
+
     fn speedrun(&self, args: &[&str], stdin: &[u8]) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_speedrun"))
+        self.run_in(&self.project_root(), args, stdin, true)
+    }
+
+    /// Run `speedrun` in `dir`. Without `addr`, the client is not told the daemon's
+    /// address and must find it itself.
+    fn run_in(&self, dir: &Path, args: &[&str], stdin: &[u8], addr: bool) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_speedrun"));
+        command
             .args(args)
-            .current_dir(self.root.path().join("project"))
+            .current_dir(dir)
             .env("SPEEDRUN_HOME", self.data_dir())
-            .env("SPEEDRUN_ADDR", &self.addr)
             .env("SPEEDRUN_NO_AUTOSTART", "1")
             .env("HOME", self.root.path())
-            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_DATA_HOME");
+        if addr {
+            command.env("SPEEDRUN_ADDR", &self.addr);
+        } else {
+            command.env_remove("SPEEDRUN_ADDR");
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -165,32 +199,72 @@ fn contains(bytes: &[u8], text: &str) -> bool {
     bytes.windows(text.len()).any(|w| w == text.as_bytes())
 }
 
+/// The token every machine's data directory holds.
+const TOKEN: &str = "audit-test-token";
+
+/// How a stand-in daemon answers.
+#[derive(Clone, Copy)]
+struct Behaviour {
+    /// Health proves the machine's token (`speedrun_core::digest::token_proof`); when
+    /// false, it proves a different token, as a daemon serving another data dir would.
+    proves_token: bool,
+    /// Status line for every request but health.
+    status: &'static str,
+    /// Time taken to answer a request to the project events route, where the spool's
+    /// backlog goes.
+    backlog_delay: Duration,
+}
+
+/// One request a stand-in daemon received: its request line and body.
+#[derive(Clone)]
+struct Received {
+    line: String,
+    body: Vec<u8>,
+}
+
 /// A stand-in daemon on a machine's address: healthy, but it refuses every other request
 /// with 400, as speedrund refuses an event its run no longer accepts. It keeps the body
 /// of every request it refused.
 struct RefusingDaemon {
-    refused: Arc<Mutex<Vec<Vec<u8>>>>,
+    received: Arc<Mutex<Vec<Received>>>,
 }
 
 impl RefusingDaemon {
     fn start(machine: &Machine) -> Self {
+        Self::behaving(
+            machine,
+            Behaviour {
+                proves_token: true,
+                status: "400 Bad Request",
+                backlog_delay: Duration::ZERO,
+            },
+        )
+    }
+
+    fn behaving(machine: &Machine, behaviour: Behaviour) -> Self {
         let listener = TcpListener::bind(&machine.addr).unwrap();
-        let refused = Arc::new(Mutex::new(Vec::new()));
-        let record = Arc::clone(&refused);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&received);
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let _ = answer(stream, &record);
+                let record = Arc::clone(&record);
+                std::thread::spawn(move || answer(stream, &record, behaviour));
             }
         });
-        Self { refused }
+        Self { received }
+    }
+
+    /// Every request but health, in the order they arrived.
+    fn received(&self) -> Vec<Received> {
+        self.received.lock().unwrap().clone()
     }
 
     fn refused(&self) -> Vec<Vec<u8>> {
-        self.refused.lock().unwrap().clone()
+        self.received().into_iter().map(|r| r.body).collect()
     }
 }
 
-fn answer(stream: TcpStream, refused: &Mutex<Vec<Vec<u8>>>) -> std::io::Result<()> {
+fn answer(stream: TcpStream, received: &Mutex<Vec<Received>>, behaviour: Behaviour) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -227,13 +301,44 @@ fn answer(stream: TcpStream, refused: &Mutex<Vec<Vec<u8>>>) -> std::io::Result<(
         body.resize(length, 0);
         reader.read_exact(&mut body)?;
     }
-    let (status, reply) = if request_line.starts_with("GET /v1/health ") {
-        let health = format!(r#"{{"ok":true,"version":"{}"}}"#, env!("CARGO_PKG_VERSION"));
-        ("200 OK", health)
+    let target = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    let (status, reply) = if target == "/v1/health" || target.starts_with("/v1/health?") {
+        let nonce = target
+            .split_once("nonce=")
+            .map(|(_, n)| n.split('&').next().unwrap_or_default());
+        let token = if behaviour.proves_token {
+            TOKEN
+        } else {
+            "another-data-dirs-token"
+        };
+        let mut health = serde_json::json!({
+            "ok": true,
+            "version": env!("CARGO_PKG_VERSION"),
+            "protocol_version": speedrun_core::api::PROTOCOL_VERSION,
+            "data_dir_id": "0".repeat(64),
+        });
+        if let Some(nonce) = nonce {
+            health["proof"] = speedrun_core::digest::token_proof(token, nonce).into();
+        }
+        ("200 OK", health.to_string())
     } else {
-        refused.lock().unwrap().push(body);
-        let error = r#"{"error":"refused by the stand-in daemon"}"#.to_string();
-        ("400 Bad Request", error)
+        received.lock().unwrap().push(Received {
+            line: request_line.trim_end().to_string(),
+            body,
+        });
+        if target.starts_with("/v1/projects/") {
+            std::thread::sleep(behaviour.backlog_delay);
+        }
+        let reply = if behaviour.status.starts_with('2') {
+            "{}".to_string()
+        } else {
+            r#"{"error":"refused by the stand-in daemon"}"#.to_string()
+        };
+        (behaviour.status, reply)
     };
     // The response in one write, sent without Nagle's delay.
     let mut stream = stream;
@@ -439,12 +544,10 @@ fn guard_proposals_with_different_titles_during_an_outage_all_arrive() {
 
 // --- W2.d, A2-6: flush marks its deliveries as replays ------------------------------------
 
-const PROJECT: &str = "01KAUDITPROJECT0000000000";
-
 /// POST to the machine's daemon with its token; the status and JSON body.
 fn post(machine: &Machine, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
     let result = ureq::post(&format!("http://{}{path}", machine.addr))
-        .set("Authorization", "Bearer audit-test-token")
+        .set("Authorization", &format!("Bearer {TOKEN}"))
         .send_json(body.clone());
     match result {
         Ok(r) => (r.status(), r.into_json().unwrap_or_default()),
@@ -496,7 +599,7 @@ fn audit_w2_d_spooled_event_older_than_the_runs_last_event_is_delivered_by_flush
 
     let out = machine.speedrun(&["flush"], b"");
     let events = ureq::get(&format!("http://{}/v1/runs/{run}/events", machine.addr))
-        .set("Authorization", "Bearer audit-test-token")
+        .set("Authorization", &format!("Bearer {TOKEN}"))
         .call()
         .unwrap()
         .into_string()
@@ -544,7 +647,7 @@ fn guard_an_unreadable_spool_line_loses_none_of_the_entries_after_it() {
 
     machine.speedrun(&["flush"], b"");
     let events = ureq::get(&format!("http://{}/v1/runs/{run}/events", machine.addr))
-        .set("Authorization", "Bearer audit-test-token")
+        .set("Authorization", &format!("Bearer {TOKEN}"))
         .call()
         .unwrap()
         .into_string()
@@ -602,4 +705,347 @@ fn audit_w9_c_speedrun_key_rotate_replaces_the_signing_key() {
         "{}",
         String::from_utf8_lossy(&verify.stderr)
     );
+}
+
+// --- Wave 3a: transport, spooling, doctor and project trust (V0.2 M2, M7, M8, W4, W6) ---
+
+fn stand_in(proves_token: bool, status: &'static str, backlog_delay: Duration) -> Behaviour {
+    Behaviour {
+        proves_token,
+        status,
+        backlog_delay,
+    }
+}
+
+impl Machine {
+    /// The spool files (pending or being flushed) whose contents include `text`. Not
+    /// `rejected.jsonl`, which holds what the daemon refused for good.
+    fn spooled_containing(&self, text: &str) -> Vec<PathBuf> {
+        self.files_containing(text)
+            .into_iter()
+            .filter(|p| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                p.parent().is_some_and(|d| d.ends_with("spool"))
+                    && (name.starts_with("pending") || name.starts_with("flushing"))
+            })
+            .collect()
+    }
+
+    /// The run the machine's real daemon holds for the project, or `Null`.
+    fn active_run(&self) -> serde_json::Value {
+        let body: serde_json::Value =
+            ureq::get(&format!("http://{}/v1/projects/{PROJECT}/active-run", self.addr))
+                .set("Authorization", &format!("Bearer {TOKEN}"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
+        body["run"].clone()
+    }
+
+    fn doctor(&self) -> (Output, String) {
+        let out = self.speedrun(&["doctor"], b"");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        (out, stdout)
+    }
+}
+
+fn has_line(text: &str, line: &str) -> bool {
+    text.lines().any(|l| l.trim() == line)
+}
+
+#[test]
+#[ignore = "audit D3"]
+fn audit_w4_a_client_finds_the_daemon_through_the_addr_file() {
+    // V0.2 W4 / D3: clients read `$DATA_DIR/addr`; 7477 is only the fallback.
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    std::fs::write(machine.data_dir().join("addr"), &machine.addr).unwrap();
+    machine.run_in(
+        &machine.project_root(),
+        &["ingest", "prompt", "--host", "test", "--session", "s"],
+        b"build a login page",
+        false,
+    );
+    assert_ne!(
+        machine.active_run(),
+        serde_json::Value::Null,
+        "the prompt did not reach the daemon in addr"
+    );
+}
+
+#[test]
+#[ignore = "audit P0.b"]
+fn audit_p0_b_client_sends_nothing_to_a_daemon_that_cannot_prove_the_token() {
+    // V0.2 W4: the client checks HMAC(token, nonce) from /v1/health before sending a body.
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(false, "200 OK", Duration::ZERO));
+    let text = "add a billing page with invoices";
+    machine.prompt(text);
+    let sent: Vec<String> = daemon.received().into_iter().map(|r| r.line).collect();
+    assert!(
+        sent.is_empty(),
+        "the client sent a body to a daemon for another data dir: {sent:?}"
+    );
+    assert!(
+        !machine.spooled_containing(text).is_empty(),
+        "the prompt must be spooled instead"
+    );
+}
+
+#[test]
+fn guard_p0_b_client_sends_to_a_daemon_that_proves_the_token() {
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::ZERO));
+    machine.prompt("add a billing page with invoices");
+    assert!(
+        daemon.received().iter().any(|r| r.line.contains("/v1/prompts")),
+        "the prompt never reached a daemon that holds the token"
+    );
+}
+
+#[test]
+#[ignore = "audit M2"]
+fn audit_m2_a_prompt_refused_with_401_is_spooled() {
+    // V0.2 M2: the client spools on 401 (after re-reading the token once), 5xx and timeouts.
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "401 Unauthorized", Duration::ZERO));
+    let text = "add a settings page with dark mode";
+    machine.prompt(text);
+    assert!(!daemon.received().is_empty(), "the client never sent it");
+    assert!(
+        !machine.spooled_containing(text).is_empty(),
+        "a prompt refused with 401 is lost"
+    );
+}
+
+#[test]
+#[ignore = "audit M2"]
+fn audit_m2_a_prompt_answered_with_500_is_spooled() {
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::behaving(
+        &machine,
+        stand_in(true, "500 Internal Server Error", Duration::ZERO),
+    );
+    let text = "add a search box to the header";
+    machine.prompt(text);
+    assert!(!daemon.received().is_empty(), "the client never sent it");
+    assert!(
+        !machine.spooled_containing(text).is_empty(),
+        "a prompt answered with 500 is lost"
+    );
+}
+
+#[test]
+#[ignore = "audit M8"]
+fn audit_m8_a_hook_sends_its_own_prompt_first_and_flushes_within_its_budget() {
+    // V0.2 M8: record the fresh event first, then flush what fits in about 3 s.
+    let machine = Machine::new();
+    let spool = machine.data_dir().join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    let backlog: String = (0..10)
+        .map(|i| {
+            let entry = serde_json::json!({
+                "path": format!("/v1/projects/{PROJECT}/events"),
+                "body": {"event_id": format!("backlog-{i}"), "occurred_at": null,
+                         "payload": {"type": "agent_turn_ended", "session_id": "s"}},
+            });
+            format!("{entry}\n")
+        })
+        .collect();
+    std::fs::write(spool.join("pending.jsonl"), backlog).unwrap();
+    // Each backlog delivery takes the daemon a second: ten seconds for all of them.
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::from_secs(1)));
+
+    let started = Instant::now();
+    machine.prompt("add password reset by email");
+    let took = started.elapsed();
+
+    let received = daemon.received();
+    let lines: Vec<&str> = received.iter().map(|r| r.line.as_str()).collect();
+    let prompt = lines.iter().position(|l| l.contains("/v1/prompts"));
+    let first_backlog = lines.iter().position(|l| l.contains("/v1/projects/"));
+    assert!(prompt.is_some(), "the fresh prompt was never sent: {lines:?}");
+    assert!(
+        first_backlog.is_none_or(|b| prompt < Some(b)),
+        "the backlog went before the fresh prompt: {lines:?}"
+    );
+    assert!(
+        took < Duration::from_secs(6),
+        "the hook took {took:?} with a slow backlog"
+    );
+    for i in 0..10 {
+        let id = format!("backlog-{i}");
+        let delivered = received.iter().any(|r| contains(&r.body, &id));
+        assert!(
+            delivered || !machine.spooled_containing(&id).is_empty(),
+            "{id} was neither delivered nor kept in the spool"
+        );
+    }
+}
+
+#[test]
+#[ignore = "audit W4"]
+fn audit_w4_doctor_reports_spooled_and_rejected_counts() {
+    // V0.2 W4: `speedrun doctor` prints spool and rejected counts, daemon or not.
+    let machine = Machine::new();
+    let spool = machine.data_dir().join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    std::fs::write(spool.join("pending.jsonl"), "{}\n{}\n{}\n").unwrap();
+    std::fs::write(spool.join("rejected.jsonl"), "{}\n{}\n").unwrap();
+    let (out, stdout) = machine.doctor();
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(has_line(&stdout, "spooled: 3"), "{stdout}");
+    assert!(has_line(&stdout, "rejected: 2"), "{stdout}");
+}
+
+#[test]
+#[ignore = "audit M7.c"]
+fn audit_m7_c_a_failed_spool_write_is_counted_and_doctor_shows_it() {
+    // END_STATE M7.c: spool write failures are counted and `doctor` shows them.
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let spool = machine.data_dir().join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    std::fs::set_permissions(&spool, std::fs::Permissions::from_mode(0o500)).unwrap();
+    machine.prompt("add a profile page");
+    std::fs::set_permissions(&spool, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (_, stdout) = machine.doctor();
+    assert!(has_line(&stdout, "spool write failures: 1"), "{stdout}");
+}
+
+#[test]
+#[ignore = "audit W4.a"]
+fn audit_w4_a_doctor_explains_a_daemon_serving_another_data_dir() {
+    // V0.2 W4: a hook run with a mismatched data dir spools and `doctor` explains why.
+    let machine = Machine::new();
+    let _daemon = RefusingDaemon::behaving(&machine, stand_in(false, "200 OK", Duration::ZERO));
+    let (_, stdout) = machine.doctor();
+    assert!(stdout.contains("another data directory"), "{stdout}");
+}
+
+#[test]
+#[ignore = "audit W6.b"]
+fn audit_w6_b_an_untrusted_project_records_nothing_until_init_trust() {
+    // V0.2 W6: a cloned repo with project.json records nothing until `speedrun init --trust`.
+    let machine = Machine::untrusted();
+    let _daemon = Daemon::start(&machine);
+    let text = "build a todo app with tags";
+    let out = machine.prompt(text);
+    assert!(
+        out.status.success(),
+        "a hook must not fail in an untrusted project"
+    );
+    assert_eq!(
+        machine.active_run(),
+        serde_json::Value::Null,
+        "an untrusted project recorded a prompt"
+    );
+    assert!(
+        machine.files_containing(text).is_empty(),
+        "an untrusted project stored the prompt"
+    );
+
+    let trusted = machine.speedrun(&["init", "--trust"], b"");
+    assert!(
+        trusted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&trusted.stderr)
+    );
+    machine.prompt(text);
+    assert_ne!(
+        machine.active_run(),
+        serde_json::Value::Null,
+        "the trusted project still records nothing"
+    );
+}
+
+#[test]
+fn guard_w6_b_a_project_created_by_init_is_trusted() {
+    let machine = Machine::untrusted();
+    let _daemon = Daemon::start(&machine);
+    let fresh = machine.root.path().join("fresh");
+    std::fs::create_dir_all(&fresh).unwrap();
+    let init = machine.run_in(&fresh, &["init"], b"", true);
+    assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+    machine.run_in(
+        &fresh,
+        &["ingest", "prompt", "--host", "test", "--session", "s"],
+        b"start",
+        true,
+    );
+    let status = machine.run_in(&fresh, &["status", "--json"], b"", true);
+    let run: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap_or_default();
+    assert!(
+        run["run_id"].is_string(),
+        "{}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+}
+
+/// `speedrun status` in `cwd` with `home` as HOME; its stderr.
+fn status_stderr(machine: &Machine, cwd: &Path, home: &Path) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_speedrun"))
+        .args(["status"])
+        .current_dir(cwd)
+        .env("SPEEDRUN_HOME", machine.data_dir())
+        .env("SPEEDRUN_ADDR", &machine.addr)
+        .env("SPEEDRUN_NO_AUTOSTART", "1")
+        .env("HOME", home)
+        .env_remove("XDG_DATA_HOME")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+#[ignore = "audit W6.b"]
+fn audit_w6_b_project_search_never_goes_above_home() {
+    let machine = Machine::new();
+    let home = machine.root.path().join("home");
+    let work = home.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(machine.root.path().join(".speedrun")).unwrap();
+    std::fs::copy(
+        machine.project_root().join(".speedrun/project.json"),
+        machine.root.path().join(".speedrun/project.json"),
+    )
+    .unwrap();
+    let stderr = status_stderr(&machine, &work, &home);
+    assert!(stderr.contains("not in a speedrun project"), "{stderr}");
+}
+
+fn git_init(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let ok = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+}
+
+#[test]
+#[ignore = "audit W6.b"]
+fn audit_w6_b_project_search_stops_at_the_git_toplevel() {
+    let machine = Machine::new();
+    let nested = machine.project_root().join("vendor/lib");
+    git_init(&nested);
+    let stderr = status_stderr(&machine, &nested, machine.root.path());
+    assert!(stderr.contains("not in a speedrun project"), "{stderr}");
+}
+
+#[test]
+fn guard_w6_b_a_project_at_the_git_toplevel_is_found() {
+    let machine = Machine::new();
+    git_init(&machine.project_root());
+    let src = machine.project_root().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let stderr = status_stderr(&machine, &src, machine.root.path());
+    assert!(!stderr.contains("not in a speedrun project"), "{stderr}");
 }

@@ -107,6 +107,28 @@ pub struct ChainReport {
     pub unsigned: u64,
 }
 
+/// Version of the plugin ↔ daemon protocol. A client compares it with its
+/// own before sending; the binary version alone does not say what changed.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// `GET /v1/health[?nonce=<hex>]`. Never carries a token. With a nonce, the
+/// daemon proves it holds this data dir's token: `proof` is
+/// `digest::token_proof(token, nonce)`, which a client checks before sending
+/// a body, so a daemon serving another data dir is recognised, not trusted.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HealthResponse {
+    pub ok: bool,
+    /// The daemon's binary version (`CARGO_PKG_VERSION`).
+    pub version: String,
+    /// [`PROTOCOL_VERSION`] of the daemon.
+    pub protocol_version: u32,
+    /// Hex SHA-256 of the canonical path of the data dir the daemon serves.
+    pub data_dir_id: String,
+    /// Present exactly when the request carried a nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ErrorBody {
     pub error: String,
@@ -127,6 +149,7 @@ pub struct Protocol {
     chain_report: ChainReport,
     export_response: ExportResponse,
     rotate_response: RotateResponse,
+    health_response: HealthResponse,
     live_snapshot: LiveSnapshot,
     error_body: ErrorBody,
 }

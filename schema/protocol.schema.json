@@ -37,6 +37,9 @@
     "rotate_response": {
       "$ref": "#/$defs/RotateResponse"
     },
+    "health_response": {
+      "$ref": "#/$defs/HealthResponse"
+    },
     "live_snapshot": {
       "$ref": "#/$defs/LiveSnapshot"
     },
@@ -56,6 +59,7 @@
     "chain_report",
     "export_response",
     "rotate_response",
+    "health_response",
     "live_snapshot",
     "error_body"
   ],
@@ -1327,6 +1331,42 @@
       "required": [
         "device_pubkey",
         "previous_pubkey"
+      ]
+    },
+    "HealthResponse": {
+      "description": "`GET /v1/health[?nonce=<hex>]`. Never carries a token. With a nonce, the\ndaemon proves it holds this data dir's token: `proof` is\n`digest::token_proof(token, nonce)`, which a client checks before sending\na body, so a daemon serving another data dir is recognised, not trusted.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "version": {
+          "description": "The daemon's binary version (`CARGO_PKG_VERSION`).",
+          "type": "string"
+        },
+        "protocol_version": {
+          "description": "[`PROTOCOL_VERSION`] of the daemon.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "data_dir_id": {
+          "description": "Hex SHA-256 of the canonical path of the data dir the daemon serves.",
+          "type": "string"
+        },
+        "proof": {
+          "description": "Present exactly when the request carried a nonce.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "ok",
+        "version",
+        "protocol_version",
+        "data_dir_id"
       ]
     },
     "LiveSnapshot": {

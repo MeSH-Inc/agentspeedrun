@@ -70,3 +70,9 @@ pub fn text_digest(key: &[u8], text: &str) -> String {
 pub fn key_commitment(key: &[u8]) -> String {
     hex::encode(Sha256::digest(key))
 }
+
+/// What `/v1/health` returns for a nonce: hex HMAC-SHA256 under the data
+/// dir's token. Only a daemon holding that token can produce it.
+pub fn token_proof(token: &str, nonce: &str) -> String {
+    hex::encode(hmac_sha256(token.as_bytes(), nonce.as_bytes()))
+}
