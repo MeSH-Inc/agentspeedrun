@@ -1,7 +1,8 @@
 # Deploying the commons
 
 The commons (`speedrun-commons`, `COMMONS.md` §19–§20) runs as one Railway service built from
-the repository's `Dockerfile`, with `railway.json` setting the health check and restart policy.
+the repository's `Dockerfile`. The service's settings live on Railway, not in the repository
+(Railway retires `railway.json` on 2026-12-01); the first deploy below sets them.
 Its state is two files on a volume mounted at `/data`: `commons.sqlite` (the log, judgments,
 people and links) and `commons.key` (the key that signs judgments, tree heads and links).
 
@@ -29,6 +30,12 @@ railway add --service commons --json
 railway volume add --service commons --mount-path /data --json
 railway variable set --service commons SPEEDRUN_GITHUB_CLIENT_ID=<client id>
 railway domain --service commons
+railway environment edit --message "Configure the commons service" --json <<'JSON'
+{"services": {"<service id>": {
+  "build": {"builder": "DOCKERFILE", "dockerfilePath": "Dockerfile"},
+  "deploy": {"healthcheckPath": "/v1/health", "healthcheckTimeout": 60,
+             "restartPolicyType": "ON_FAILURE", "restartPolicyMaxRetries": 5, "numReplicas": 1}}}}
+JSON
 railway variable set --service commons SPEEDRUN_COMMONS_PUBLIC_URL=https://<generated domain>
 railway up --service commons --detach -m "Deploy the commons"
 railway deployment list --service commons --json

@@ -667,6 +667,6 @@ own box). Unknown runs and people are 404 pages in the same shape.
 (exit 1). The commons key is not in the database: the operator copies `commons.key` once.
 
 **Deployment (leader).** `Dockerfile` builds `speedrun-commons` and runs it with
-`SPEEDRUN_COMMONS_HOME=/data`; `railway.json` sets the health check on `/v1/health` and one
-replica; `docs/DEPLOY.md` is the runbook: service, volume, variables, a backup before every
+`SPEEDRUN_COMMONS_HOME=/data`; the Railway service's own settings give the health check on
+`/v1/health` and one replica; `docs/DEPLOY.md` is the runbook: service, volume, variables, a backup before every
 deploy, the smoke test afterwards, and restore.
