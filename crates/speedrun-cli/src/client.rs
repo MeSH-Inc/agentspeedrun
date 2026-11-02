@@ -172,6 +172,14 @@ fn spool_write_failures_path() -> PathBuf {
 /// clock bound. Only `flush_spool` marks a delivery this way.
 const REPLAY_HEADER: &str = "X-Speedrun-Replay";
 
+/// How a request goes out: a fresh write, or a spool replay, which carries
+/// [`REPLAY_HEADER`] and may be bounded by the flush's deadline.
+#[derive(Clone, Copy)]
+enum Delivery {
+    Fresh,
+    Replay { deadline: Option<Instant> },
+}
+
 /// How long a durable write may spend draining the backlog after its own
 /// event has been attempted. Hooks must return to their host quickly, so an
 /// entry this does not reach stays spooled for a later flush.
@@ -221,12 +229,12 @@ impl Client {
         method: &str,
         path: &str,
         body: Option<&Value>,
-        from_spool: bool,
+        delivery: Delivery,
     ) -> Result<T, CallError> {
         let mut retried = false;
         loop {
             let token = Self::token()?;
-            match self.attempt(method, path, body, from_spool, &token) {
+            match self.attempt(method, path, body, delivery, &token) {
                 Err(CallError::Api { status: 401, .. }) if !retried => retried = true,
                 other => return other,
             }
@@ -238,15 +246,20 @@ impl Client {
         method: &str,
         path: &str,
         body: Option<&Value>,
-        from_spool: bool,
+        delivery: Delivery,
         token: &str,
     ) -> Result<T, CallError> {
         let mut req = self
             .agent
             .request(method, &format!("{}{path}", self.verified_base()?))
             .set("Authorization", &format!("Bearer {token}"));
-        if from_spool {
+        if let Delivery::Replay { deadline } = delivery {
             req = req.set(REPLAY_HEADER, "1");
+            // A replay may not outlast the flush's budget: a slow daemon times out
+            // and the entry stays spooled, rather than holding up the hook.
+            if let Some(deadline) = deadline {
+                req = req.timeout(deadline.saturating_duration_since(Instant::now()));
+            }
         }
         let res = match body {
             Some(b) => req.send_json(b),
@@ -313,12 +326,12 @@ impl Client {
 
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
         self.ready()?;
-        self.send("GET", path, None, false)
+        self.send("GET", path, None, Delivery::Fresh)
     }
 
     pub fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T, CallError> {
         self.ready()?;
-        self.send("POST", path, Some(body), false)
+        self.send("POST", path, Some(body), Delivery::Fresh)
     }
 
     /// POST that must not be lost. The fresh event goes out before the spool:
@@ -333,7 +346,7 @@ impl Client {
     ) -> Result<Option<T>, CallError> {
         let outcome = match self.ready() {
             Ok(()) => {
-                let outcome = self.send("POST", path, Some(body), false);
+                let outcome = self.send("POST", path, Some(body), Delivery::Fresh);
                 // The fresh write has been attempted; only now touch the backlog.
                 self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
                 outcome
@@ -518,7 +531,12 @@ impl Client {
                         continue;
                     }
                 };
-                match self.send::<Value>("POST", &entry.path, Some(&entry.body), true) {
+                match self.send::<Value>(
+                    "POST",
+                    &entry.path,
+                    Some(&entry.body),
+                    Delivery::Replay { deadline },
+                ) {
                     Ok(_) => delivered += 1,
                     Err(e) => {
                         if e.should_spool() {
@@ -562,7 +580,8 @@ fn spool(path: &str, body: &Value) {
     };
     match serde_json::to_string(&entry) {
         Ok(line) => append_line(&file, line.as_bytes()),
-        Err(e) => report_io_error("encode spool entry", &file, &std::io::Error::other(e)),
+        // The event is lost, so it counts as a failed spool write.
+        Err(e) => report_spool_write_error("encode spool entry", &file, &std::io::Error::other(e)),
     }
 }
 
