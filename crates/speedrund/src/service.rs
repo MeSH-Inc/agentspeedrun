@@ -82,6 +82,9 @@ struct PbGroup {
 pub struct Service {
     store: Store,
     categories: Vec<Category>,
+    /// The daemon's own `data_dir_id` (the value `/v1/health` reports), which
+    /// every live snapshot names as its source.
+    source_id: String,
     /// Completed runs per project@category@version, fastest first by `timed_ms`.
     /// A live run's PB is taken from its own project's entry only.
     /// Cleared whenever any run finishes.
@@ -213,8 +216,18 @@ impl Service {
         Self {
             store,
             categories,
+            source_id: String::new(),
             pb_cache: HashMap::new(),
         }
+    }
+
+    /// Name the daemon these snapshots come from. The id is the daemon's
+    /// `data_dir_id`, which `/v1/health` reports and `Health` owns; the
+    /// daemon passes that one value here once at startup instead of letting
+    /// the snapshot compute it again. A service built only to fold logs is
+    /// never exposed over HTTP and keeps no source id.
+    pub fn serve_as(&mut self, data_dir_id: String) {
+        self.source_id = data_dir_id;
     }
 
     pub fn categories(&self) -> &[Category] {
@@ -253,8 +266,18 @@ impl Service {
             let (run_id, run_started) = match current {
                 Some(run_id) => (run_id, false),
                 None => {
-                    let cat = category::find(categories, &req.category_id, None)
-                        .ok_or_else(|| Error::BadRequest(format!("unknown category {}", req.category_id)))?;
+                    // `None` is the client asking for the daemon's latest version;
+                    // any other value must name a version this build ships, or no
+                    // run is started at all.
+                    let cat = category::find(categories, &req.category_id, req.category_version).ok_or_else(
+                        || match req.category_version {
+                            Some(version) => Error::BadRequest(format!(
+                                "unknown category {} version {version}",
+                                req.category_id
+                            )),
+                            None => Error::BadRequest(format!("unknown category {}", req.category_id)),
+                        },
+                    )?;
                     (start_run(tx, &req, cat, at)?, true)
                 }
             };
@@ -626,7 +649,7 @@ impl Service {
             protocol: LIVE_PROTOCOL_VERSION,
             source: LiveSource {
                 kind: LiveSourceKind::Local,
-                id: String::new(),
+                id: self.source_id.clone(),
             },
             as_of,
             cursor,

@@ -44,7 +44,10 @@ async fn main() -> Result<()> {
     let store = store::Store::open(&dir.join("speedrun.sqlite"), &paths::device_key_path())?;
     let device_pubkey = store.device_pubkey();
     startup::write_addr(&dir, addr)?;
-    let service = service::Service::new(store, category::builtin());
+    let mut service = service::Service::new(store, category::builtin());
+    // A snapshot names this daemon by the data_dir_id `/v1/health` reports;
+    // `Health` owns that value, so it is passed in rather than recomputed.
+    service.serve_as(health.data_dir_id().to_string());
     logging::startup(addr, &dir, &device_pubkey);
 
     let cors_origins: Vec<String> = std::env::var("SPEEDRUN_CORS_ORIGINS")

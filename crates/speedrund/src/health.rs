@@ -31,6 +31,12 @@ impl Health {
         })
     }
 
+    /// The identity `/v1/health` reports, for the one other place that must
+    /// name this daemon by it: a live snapshot's source.
+    pub fn data_dir_id(&self) -> &str {
+        &self.data_dir_id
+    }
+
     /// Answer a health request. `nonce` makes it a proof request: the response
     /// then proves possession of `token` without revealing it.
     pub fn response(&self, token: &str, nonce: Option<&str>) -> HealthResponse {
