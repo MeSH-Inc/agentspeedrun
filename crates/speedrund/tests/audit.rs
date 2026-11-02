@@ -1655,3 +1655,60 @@ fn audit_p1_e_only_a_finished_run_is_bundled_and_only_for_the_full_token() {
     assert_eq!((as_agent, as_display), (401, 401));
     assert_eq!(bundle_of(&d, &run, 1, &d.token).0, 200);
 }
+
+// --- P1.f: the device's side of a GitHub link (COMMONS.md §20) ---------------------------
+
+#[test]
+#[ignore = "audit P1.f: GitHub link"]
+fn audit_p1_f_the_daemon_signs_link_claims_for_its_own_key_only() {
+    use speedrun_core::commons::{DeviceKey, DeviceSignature, LINK_FORMAT, LinkClaim, link_claim_digest};
+    let d = Daemon::start();
+    let (status, body) = d.get("/v1/device", Some(&d.token));
+    assert_eq!(status, 200, "{body}");
+    let device: DeviceKey = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        speedrun_core::sign::fingerprint(&device.device_pubkey).unwrap(),
+        device.device_id
+    );
+    assert_eq!(d.get("/v1/device", Some(&d.agent_token())).0, 401);
+    assert_eq!(d.get("/v1/device", Some(&d.display_token)).0, 401);
+
+    let claim = LinkClaim {
+        format: LINK_FORMAT,
+        link_id: "01KLINK0000000000000000000".into(),
+        device_pubkey: device.device_pubkey.clone(),
+        github_id: 4242,
+        login: "Octo-Person".into(),
+        commons_pubkey: "c0".repeat(32),
+        issued_at: Utc::now(),
+    };
+    let sign = |claim: &LinkClaim, bearer: &str| {
+        request(
+            "POST",
+            &format!("{}/v1/link-claims", d.base),
+            Some(bearer),
+            Some(&serde_json::to_value(claim).unwrap()),
+        )
+    };
+    let (status, body) = sign(&claim, &d.token);
+    assert_eq!(status, 200, "{body}");
+    let signed: DeviceSignature = serde_json::from_value(body).unwrap();
+    assert!(speedrun_core::sign::verify_hash(
+        &device.device_pubkey,
+        &link_claim_digest(&claim).unwrap(),
+        &signed.device_signature
+    ));
+
+    let mut other_device = claim.clone();
+    other_device.device_pubkey = speedrun_core::sign::pubkey_hex(&speedrun_core::sign::generate());
+    assert_eq!(
+        sign(&other_device, &d.token).0,
+        400,
+        "signed for another device's key"
+    );
+    let mut format_2 = claim.clone();
+    format_2.format = 2;
+    assert_eq!(sign(&format_2, &d.token).0, 400);
+    assert_eq!(sign(&claim, &d.agent_token()).0, 401);
+    assert_eq!(sign(&claim, &d.display_token).0, 401);
+}

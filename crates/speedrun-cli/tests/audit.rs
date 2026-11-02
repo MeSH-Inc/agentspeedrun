@@ -1393,6 +1393,11 @@ struct CommonsServer {
 
 impl CommonsServer {
     fn start() -> Self {
+        Self::start_with(&[])
+    }
+
+    /// A commons with extra environment, such as a GitHub stand-in's.
+    fn start_with(env: &[(&str, String)]) -> Self {
         let exe = Path::new(env!("CARGO_BIN_EXE_speedrun")).with_file_name("speedrun-commons");
         assert!(
             exe.exists(),
@@ -1405,9 +1410,14 @@ impl CommonsServer {
             .local_addr()
             .unwrap()
             .to_string();
-        let child = Command::new(exe)
+        let mut command = Command::new(exe);
+        command
             .env("SPEEDRUN_COMMONS_HOME", home.path().join("data"))
-            .env("SPEEDRUN_COMMONS_ADDR", &addr)
+            .env("SPEEDRUN_COMMONS_ADDR", &addr);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1496,4 +1506,78 @@ fn audit_p1_d_publish_without_a_commons_address_sends_nothing() {
         daemon.received().is_empty(),
         "it asked the daemon for a bundle it could not send"
     );
+}
+
+// --- P1.f: `speedrun link` (COMMONS.md §20) -------------------------------------------------
+
+#[path = "../../speedrun-commons/tests/support/fake_github.rs"]
+mod fake_github;
+
+#[test]
+#[ignore = "audit P1.f: speedrun link"]
+fn audit_p1_f_speedrun_link_links_this_device_to_the_github_account() {
+    let github = fake_github::FakeGitHub::start(fake_github::Behaviour {
+        interval: 0,
+        pending_polls: 2,
+        ..Default::default()
+    });
+    let commons = CommonsServer::start_with(&github.env());
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    let device: serde_json::Value = ureq::get(&format!("http://{}/v1/device", machine.addr()))
+        .set("Authorization", &format!("Bearer {TOKEN}"))
+        .call()
+        .expect("the daemon names its device key")
+        .into_json()
+        .unwrap();
+    let device_pubkey = device["device_pubkey"].as_str().unwrap().to_string();
+    let device_id = device["device_id"].as_str().unwrap().to_string();
+
+    let out = machine.speedrun(&["link", "--to", &commons.base], b"");
+    assert!(out.status.success(), "{}", text_of(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        has_line(
+            &stdout,
+            &format!(
+                "open {} and enter {}",
+                fake_github::VERIFICATION_URI,
+                fake_github::USER_CODE
+            )
+        ),
+        "{stdout}"
+    );
+    assert!(
+        has_line(
+            &stdout,
+            &format!("linked Octo-Person (github id 4242) to device {device_id}")
+        ),
+        "{stdout}"
+    );
+
+    let record: serde_json::Value = ureq::get(&format!("{}/v1/people/octo-person", commons.base))
+        .call()
+        .expect("the commons knows the person")
+        .into_json()
+        .unwrap();
+    let links = record["links"].as_array().unwrap();
+    assert_eq!(links.len(), 1, "{record}");
+    assert_eq!(links[0]["claim"]["device_pubkey"], device_pubkey.as_str());
+    assert_eq!(links[0]["claim"]["login"], "Octo-Person");
+    assert_eq!(github.requests_to("/login/oauth/access_token").len(), 3);
+}
+
+#[test]
+#[ignore = "audit P1.f: speedrun link"]
+fn audit_p1_f_link_without_a_commons_address_sends_nothing() {
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::ZERO));
+    let out = machine.speedrun(&["link"], b"");
+    assert_eq!(out.status.code(), Some(1), "{}", text_of(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("SPEEDRUN_COMMONS_URL"),
+        "{}",
+        text_of(&out)
+    );
+    assert!(daemon.received().is_empty(), "it asked the daemon for its key");
 }

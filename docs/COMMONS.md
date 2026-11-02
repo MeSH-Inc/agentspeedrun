@@ -564,3 +564,99 @@ there are problems.
   unknown.
 - `GET /v1/health` is `CommonsHealth`.
 
+
+## 20. P1 contract (Wave 5)
+
+Fixed by the leader for the Wave 5 tests. Scope: GitHub identity for persons, the public pages,
+and running the commons on a host. Decisions taken here, each with its reason:
+
+- *Linking by device flow.* `speedrun link` links the daemon's device key to a GitHub account. The
+  commons runs GitHub's OAuth device flow on the device's behalf and reads `/user` once with the
+  token, so the token never reaches the user's machine and never reaches the commons' disk. The
+  commons keeps no sessions or cookies; its pages are read-only. (Owner, 2026-11-02.)
+- *Both signatures.* The device signs a `LinkClaim` naming the person GitHub reported, and the
+  commons countersigns the same digest. Neither can invent a link alone, and `commons_pubkey` in
+  the claim stops it being replayed at another commons (§3).
+- *Not in the log.* Links are stored rows, append-only, not Merkle leaves: the leaf format of §19
+  stays `bundle:judgment`. Revocation and key rotation of links wait for P2.
+- *Pages.* Server-rendered HTML from the commons crate with `maud`, which escapes every
+  interpolated value by construction; no JavaScript. A chronological list of recent
+  publications, a run page and a person page, and no ranking (§9 waits for P3). Badges and
+  external-clock brackets arrive with P2 and P3. (Owner, 2026-11-02.)
+- *Hosting.* Railway, one service built from the repository's `Dockerfile`, a volume at `/data`
+  for the database and the commons key, at the host's generated address. (Owner, 2026-11-02.)
+
+**Configuration.** `SPEEDRUN_GITHUB_CLIENT_ID` names the GitHub OAuth app (device flow enabled);
+without it `POST /v1/links` answers 503 and nothing else changes. `SPEEDRUN_GITHUB_URL` (default
+`https://github.com`) is the base of `/login/device/code` and `/login/oauth/access_token`;
+`SPEEDRUN_GITHUB_API` (default `https://api.github.com`) the base of `/user`. Every GitHub request
+sends `Accept: application/json` and `User-Agent: speedrun-commons`, and no email address anywhere.
+When `SPEEDRUN_COMMONS_ADDR` is unset and `PORT` is set, the commons listens on `0.0.0.0:$PORT`;
+with neither, on `127.0.0.1:7478`.
+
+**Links (commons).** All bodies are JSON; types are in `speedrun_core::commons`.
+- `POST /v1/links` takes `LinkStart`. 400 unless `device_pubkey` is 64 lowercase hex. The commons
+  posts `client_id` and an empty `scope` to `<github>/login/device/code` and answers 200 with
+  `LinkStarted`: a fresh `link_id` (a ULID), GitHub's `user_code` and `verification_uri`, its
+  `interval` as `interval_seconds`, and `expires_at` = now + its `expires_in`. A GitHub failure is
+  502. The pending link (device key, device code, expiry) is stored.
+- `POST /v1/links/{link_id}/poll`. 404 for an unknown link; 410 once it expired. If the link is
+  already authorized, 200 with the same `LinkState::Authorized`. Otherwise the commons makes one
+  request to `<github>/login/oauth/access_token` with `client_id`, the device code and
+  `grant_type=urn:ietf:params:oauth:grant-type:device_code`: `authorization_pending` or
+  `slow_down` is 202 `LinkState::Pending`; `expired_token` or `access_denied` is 410 and the link
+  can never complete; a token is used at once for `GET <api>/user` (`Authorization: Bearer`), the
+  `id` and `login` become the link's person, the token is dropped, and the answer is 200
+  `LinkState::Authorized`. A GitHub failure is 502 and changes nothing.
+- `POST /v1/links/{link_id}/confirm` takes `LinkConfirm`. 404 for an unknown link; 409 until it is
+  authorized; 410 once it expired or was refused. 400 unless `claim.format` is 1, `claim.link_id`
+  is the path's, `claim.device_pubkey` is the one the link started with, `github_id` and `login`
+  are the authorized person's, `commons_pubkey` is this commons' key, and `device_signature`
+  verifies over `link_claim_digest(claim)` with `claim.device_pubkey`. Then the commons signs that
+  digest and stores and answers 200 with the `Link`. Confirming again answers the stored `Link`.
+- `GET /v1/people/{login}` is `PersonRecord`, `login` matched without regard to case against the
+  latest login of each person: every link (oldest first) and every publication whose bundle's
+  `publisher_pubkey` is a linked device key (newest first). 404 when no link names that login.
+- A person's publications are those signed by any device key linked to them. A publication is
+  shown as that person's on every page.
+
+**Daemon.** Both routes take the full token only (other tokens 401). `GET /v1/device` answers
+`DeviceKey` with the daemon's current device key and its fingerprint. `POST /v1/link-claims` takes
+a `LinkClaim` and answers `DeviceSignature`: `sign::sign_hash(device key, link_claim_digest(claim))`.
+400 unless `format` is 1 and `device_pubkey` is the daemon's current device key. It signs nothing
+else.
+
+**CLI.** `speedrun link [--to <url>]` resolves the commons like `publish` (`--to`, else
+`SPEEDRUN_COMMONS_URL`, else exit 1 sending nothing). It reads the device key from the daemon
+(`GET /v1/device`), posts `LinkStart`, prints
+`open <verification_uri> and enter <user_code>`, then polls every `interval_seconds` until
+authorized (exit 1 on 410 or once `expires_at` passes). It asks `GET /v1/health` on the commons for
+`commons_pubkey`, builds the `LinkClaim` with `issued_at` now, has the daemon sign it, confirms, and
+prints `linked <login> (github id <id>) to device <fingerprint>`.
+
+**Pages.** `GET /`, `GET /runs/{run_id}` and `GET /people/{login}` answer `text/html;
+charset=utf-8` with `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'` and a
+viewport meta tag, and lay out in one column that fits 320 px (wide tables scroll inside their
+own box). Unknown runs and people are 404 pages in the same shape.
+- `/` lists the 50 newest publications, newest first: a link to `/runs/{run_id}`, the tier, the
+  received time (UTC, RFC 3339 to the second), and the person's login linked to
+  `/people/{login}`, or `unlinked device` with the publisher key's fingerprint.
+- `/runs/{run_id}` shows the run's latest publication: run id, category `id@version`, the person
+  as on `/`, tier and received time. At tiers 1 and 2: the clocks `wall`, `agent` and `human` from
+  the published view, each as `H:MM:SS`; and one row per judged milestone with its title, required
+  trust, claimed and granted trust (snake case, `none` when absent) and its problems. At tier 0:
+  the anchored chain heads (device id, seq, hash) and no clocks or milestones. Then the record: the
+  bundle digest linked to `/v1/bundles/{digest}`, the judgment's signature and the commons key,
+  the leaf index, the latest tree head's size and root, the leaf's audit path against that head,
+  and the two `curl` commands that fetch the bundle and the proof.
+- `/people/{login}` shows the login and GitHub id, each linked device (fingerprint, linked time),
+  and the person's publications as `/` lists them.
+
+**Backup.** `speedrun-commons backup <file>` writes a consistent copy of the database at
+`$SPEEDRUN_COMMONS_HOME` to `<file>` (SQLite `VACUUM INTO`) while a server may be running, prints
+`backed up <tree size> leaves to <file>`, and exits 0; it refuses to overwrite an existing file
+(exit 1). The commons key is not in the database: the operator copies `commons.key` once.
+
+**Deployment (leader).** `Dockerfile` builds `speedrun-commons` and runs it with
+`SPEEDRUN_COMMONS_HOME=/data`; `docs/DEPLOY.md` is the runbook: Railway service, volume, variables,
+health check on `/v1/health`, a backup before every deploy, and the smoke test afterwards.

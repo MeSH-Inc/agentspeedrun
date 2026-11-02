@@ -8,7 +8,9 @@ This is an index of the acceptance items in `V0.2.md` and `COMMONS.md` §14, whi
 them. **Who**: `loop` means a bounded change a test can judge, which an automated proposer
 can make once the test exists; `leader` means it needs design, a schema or category change,
 or code outside the Rust workspace. **Test**: the test that shows the item holds, or an ignored
-objective test that fails until it does. Every named `audit_` test passes as of 2026-11-02. The P1 contract is `COMMONS.md` §19.
+objective test that fails until it does. Every named `audit_` test for v0.2 and P1.a–e passes as of 2026-11-02; the P1.f–h tests are
+the Wave 5 objective tests and fail until their items hold. The P1 contract is `COMMONS.md` §19
+and §20.
 
 ## v0.2 (COMMONS P0)
 
@@ -71,6 +73,9 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | P1.c | An inclusion proof verifies in a standalone test | loop | C4 | `audit_p1_c_*` |
 | P1.d | Deleting the local DB after publish loses nothing public | loop | C3, C4 | `audit_p1_d_*` |
 | P1.e | A run's log holds no local path; the daemon bundles a finished run for the full token | loop | C3 | `audit_p1_e_*` |
+| P1.f | A person links a device through GitHub's device flow; the device and the commons both sign the link, and no GitHub token is kept | loop | C1 | `audit_p1_f_*` |
+| P1.g | A run page shows the published clocks, judgments and inclusion proof; a front page lists publications, newest first; pages escape the log and run no script | loop | | `audit_p1_g_*` |
+| P1.h | The commons listens on `$PORT` and backs up its log; it runs on Railway with a backup before each deploy | loop, leader | | `audit_p1_h_*`; deployment is the leader's |
 
 The owner decided D1–D7 and C1, C3 and C4 on 2026-11-01; the choices are in `V0.2.md` §5 and
 `COMMONS.md` §16. D4 retires every v0.1 format, which removed the items for labelling v0.1 PBs

@@ -15,12 +15,19 @@ use serde_json::{Value, json};
 use speedrun_core::api::PromptCommitment;
 use speedrun_core::bundle::{self, BUNDLE_FORMAT, Bundle, ChainHead};
 use speedrun_core::commons::{
-    CommonsHealth, InclusionProof, PublishReceipt, PublishedRun, TreeHead, judgment_digest, tree_head_digest,
+    CommonsHealth, InclusionProof, LINK_FORMAT, Link, LinkClaim, LinkConfirm, LinkStarted, LinkState, Person,
+    PersonRecord, PublishReceipt, PublishedRun, TreeHead, judgment_digest, link_claim_digest,
+    tree_head_digest,
 };
 use speedrun_core::{
     Claimant, Event, EventPayload, Evidence, MilestoneOrigin, RunOutcome, RunView, SCHEMA_VERSION, Trust,
     hash, sign,
 };
+
+#[path = "support/fake_github.rs"]
+mod fake_github;
+
+use fake_github::FakeGitHub;
 
 // --- A run's log, written as speedrund writes one ------------------------------------------
 
@@ -154,6 +161,29 @@ impl Log {
         self
     }
 
+    /// A milestone the user entered, with `title` as typed.
+    fn user_milestone(mut self, minute: i64, milestone_id: &str, title: &str) -> Self {
+        self.push(
+            minute,
+            EventPayload::MilestoneProposed {
+                milestone_id: milestone_id.into(),
+                origin: MilestoneOrigin::User,
+                key: None,
+                title: title.into(),
+                description: None,
+                required_trust: Trust::SelfDeclared,
+            },
+        );
+        self.push(
+            minute,
+            EventPayload::MilestoneAccepted {
+                milestone_id: milestone_id.into(),
+                required_trust: None,
+            },
+        );
+        self
+    }
+
     fn finish(mut self, minute: i64) -> Self {
         self.push(
             minute,
@@ -279,7 +309,7 @@ const STARTUP_LIMIT: Duration = Duration::from_secs(15);
 struct Commons {
     child: Child,
     base: String,
-    _home: tempfile::TempDir,
+    home: tempfile::TempDir,
 }
 
 impl Drop for Commons {
@@ -318,20 +348,36 @@ fn request(method: &str, url: &str, body: Option<&Value>) -> (u16, Value) {
 
 impl Commons {
     fn start() -> Self {
+        Self::start_with(&[])
+    }
+
+    /// A commons with extra environment, such as a GitHub stand-in's.
+    fn start_with(env: &[(&str, String)]) -> Self {
+        Self::start_in(|| tempfile::tempdir().unwrap(), env)
+    }
+
+    /// A commons whose home each attempt takes from `home`, which may hold a database.
+    fn start_in(home: impl Fn() -> tempfile::TempDir, env: &[(&str, String)]) -> Self {
         for _ in 0..5 {
-            if let Some(c) = Self::try_start() {
+            if let Some(c) = Self::try_start(home(), env) {
                 return c;
             }
         }
         panic!("speedrun-commons did not start on any of five free ports");
     }
 
-    fn try_start() -> Option<Self> {
-        let home = tempfile::tempdir().unwrap();
+    fn try_start(home: tempfile::TempDir, env: &[(&str, String)]) -> Option<Self> {
         let port = free_port();
-        let child = Command::new(env!("CARGO_BIN_EXE_speedrun-commons"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_speedrun-commons"));
+        command
             .env("SPEEDRUN_COMMONS_HOME", home.path().join("data"))
             .env("SPEEDRUN_COMMONS_ADDR", format!("127.0.0.1:{port}"))
+            .env_remove("SPEEDRUN_GITHUB_CLIENT_ID")
+            .env_remove("PORT");
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(File::create(home.path().join("stderr")).unwrap())
@@ -340,7 +386,7 @@ impl Commons {
         let mut commons = Self {
             child,
             base: format!("http://127.0.0.1:{port}"),
-            _home: home,
+            home,
         };
         let deadline = Instant::now() + STARTUP_LIMIT;
         while Instant::now() < deadline {
@@ -361,6 +407,30 @@ impl Commons {
 
     fn post(&self, path: &str, body: &Value) -> (u16, Value) {
         request("POST", &format!("{}{path}", self.base), Some(body))
+    }
+
+    /// The commons' data directory.
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.home.path().join("data")
+    }
+
+    /// An HTML page: status, `Content-Type`, `Content-Security-Policy`, and body.
+    fn page(&self, path: &str) -> Page {
+        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(10)).build();
+        let response = match agent.get(&format!("{}{path}", self.base)).call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r,
+            Err(e) => panic!("GET {path}: {e}"),
+        };
+        Page {
+            status: response.status(),
+            content_type: response.header("content-type").unwrap_or_default().to_string(),
+            policy: response
+                .header("content-security-policy")
+                .unwrap_or_default()
+                .to_string(),
+            body: response.into_string().unwrap(),
+        }
     }
 
     fn health(&self) -> CommonsHealth {
@@ -805,4 +875,561 @@ fn audit_p1_c_the_empty_log_has_a_signed_head_of_the_empty_tree() {
         &tree_head_digest(&head).unwrap(),
         &head.signature
     ));
+}
+
+// --- P1.f: a person links a device through GitHub (COMMONS.md §20) ----------------------
+
+struct Page {
+    status: u16,
+    content_type: String,
+    policy: String,
+    body: String,
+}
+
+fn commons_with_github(github: &FakeGitHub) -> Commons {
+    Commons::start_with(&github.env())
+}
+
+/// Start a link for `key` and poll until the GitHub stand-in authorizes it.
+fn authorize(commons: &Commons, key: &SigningKey) -> (LinkStarted, Person) {
+    let (status, body) = commons.post("/v1/links", &json!({ "device_pubkey": sign::pubkey_hex(key) }));
+    assert_eq!(status, 200, "starting a link: {body}");
+    let started: LinkStarted = serde_json::from_value(body).unwrap();
+    for _ in 0..10 {
+        let (status, body) = commons.post(&format!("/v1/links/{}/poll", started.link_id), &json!({}));
+        match status {
+            202 => continue,
+            200 => match serde_json::from_value::<LinkState>(body.clone()).unwrap() {
+                LinkState::Authorized { person } => return (started, person),
+                LinkState::Pending => panic!("200 for a pending link: {body}"),
+            },
+            _ => panic!("poll answered {status}: {body}"),
+        }
+    }
+    panic!("the link was never authorized");
+}
+
+fn claim_for(commons: &Commons, started: &LinkStarted, person: &Person, key: &SigningKey) -> LinkClaim {
+    LinkClaim {
+        format: LINK_FORMAT,
+        link_id: started.link_id.clone(),
+        device_pubkey: sign::pubkey_hex(key),
+        github_id: person.github_id,
+        login: person.login.clone(),
+        commons_pubkey: commons.health().commons_pubkey,
+        issued_at: Utc::now(),
+    }
+}
+
+/// A `LinkConfirm` for `claim`, signed by `signer`.
+fn confirmation(claim: &LinkClaim, signer: &SigningKey) -> Value {
+    let digest = link_claim_digest(claim).unwrap();
+    serde_json::to_value(LinkConfirm {
+        claim: claim.clone(),
+        device_signature: sign::sign_hash(signer, &digest),
+    })
+    .unwrap()
+}
+
+/// Link `key` to the stand-in's person, asserting every step succeeds.
+fn link(commons: &Commons, key: &SigningKey) -> Link {
+    let (started, person) = authorize(commons, key);
+    let claim = claim_for(commons, &started, &person, key);
+    let (status, body) = commons.post(
+        &format!("/v1/links/{}/confirm", started.link_id),
+        &confirmation(&claim, key),
+    );
+    assert_eq!(status, 200, "confirming the link: {body}");
+    serde_json::from_value(body).unwrap()
+}
+
+fn person_record(commons: &Commons, login: &str) -> PersonRecord {
+    let (status, body) = commons.get(&format!("/v1/people/{login}"));
+    assert_eq!(status, 200, "person {login}: {body}");
+    serde_json::from_value(body).unwrap()
+}
+
+#[test]
+#[ignore = "audit P1.f: GitHub link"]
+fn audit_p1_f_a_device_links_to_the_github_account_that_authorized_it() {
+    let github = FakeGitHub::start(fake_github::Behaviour::default());
+    let commons = commons_with_github(&github);
+    let key = sign::generate();
+
+    let (status, body) = commons.post("/v1/links", &json!({ "device_pubkey": sign::pubkey_hex(&key) }));
+    assert_eq!(status, 200, "{body}");
+    let started: LinkStarted = serde_json::from_value(body).unwrap();
+    assert_eq!(started.user_code, fake_github::USER_CODE);
+    assert_eq!(started.verification_uri, fake_github::VERIFICATION_URI);
+    assert_eq!(started.interval_seconds, 5);
+    assert!(started.expires_at > Utc::now());
+
+    let poll = format!("/v1/links/{}/poll", started.link_id);
+    let (status, body) = commons.post(&poll, &json!({}));
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(
+        serde_json::from_value::<LinkState>(body).unwrap(),
+        LinkState::Pending
+    );
+    let octo = Person {
+        github_id: 4242,
+        login: "Octo-Person".into(),
+    };
+    for _ in 0..2 {
+        let (status, body) = commons.post(&poll, &json!({}));
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            serde_json::from_value::<LinkState>(body).unwrap(),
+            LinkState::Authorized { person: octo.clone() }
+        );
+    }
+    assert_eq!(
+        github.requests_to("/login/oauth/access_token").len(),
+        2,
+        "an authorized link asked GitHub again"
+    );
+
+    let claim = claim_for(&commons, &started, &octo, &key);
+    let confirm = format!("/v1/links/{}/confirm", started.link_id);
+    let (status, body) = commons.post(&confirm, &confirmation(&claim, &key));
+    assert_eq!(status, 200, "{body}");
+    let link: Link = serde_json::from_value(body).unwrap();
+    assert_eq!(link.claim, claim);
+    let digest = link_claim_digest(&claim).unwrap();
+    assert!(sign::verify_hash(
+        &sign::pubkey_hex(&key),
+        &digest,
+        &link.device_signature
+    ));
+    assert!(sign::verify_hash(
+        &commons.health().commons_pubkey,
+        &digest,
+        &link.commons_signature
+    ));
+    let (status, again) = commons.post(&confirm, &confirmation(&claim, &key));
+    assert_eq!(status, 200, "{again}");
+    assert_eq!(serde_json::from_value::<Link>(again).unwrap(), link);
+
+    let record = person_record(&commons, "octo-person");
+    assert_eq!(record.person, octo);
+    assert_eq!(record.links, vec![link]);
+    assert!(record.publications.is_empty());
+
+    let device_code = &github.requests_to("/login/device/code")[0];
+    assert!(
+        device_code.body.contains(fake_github::CLIENT_ID),
+        "{}",
+        device_code.body
+    );
+    let user = &github.requests_to("/user")[0];
+    assert_eq!(
+        user.header("authorization"),
+        Some(format!("Bearer {}", fake_github::ACCESS_TOKEN).as_str())
+    );
+    for request in github.requests() {
+        assert_eq!(
+            request.header("user-agent"),
+            Some("speedrun-commons"),
+            "{request:?}"
+        );
+        assert!(
+            request.headers.iter().all(|(_, v)| !v.contains('@')),
+            "a GitHub request carried an address: {request:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "audit P1.f: GitHub link"]
+fn audit_p1_f_a_link_needs_the_devices_signature_and_the_authorized_person() {
+    let github = FakeGitHub::start(fake_github::Behaviour::default());
+    let commons = commons_with_github(&github);
+    let key = sign::generate();
+    let stranger = sign::generate();
+
+    let (status, _) = commons.post("/v1/links", &json!({ "device_pubkey": "not a key" }));
+    assert_eq!(status, 400, "a malformed device key");
+    assert_eq!(commons.post("/v1/links/01UNKNOWNLINK/poll", &json!({})).0, 404);
+
+    // Confirming before GitHub authorized anyone.
+    let (status, body) = commons.post("/v1/links", &json!({ "device_pubkey": sign::pubkey_hex(&key) }));
+    assert_eq!(status, 200, "{body}");
+    let early: LinkStarted = serde_json::from_value(body).unwrap();
+    let nobody = Person {
+        github_id: 4242,
+        login: "Octo-Person".into(),
+    };
+    let premature = claim_for(&commons, &early, &nobody, &key);
+    let (status, body) = commons.post(
+        &format!("/v1/links/{}/confirm", early.link_id),
+        &confirmation(&premature, &key),
+    );
+    assert_eq!(status, 409, "confirmed before authorization: {body}");
+
+    let (started, person) = authorize(&commons, &key);
+    let good = claim_for(&commons, &started, &person, &key);
+    let confirm = format!("/v1/links/{}/confirm", started.link_id);
+    let mut cases: Vec<(&str, Value)> = vec![("signed by another key", confirmation(&good, &stranger))];
+    let mut other_login = good.clone();
+    other_login.login = "someone-else".into();
+    cases.push(("another login", confirmation(&other_login, &key)));
+    let mut other_id = good.clone();
+    other_id.github_id = 7;
+    cases.push(("another GitHub id", confirmation(&other_id, &key)));
+    let mut other_commons = good.clone();
+    other_commons.commons_pubkey = sign::pubkey_hex(&stranger);
+    cases.push(("another commons", confirmation(&other_commons, &key)));
+    let mut other_link = good.clone();
+    other_link.link_id = early.link_id.clone();
+    cases.push(("another link's id", confirmation(&other_link, &key)));
+    let mut other_device = good.clone();
+    other_device.device_pubkey = sign::pubkey_hex(&stranger);
+    cases.push((
+        "a device the link did not start with",
+        confirmation(&other_device, &stranger),
+    ));
+    let mut format_2 = good.clone();
+    format_2.format = 2;
+    cases.push(("link format 2", confirmation(&format_2, &key)));
+    for (case, body) in &cases {
+        let (status, answer) = commons.post(&confirm, body);
+        assert_eq!(status, 400, "{case}: {answer}");
+    }
+    assert_eq!(
+        commons.get("/v1/people/octo-person").0,
+        404,
+        "a refused confirmation linked someone"
+    );
+    assert_eq!(
+        commons
+            .post("/v1/links/01UNKNOWNLINK/confirm", &confirmation(&good, &key))
+            .0,
+        404
+    );
+}
+
+#[test]
+#[ignore = "audit P1.f: GitHub link"]
+fn audit_p1_f_a_refused_authorization_links_nothing() {
+    let github = FakeGitHub::start(fake_github::Behaviour {
+        deny: true,
+        ..Default::default()
+    });
+    let commons = commons_with_github(&github);
+    let key = sign::generate();
+    let (status, body) = commons.post("/v1/links", &json!({ "device_pubkey": sign::pubkey_hex(&key) }));
+    assert_eq!(status, 200, "{body}");
+    let started: LinkStarted = serde_json::from_value(body).unwrap();
+    let poll = format!("/v1/links/{}/poll", started.link_id);
+    assert_eq!(commons.post(&poll, &json!({})).0, 410);
+    assert_eq!(commons.post(&poll, &json!({})).0, 410, "a refused link came back");
+    let person = Person {
+        github_id: 4242,
+        login: "Octo-Person".into(),
+    };
+    let claim = claim_for(&commons, &started, &person, &key);
+    let (status, _) = commons.post(
+        &format!("/v1/links/{}/confirm", started.link_id),
+        &confirmation(&claim, &key),
+    );
+    assert_eq!(status, 410);
+    assert_eq!(commons.get("/v1/people/octo-person").0, 404);
+
+    let unconfigured = Commons::start();
+    let (status, body) = unconfigured.post("/v1/links", &json!({ "device_pubkey": sign::pubkey_hex(&key) }));
+    assert_eq!(status, 503, "linking without a GitHub client id: {body}");
+}
+
+#[test]
+#[ignore = "audit P1.f: GitHub link"]
+fn audit_p1_f_the_commons_keeps_no_github_token() {
+    let github = FakeGitHub::start(fake_github::Behaviour::default());
+    let commons = commons_with_github(&github);
+    link(&commons, &sign::generate());
+    let mut files = 0;
+    for entry in std::fs::read_dir(commons.data_dir()).unwrap() {
+        let path = entry.unwrap().path();
+        let bytes = std::fs::read(&path).unwrap();
+        files += 1;
+        assert!(
+            !bytes
+                .windows(fake_github::ACCESS_TOKEN.len())
+                .any(|w| w == fake_github::ACCESS_TOKEN.as_bytes()),
+            "{} holds the GitHub token",
+            path.display()
+        );
+    }
+    assert!(files >= 2, "the commons wrote no files");
+}
+
+#[test]
+#[ignore = "audit P1.f: GitHub link"]
+fn audit_p1_f_a_persons_publications_are_those_their_devices_signed() {
+    let github = FakeGitHub::start(fake_github::Behaviour::default());
+    let commons = commons_with_github(&github);
+    let mine = plain_run("01RUNMINE");
+    let theirs = plain_run("01RUNTHEIRS");
+    link(&commons, &mine.key);
+    let first = commons.publish(&mine.bundle(1));
+    commons.publish(&theirs.bundle(1));
+    let second = commons.publish(&mine.heads_bundle(vec![mine.head()]));
+
+    let record = person_record(&commons, "OCTO-PERSON");
+    let digests: Vec<&str> = record
+        .publications
+        .iter()
+        .map(|p| p.bundle_digest.as_str())
+        .collect();
+    assert_eq!(
+        digests,
+        [second.bundle_digest.as_str(), first.bundle_digest.as_str()]
+    );
+    assert!(record.publications.iter().all(|p| p.run_id == "01RUNMINE"));
+}
+
+// --- P1.g: the public pages (COMMONS.md §20) -------------------------------------------------
+
+fn hms(ms: i64) -> String {
+    let seconds = ms / 1000;
+    format!("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
+}
+
+fn published(commons: &Commons, run_id: &str) -> PublishedRun {
+    let (status, body) = commons.get(&format!("/v1/runs/{run_id}"));
+    assert_eq!(status, 200, "{body}");
+    serde_json::from_value(body).unwrap()
+}
+
+#[test]
+#[ignore = "audit P1.g: pages"]
+fn audit_p1_g_the_run_page_shows_the_published_record() {
+    let github = FakeGitHub::start(fake_github::Behaviour::default());
+    let commons = commons_with_github(&github);
+    let log = Log::start("01RUNPAGE")
+        .prompt(1)
+        .claim(10, "scaffold-runs", vec![])
+        .finish(40);
+    link(&commons, &log.key);
+    let receipt = commons.publish(&log.bundle(1));
+
+    let page = commons.page("/runs/01RUNPAGE");
+    assert_eq!(page.status, 200);
+    assert!(
+        page.content_type.starts_with("text/html"),
+        "{}",
+        page.content_type
+    );
+    let run = published(&commons, "01RUNPAGE");
+    let timing = &run.view.as_ref().unwrap().timing;
+    let (_, head) = commons.get("/v1/log/head");
+    let head: TreeHead = serde_json::from_value(head).unwrap();
+    for expected in [
+        "01RUNPAGE".to_string(),
+        "any-percent@1".into(),
+        "Octo-Person".into(),
+        "href=\"/people/Octo-Person\"".into(),
+        "scaffold-runs".into(),
+        "happy-path-demo".into(),
+        "self_declared".into(),
+        "evidence_verified".into(),
+        hms(timing.wall_ms),
+        hms(timing.agent_ms),
+        hms(timing.human_ms),
+        receipt.bundle_digest.clone(),
+        format!("href=\"/v1/bundles/{}\"", receipt.bundle_digest),
+        receipt.judgment.signature.clone(),
+        commons.health().commons_pubkey,
+        head.root_hash.clone(),
+        "curl".into(),
+    ] {
+        assert!(
+            page.body.contains(&expected),
+            "the run page lacks {expected:?}:\n{}",
+            page.body
+        );
+    }
+}
+
+#[test]
+#[ignore = "audit P1.g: pages"]
+fn audit_p1_g_pages_escape_what_the_log_says() {
+    let commons = Commons::start();
+    let log = Log::start("01RUNESCAPE")
+        .prompt(1)
+        .user_milestone(
+            2,
+            "01KUSERMILESTONE000000000",
+            "<script>alert(\"x\")</script> & <b>bold</b>",
+        )
+        .finish(30);
+    commons.publish(&log.bundle(1));
+    let page = commons.page("/runs/01RUNESCAPE");
+    assert_eq!(page.status, 200);
+    assert!(
+        !page.body.contains("<script"),
+        "a script tag reached the page:\n{}",
+        page.body
+    );
+    assert!(
+        !page.body.contains("<b>bold"),
+        "markup from the log reached the page"
+    );
+    assert!(
+        page.body.contains("&lt;script&gt;"),
+        "the title is missing:\n{}",
+        page.body
+    );
+    assert!(page.body.contains("&amp;"));
+}
+
+#[test]
+#[ignore = "audit P1.g: pages"]
+fn audit_p1_g_the_front_page_lists_publications_newest_first() {
+    let github = FakeGitHub::start(fake_github::Behaviour::default());
+    let commons = commons_with_github(&github);
+    let linked = plain_run("01RUNLISTONE");
+    link(&commons, &linked.key);
+    let unlinked = plain_run("01RUNLISTTWO");
+    commons.publish(&linked.bundle(1));
+    commons.publish(&unlinked.bundle(2));
+    commons.publish(&plain_run("01RUNLISTTHREE").bundle(1));
+
+    let page = commons.page("/");
+    assert_eq!(page.status, 200);
+    let at = |text: &str| {
+        page.body
+            .find(text)
+            .unwrap_or_else(|| panic!("the front page lacks {text:?}:\n{}", page.body))
+    };
+    assert!(at("href=\"/runs/01RUNLISTTHREE\"") < at("href=\"/runs/01RUNLISTTWO\""));
+    assert!(at("href=\"/runs/01RUNLISTTWO\"") < at("href=\"/runs/01RUNLISTONE\""));
+    at("href=\"/people/Octo-Person\"");
+    at("unlinked device");
+    at(&sign::fingerprint(&sign::pubkey_hex(&unlinked.key)).unwrap());
+}
+
+#[test]
+#[ignore = "audit P1.g: pages"]
+fn audit_p1_g_pages_carry_the_security_policy_and_fit_a_phone() {
+    let commons = Commons::start();
+    commons.publish(&plain_run("01RUNPOLICY").bundle(1));
+    for path in [
+        "/",
+        "/runs/01RUNPOLICY",
+        "/runs/01RUNNOSUCHRUN",
+        "/people/nobody-here",
+    ] {
+        let page = commons.page(path);
+        assert!(
+            page.content_type.starts_with("text/html"),
+            "{path}: {}",
+            page.content_type
+        );
+        assert_eq!(
+            page.policy, "default-src 'none'; style-src 'unsafe-inline'",
+            "{path}"
+        );
+        assert!(
+            page.body.contains("name=\"viewport\""),
+            "{path} has no viewport tag"
+        );
+        assert!(!page.body.contains("<script"), "{path} carries a script");
+    }
+    assert_eq!(commons.page("/runs/01RUNNOSUCHRUN").status, 404);
+    assert_eq!(commons.page("/people/nobody-here").status, 404);
+}
+
+#[test]
+#[ignore = "audit P1.g: pages"]
+fn audit_p1_g_a_tier_0_page_shows_chain_heads_only() {
+    let commons = Commons::start();
+    let log = plain_run("01RUNHEADSONLY");
+    let head = log.head();
+    commons.publish(&log.heads_bundle(vec![head.clone()]));
+    let page = commons.page("/runs/01RUNHEADSONLY");
+    assert_eq!(page.status, 200);
+    assert!(page.body.contains(&head.hash), "{}", page.body);
+    assert!(page.body.contains(&head.device_id));
+    assert!(
+        !page.body.contains("happy-path-demo"),
+        "a tier 0 page showed milestones"
+    );
+}
+
+// --- P1.h: running the commons on a host (COMMONS.md §20) ------------------------------------
+
+#[test]
+#[ignore = "audit P1.h: hosting"]
+fn audit_p1_h_the_commons_listens_on_port_when_no_address_is_set() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_speedrun-commons"))
+        .env("SPEEDRUN_COMMONS_HOME", home.path().join("data"))
+        .env_remove("SPEEDRUN_COMMONS_ADDR")
+        .env("PORT", port.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + STARTUP_LIMIT;
+    let mut status = 0;
+    while Instant::now() < deadline && status != 200 {
+        status = request("GET", &format!("http://127.0.0.1:{port}/v1/health"), None).0;
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(status, 200, "nothing answered on PORT {port}");
+}
+
+#[test]
+#[ignore = "audit P1.h: hosting"]
+fn audit_p1_h_a_backup_restores_the_log() {
+    let commons = Commons::start();
+    commons.publish(&plain_run("01RUNBACKUPONE").bundle(1));
+    commons.publish(&plain_run("01RUNBACKUPTWO").bundle(2));
+    let (_, head) = commons.get("/v1/log/head");
+    let head: TreeHead = serde_json::from_value(head).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let copy = out.path().join("copy.sqlite");
+    let backup = || {
+        Command::new(env!("CARGO_BIN_EXE_speedrun-commons"))
+            .arg("backup")
+            .arg(&copy)
+            .env("SPEEDRUN_COMMONS_HOME", commons.data_dir())
+            .output()
+            .unwrap()
+    };
+    let first = backup();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&first.stdout).trim(),
+        format!("backed up 2 leaves to {}", copy.display())
+    );
+    assert_eq!(backup().status.code(), Some(1), "the backup overwrote a file");
+
+    let key = std::fs::read(commons.data_dir().join("commons.key")).unwrap();
+    let copied = std::fs::read(&copy).unwrap();
+    let restored = Commons::start_in(
+        || {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(home.path().join("data")).unwrap();
+            std::fs::write(home.path().join("data/commons.sqlite"), &copied).unwrap();
+            std::fs::write(home.path().join("data/commons.key"), &key).unwrap();
+            home
+        },
+        &[],
+    );
+    assert_eq!(restored.health().tree_size, 2);
+    assert_eq!(restored.health().commons_pubkey, commons.health().commons_pubkey);
+    let (_, again) = restored.get("/v1/log/head");
+    let again: TreeHead = serde_json::from_value(again).unwrap();
+    assert_eq!(again.root_hash, head.root_hash);
+    assert_eq!(published(&restored, "01RUNBACKUPTWO").tier, 2);
 }
