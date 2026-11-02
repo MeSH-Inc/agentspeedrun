@@ -9,6 +9,7 @@ mod health;
 mod http;
 mod keys;
 mod logging;
+mod provenance;
 mod service;
 mod shutdown;
 mod startup;
@@ -36,6 +37,9 @@ async fn main() -> Result<()> {
     let (listener, addr) = startup::listen().await?;
     let token = startup::ensure_token(&paths::token_path())?;
     let display_token = startup::ensure_token(&paths::display_token_path())?;
+    // Agent tools use their own token, created the same way: a second file a
+    // process can read, never overwrite.
+    let agent_token = startup::ensure_token(&paths::agent_token_path())?;
     let health = health::Health::resolve(&dir)?;
     let store = store::Store::open(&dir.join("speedrun.sqlite"), &paths::device_key_path())?;
     let device_pubkey = store.device_pubkey();
@@ -55,6 +59,7 @@ async fn main() -> Result<()> {
             service: Arc::new(Mutex::new(service)),
             token: Arc::new(token),
             display_token: Arc::new(display_token),
+            agent_token: Arc::new(agent_token),
             health: Arc::new(health),
             verifier: Arc::new(verify::Verifier::default()),
             changes: Arc::new(tokio::sync::watch::channel(0).0),

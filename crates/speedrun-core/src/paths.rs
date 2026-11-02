@@ -33,6 +33,12 @@ pub fn display_token_path() -> PathBuf {
     data_dir().join("display-token")
 }
 
+/// Token agent tools (the MCP server, `speedrun tool`) send. It may append a
+/// few payload kinds and marks a claim as the agent's; it is never a read token.
+pub fn agent_token_path() -> PathBuf {
+    data_dir().join("agent-token")
+}
+
 /// Verifier credentials (`stripe`, `github`), one file each, mode 0600.
 pub fn secrets_dir() -> PathBuf {
     data_dir().join("secrets")

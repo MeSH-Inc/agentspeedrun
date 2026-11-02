@@ -33,6 +33,7 @@ const MAX_ID_LEN: usize = 128;
 #[derive(Debug)]
 pub enum Error {
     BadRequest(String),
+    Forbidden(String),
     NotFound(String),
     Conflict(String),
     Internal(anyhow::Error),
@@ -41,6 +42,12 @@ pub enum Error {
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
         Self::Internal(e.into())
+    }
+}
+
+impl From<crate::provenance::Refusal> for Error {
+    fn from(refusal: crate::provenance::Refusal) -> Self {
+        Self::Forbidden(refusal.reason().to_string())
     }
 }
 

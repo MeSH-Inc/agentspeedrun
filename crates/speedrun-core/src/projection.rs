@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Event, EventPayload, Evidence, MilestoneOrigin, RunOutcome, Trust};
+use crate::{Claimant, Event, EventPayload, Evidence, MilestoneOrigin, RunOutcome, Trust};
 
 /// Gaps between agent activity longer than this are treated as the human
 /// being away, and only this much of them counts as human time.
@@ -83,8 +83,11 @@ impl MilestoneView {
         }
     }
 
+    /// Whether the milestone counts toward the run. A claim awaiting the
+    /// user's confirmation does not count, whatever its trust (D6).
     pub fn counts(&self) -> bool {
-        matches!(self.state, MilestoneState::Reached | MilestoneState::Verified)
+        !self.pending_confirmation
+            && matches!(self.state, MilestoneState::Reached | MilestoneState::Verified)
             && self.meets_trust_requirement()
     }
 }
@@ -453,6 +456,12 @@ impl RunView {
                                 MilestoneState::Reached
                             };
                         }
+                        // Only a fresh claim moves the milestone to pending; a
+                        // verification of an agent's claim leaves it pending (D6).
+                        if let EventPayload::MilestoneReached { claimant, .. } = &e.payload {
+                            m.pending_confirmation =
+                                *claimant == Claimant::Agent && m.required_trust == Trust::SelfDeclared;
+                        }
                         m.reached_at.get_or_insert(t);
                         m.trust = Some(m.trust.map_or(*trust, |cur| cur.max(*trust)));
                         for ev in evidence {
@@ -472,6 +481,7 @@ impl RunView {
                         m.evidence.clear();
                         m.reached_at = None;
                         m.counted_at = None;
+                        m.pending_confirmation = false;
                     }
                 }
                 // Not yet folded: see W6.a in docs/V0.2.md.

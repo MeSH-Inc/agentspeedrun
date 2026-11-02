@@ -1,6 +1,7 @@
 //! Local HTTP API. Bound to loopback. Every route except /v1/health needs a
-//! bearer token from the data directory: the full token for everything, or
-//! the display token for the read-only live routes, which never expose prompts.
+//! bearer token from the data directory: the full token for everything, the
+//! agent token for the six routes an agent tool may use, or the display token
+//! for the read-only live routes, which never expose prompts.
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
@@ -8,7 +9,7 @@ use std::time::Duration as StdDuration;
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, Request, State},
+    extract::{Extension, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{
@@ -26,6 +27,7 @@ use tokio::sync::watch;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::health::Health;
+use crate::provenance::{Caller, admit};
 use crate::service::{Appended, Error, Service};
 use crate::verify::Verifier;
 
@@ -34,6 +36,7 @@ pub struct AppState {
     pub service: Arc<Mutex<Service>>,
     pub token: Arc<String>,
     pub display_token: Arc<String>,
+    pub agent_token: Arc<String>,
     /// What this daemon tells a client about itself, and how it proves it.
     pub health: Arc<Health>,
     pub verifier: Arc<Verifier>,
@@ -60,6 +63,7 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
             Error::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            Error::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             Error::NotFound(m) => (StatusCode::NOT_FOUND, format!("not found: {m}")),
             Error::Conflict(m) => (StatusCode::CONFLICT, m),
             Error::Internal(e) => {
@@ -95,35 +99,41 @@ where
 }
 
 pub fn router(state: AppState, cors_origins: &[String]) -> Router {
-    let mut display = Router::new()
+    let display = Router::new()
         .route("/v1/live", get(live))
         .route("/v1/live/stream", get(live_stream))
-        .route("/v1/categories", get(categories))
         .route_layer(middleware::from_fn_with_state(state.clone(), display_auth));
+    let categories = Router::new()
+        .route("/v1/categories", get(categories))
+        .route_layer(middleware::from_fn_with_state(state.clone(), categories_auth));
+    let mut readable = display.merge(categories);
     if !cors_origins.is_empty() {
         let origins: Vec<HeaderValue> = cors_origins.iter().filter_map(|o| o.parse().ok()).collect();
-        display = display.layer(
+        readable = readable.layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(origins))
                 .allow_methods([Method::GET])
                 .allow_headers([header::AUTHORIZATION]),
         );
     }
-    let api = Router::new()
-        .route("/v1/prompts", post(record_prompt))
+    let participant = Router::new()
         .route("/v1/events", post(append))
-        .route("/v1/device/rotate", post(rotate_device))
         .route("/v1/projects/{project_id}/active-run", get(active_run))
         .route("/v1/projects/{project_id}/events", post(append_to_project))
         .route("/v1/runs/{run_id}", get(run))
         .route("/v1/runs/{run_id}/events", get(events))
+        .route_layer(middleware::from_fn_with_state(state.clone(), participant_auth));
+    let api = Router::new()
+        .route("/v1/prompts", post(record_prompt))
+        .route("/v1/device/rotate", post(rotate_device))
         .route("/v1/runs/{run_id}/verify", get(verify))
         .route("/v1/runs/{run_id}/export", get(export))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
         .route("/v1/health", get(health))
         .merge(api)
-        .merge(display)
+        .merge(participant)
+        .merge(readable)
         .with_state(state)
 }
 
@@ -144,6 +154,7 @@ impl AppState {
         TokenPolicy {
             full: self.token.as_str(),
             display: self.display_token.as_str(),
+            agent: self.agent_token.as_str(),
         }
     }
 }
@@ -186,6 +197,7 @@ fn credential(req: &Request) -> Option<Credential<'_>> {
 struct TokenPolicy<'a> {
     full: &'a str,
     display: &'a str,
+    agent: &'a str,
 }
 
 impl TokenPolicy<'_> {
@@ -197,16 +209,43 @@ impl TokenPolicy<'_> {
         token_eq(candidate.as_bytes(), self.display.as_bytes())
     }
 
+    fn is_agent(&self, candidate: &str) -> bool {
+        token_eq(candidate.as_bytes(), self.agent.as_bytes())
+    }
+
     /// Full access is header-only: the full token must never be written into a URL.
     fn allows_full_access(&self, presented: Option<Credential<'_>>) -> bool {
         matches!(presented, Some(Credential::Header(token)) if self.is_full(token))
     }
 
-    /// Display routes take either token in the header, but only the display
-    /// token as `?token=` (browsers' EventSource cannot set headers).
+    /// Display routes take either read token in the header, but only the
+    /// display token as `?token=` (browsers' EventSource cannot set headers).
+    /// The agent token is not a read token: it stays out of `/v1/live`.
     fn allows_display(&self, presented: Option<Credential<'_>>) -> bool {
         match presented {
             Some(Credential::Header(token)) => self.is_full(token) || self.is_display(token),
+            Some(Credential::Query(token)) => self.is_display(token),
+            None => false,
+        }
+    }
+
+    /// Participant routes take a write token in the header and report which
+    /// one it was, since that is what decides a claim's provenance.
+    fn participant(&self, presented: Option<Credential<'_>>) -> Option<Caller> {
+        match presented {
+            Some(Credential::Header(token)) if self.is_full(token) => Some(Caller::User),
+            Some(Credential::Header(token)) if self.is_agent(token) => Some(Caller::Agent),
+            _ => None,
+        }
+    }
+
+    /// Categories are readable with the full or agent token in the header,
+    /// and with the display token in either channel.
+    fn allows_categories(&self, presented: Option<Credential<'_>>) -> bool {
+        match presented {
+            Some(Credential::Header(token)) => {
+                self.is_full(token) || self.is_agent(token) || self.is_display(token)
+            }
             Some(Credential::Query(token)) => self.is_display(token),
             None => false,
         }
@@ -242,6 +281,27 @@ async fn display_auth(State(state): State<AppState>, req: Request, next: Next) -
     }
 }
 
+/// Participant routes: a write token in the header. The identity it proves is
+/// recorded for the write paths that must distinguish the user from an agent.
+async fn participant_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    match state.token_policy().participant(credential(&req)) {
+        Some(caller) => {
+            req.extensions_mut().insert(caller);
+            next.run(req).await
+        }
+        None => unauthorized(),
+    }
+}
+
+/// Categories reads take the full, agent or display token (the last in either channel).
+async fn categories_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if state.token_policy().allows_categories(credential(&req)) {
+        next.run(req).await
+    } else {
+        unauthorized()
+    }
+}
+
 /// Wake live streams after a write.
 fn notify(state: &AppState) {
     state.changes.send_modify(|n| *n = n.wrapping_add(1));
@@ -268,9 +328,11 @@ async fn rotate_device(State(s): State<AppState>) -> impl IntoResponse {
 
 async fn append(
     State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
     headers: HeaderMap,
-    Json(req): Json<AppendRequest>,
-) -> impl IntoResponse {
+    Json(mut req): Json<AppendRequest>,
+) -> Result<Json<speedrun_core::api::AppendResponse>, Error> {
+    admit(caller, &mut req.payload)?;
     let from_spool = is_replay(&headers);
     let res = blocking(&s, move |svc| {
         svc.check_occurred_at(&req.event_id, &req.run_id, req.occurred_at, from_spool)?;
@@ -322,10 +384,12 @@ async fn active_run(State(s): State<AppState>, Path(project_id): Path<String>) -
 
 async fn append_to_project(
     State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
     Path(project_id): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<ProjectAppendRequest>,
-) -> impl IntoResponse {
+    Json(mut req): Json<ProjectAppendRequest>,
+) -> Result<Json<speedrun_core::api::AppendResponse>, Error> {
+    admit(caller, &mut req.payload)?;
     let from_spool = is_replay(&headers);
     let res = blocking(&s, move |svc| svc.append_to_project(&project_id, req, from_spool)).await;
     finish_append(s, res).await
