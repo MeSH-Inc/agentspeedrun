@@ -9,7 +9,7 @@ use speedrun_core::{
     Trust,
     api::{
         AppendRequest, AppendResponse, ChainReport, ExportResponse, ProjectAppendRequest, PromptCommitment,
-        PromptRequest, PromptResponse,
+        PromptRequest, PromptResponse, RotateResponse,
     },
     category,
     hash::verify_stored_chain,
@@ -202,6 +202,12 @@ impl Service {
 
     pub fn categories(&self) -> &[Category] {
         &self.categories
+    }
+
+    /// Replace this device's signing key. Runs that have not written since
+    /// the rotation record a DeviceRotated before their next event.
+    pub fn rotate_device(&mut self) -> Result<RotateResponse> {
+        self.store.rotate_key().map_err(Error::Internal)
     }
 
     /// Record a prompt. The first prompt for a project (or the first after a

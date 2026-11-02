@@ -8,10 +8,24 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Serialize};
 use speedrun_core::sign::{SEED_LEN, generate, parse_seed, seed_hex};
 
 /// File name of the prompt key beside the database in the data directory.
 pub const PROMPT_KEY_FILE: &str = "prompt.key";
+
+/// File name of the device key beside the database in the data directory.
+pub const DEVICE_KEY_FILE: &str = "device.key";
+
+/// One certified step from a previous device key to the next. The
+/// certificate is the previous key's signature over the new public key, so a
+/// chain that predates the switch still verifies from public keys alone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Rotation {
+    pub old_pubkey: String,
+    pub new_pubkey: String,
+    pub certificate: String,
+}
 
 /// Read the device key, creating it with mode 0600 if it does not exist.
 ///
@@ -75,4 +89,24 @@ fn create(path: &Path) -> Result<SigningKey> {
         }
         Err(e) => Err(e).with_context(|| format!("creating {}", path.display())),
     }
+}
+
+/// Replace the device key at `path` atomically: write a fresh 0600 file in
+/// the same directory, then rename it over the old one. The previous key is
+/// never written again.
+pub fn replace(path: &Path, key: &SigningKey) -> Result<()> {
+    let temp = path.with_file_name(format!(".device-key-{}.tmp", speedrun_core::new_id()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp)
+        .with_context(|| format!("creating {}", temp.display()))?;
+    file.write_all(seed_hex(key).as_bytes())
+        .and_then(|()| file.write_all(b"\n"))
+        .with_context(|| format!("writing {}", temp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", temp.display()))?;
+    fs::rename(&temp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
 }

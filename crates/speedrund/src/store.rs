@@ -1,7 +1,7 @@
 //! SQLite persistence. The `events` table is the source of truth and is
 //! append-only, enforced by triggers. Everything else is derived.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
@@ -9,11 +9,13 @@ use ed25519_dalek::SigningKey;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use speedrun_core::{
     Event, EventPayload, SCHEMA_VERSION,
+    api::RotateResponse,
     hash::compute_hash,
-    sign::{SEED_LEN, fingerprint, pubkey_hex, sign_hash},
+    sign::{SEED_LEN, fingerprint, generate, pubkey_hex, rotation_certificate, sign_hash},
 };
 
 use crate::disclosure::Disclosure;
+use crate::keys::Rotation;
 
 const MIGRATIONS: &[&str] = &[
     r#"
@@ -69,6 +71,11 @@ pub struct Store {
     conn: Connection,
     device_id: String,
     key: SigningKey,
+    /// The certified step from the key a run's chain last used to the current
+    /// one, when this device has rotated since that chain last wrote.
+    rotation: Option<Rotation>,
+    /// The device key is a sibling of the database, like the disclosure keys.
+    key_path: PathBuf,
     prompt_key: [u8; SEED_LEN],
     disclosure: Disclosure,
 }
@@ -88,7 +95,8 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         schema.apply(&mut conn)?;
-        let fingerprint = fingerprint(&pubkey_hex(&key)).map_err(anyhow::Error::msg)?;
+        let current_pubkey = pubkey_hex(&key);
+        let fingerprint = fingerprint(&current_pubkey).map_err(anyhow::Error::msg)?;
         let device_id = match conn
             .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |r| r.get(0))
             .optional()?
@@ -102,12 +110,31 @@ impl Store {
                 fingerprint
             }
         };
+        // A rotation is only in effect when the key file was replaced too;
+        // otherwise the daemon that stopped between the two writes still
+        // signs with the key on disk.
+        let rotation = match conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'device_rotation'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            Some(json) => {
+                let step: Rotation = serde_json::from_str(&json).map_err(anyhow::Error::msg)?;
+                (step.new_pubkey == current_pubkey).then_some(step)
+            }
+            None => None,
+        };
         let prompt_key_path = path.with_file_name(crate::keys::PROMPT_KEY_FILE);
         let prompt_key = crate::keys::load_or_create_secret(&prompt_key_path)?;
         Ok(Self {
             conn,
             device_id,
             key,
+            rotation,
+            key_path: path.with_file_name(crate::keys::DEVICE_KEY_FILE),
             prompt_key,
             disclosure: Disclosure::beside(path),
         })
@@ -125,6 +152,7 @@ impl Store {
             tx,
             device_id: &self.device_id,
             key: &self.key,
+            rotation: self.rotation.as_ref(),
             prompt_key: &self.prompt_key,
             disclosure: &self.disclosure,
         };
@@ -140,6 +168,32 @@ impl Store {
     /// Read the disclosure key a run started with, for a tier 2 export.
     pub fn disclosure_key(&self, run_id: &str) -> Result<[u8; SEED_LEN]> {
         self.disclosure.load(run_id)
+    }
+
+    /// Replace this device's signing key. The certificate from the old key to
+    /// the new one is kept so the next event written to each older chain can
+    /// carry it; the old key itself is never stored again.
+    pub fn rotate_key(&mut self) -> Result<RotateResponse> {
+        let previous_pubkey = pubkey_hex(&self.key);
+        let new = generate();
+        let device_pubkey = pubkey_hex(&new);
+        let rotation = Rotation {
+            old_pubkey: previous_pubkey.clone(),
+            new_pubkey: device_pubkey.clone(),
+            certificate: rotation_certificate(&self.key, &device_pubkey),
+        };
+        let json = serde_json::to_string(&rotation).context("serializing the device rotation")?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('device_rotation', ?1)",
+            [&json],
+        )?;
+        crate::keys::replace(&self.key_path, &new)?;
+        self.key = new;
+        self.rotation = Some(rotation);
+        Ok(RotateResponse {
+            device_pubkey,
+            previous_pubkey,
+        })
     }
 }
 
@@ -372,6 +426,7 @@ pub struct Tx<'c> {
     tx: Transaction<'c>,
     device_id: &'c str,
     key: &'c SigningKey,
+    rotation: Option<&'c Rotation>,
     prompt_key: &'c [u8; SEED_LEN],
     disclosure: &'c Disclosure,
 }
@@ -400,64 +455,106 @@ impl Tx<'_> {
         occurred_at: DateTime<Utc>,
         payload: EventPayload,
     ) -> rusqlite::Result<Event> {
-        let last: Option<(i64, String)> = self
-            .tx
-            .query_row(
-                "SELECT seq, hash FROM events WHERE run_id = ?1 ORDER BY seq DESC LIMIT 1",
-                [run_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let mut event = Event {
-            event_id: event_id.to_string(),
-            schema_version: SCHEMA_VERSION,
-            run_id: run_id.to_string(),
-            seq: last.as_ref().map_or(1, |(s, _)| *s as u64 + 1),
-            device_id: self.device_id.to_string(),
-            occurred_at,
-            recorded_at: Utc::now(),
-            payload,
-            prev_hash: last.map(|(_, h)| h),
-            hash: String::new(),
-            sig: None,
-        };
-        event.hash = compute_hash(&event);
-        event.sig = Some(sign_hash(self.key, &event.hash));
-        let body = serde_json::to_string(&event).expect("Event always serializes");
-        self.tx.execute(
-            "INSERT INTO events (event_id, run_id, seq, type, occurred_at, recorded_at, hash, body)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                event.event_id,
-                event.run_id,
-                event.seq as i64,
-                event.payload.kind(),
-                event.occurred_at.to_rfc3339(),
-                event.recorded_at.to_rfc3339(),
-                event.hash,
-                body
-            ],
-        )?;
-        if let EventPayload::RunStarted {
-            project_id,
-            category_id,
-            category_version,
-            ..
-        } = &event.payload
-        {
+        // A write to a chain that still names the key before this device's
+        // latest rotation carries that rotation first, so every earlier
+        // signature can be checked from public keys alone.
+        let mut pending: Vec<(String, EventPayload)> = Vec::with_capacity(2);
+        if let Some(rotation) = self.rotation {
+            let log = self.reader().run_log(run_id)?;
+            let mut chain_key: Option<String> = None;
+            for event in &log.events {
+                if event.device_id.as_str() != self.device_id {
+                    continue;
+                }
+                let key = match &event.payload {
+                    EventPayload::RunStarted {
+                        device_pubkey: Some(key),
+                        ..
+                    } => Some(key),
+                    EventPayload::DeviceJoined { device_pubkey } => Some(device_pubkey),
+                    EventPayload::DeviceRotated { new_pubkey, .. } => Some(new_pubkey),
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    chain_key = Some(key.clone());
+                }
+            }
+            if chain_key.as_deref() == Some(rotation.old_pubkey.as_str()) {
+                let rotated = EventPayload::DeviceRotated {
+                    new_pubkey: rotation.new_pubkey.clone(),
+                    certificate: rotation.certificate.clone(),
+                };
+                pending.push((format!("{run_id}:rotate:{}", rotation.new_pubkey), rotated));
+            }
+        }
+        pending.push((event_id.to_string(), payload));
+
+        let mut inserted: Option<Event> = None;
+        for (id, payload) in pending {
+            let last: Option<(i64, String)> = self
+                .tx
+                .query_row(
+                    "SELECT seq, hash FROM events WHERE run_id = ?1 ORDER BY seq DESC LIMIT 1",
+                    [run_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let seq = match &last {
+                Some((seq, _)) => *seq as u64 + 1,
+                None => 1,
+            };
+            let mut event = Event {
+                event_id: id,
+                schema_version: SCHEMA_VERSION,
+                run_id: run_id.to_string(),
+                seq,
+                device_id: self.device_id.to_string(),
+                occurred_at,
+                recorded_at: Utc::now(),
+                payload,
+                prev_hash: last.map(|(_, hash)| hash),
+                hash: String::new(),
+                sig: None,
+            };
+            event.hash = compute_hash(&event);
+            event.sig = Some(sign_hash(self.key, &event.hash));
+            let body = serde_json::to_string(&event).expect("Event always serializes");
             self.tx.execute(
-                "INSERT INTO runs (run_id, project_id, started_at, created, category_id, category_version)
-                 VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(created), 0) + 1 FROM runs), ?4, ?5)",
+                "INSERT INTO events (event_id, run_id, seq, type, occurred_at, recorded_at, hash, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
+                    event.event_id,
                     event.run_id,
-                    project_id,
+                    event.seq as i64,
+                    event.payload.kind(),
                     event.occurred_at.to_rfc3339(),
-                    category_id,
-                    category_version
+                    event.recorded_at.to_rfc3339(),
+                    event.hash,
+                    body
                 ],
             )?;
+            if let EventPayload::RunStarted {
+                project_id,
+                category_id,
+                category_version,
+                ..
+            } = &event.payload
+            {
+                self.tx.execute(
+                    "INSERT INTO runs (run_id, project_id, started_at, created, category_id, category_version)
+                     VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(created), 0) + 1 FROM runs), ?4, ?5)",
+                    params![
+                        event.run_id,
+                        project_id,
+                        event.occurred_at.to_rfc3339(),
+                        category_id,
+                        category_version
+                    ],
+                )?;
+            }
+            inserted = Some(event);
         }
-        Ok(event)
+        inserted.ok_or(rusqlite::Error::InvalidQuery)
     }
 
     /// Append a prompt event and keep its redacted text in `prompts`, outside

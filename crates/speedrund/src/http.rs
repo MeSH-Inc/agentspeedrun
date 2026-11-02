@@ -107,6 +107,7 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
     let api = Router::new()
         .route("/v1/prompts", post(record_prompt))
         .route("/v1/events", post(append))
+        .route("/v1/device/rotate", post(rotate_device))
         .route("/v1/projects/{project_id}/active-run", get(active_run))
         .route("/v1/projects/{project_id}/events", post(append_to_project))
         .route("/v1/runs/{run_id}", get(run))
@@ -245,6 +246,23 @@ async fn record_prompt(
     .await;
     notify(&s);
     res
+}
+
+/// Rotate the signing key. The file and database writes happen on the
+/// blocking pool, like every other store operation.
+async fn rotate_device(State(s): State<AppState>) -> impl IntoResponse {
+    let service = s.service.clone();
+    let rotated = tokio::task::spawn_blocking(move || {
+        let mut guard = service
+            .lock()
+            .map_err(|_| Error::Internal(anyhow::anyhow!("service lock poisoned")))?;
+        guard.rotate_device()
+    })
+    .await;
+    match rotated {
+        Ok(result) => result.map(Json),
+        Err(e) => Err(Error::Internal(e.into())),
+    }
 }
 
 async fn append(
