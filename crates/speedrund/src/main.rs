@@ -11,9 +11,6 @@ mod keys;
 mod logging;
 mod service;
 mod shutdown;
-// The single-instance decision now lives in `datadir_lock`; the old type is
-// still here until it is deleted, and nothing calls it.
-#[allow(dead_code)]
 mod startup;
 mod store;
 mod verify;

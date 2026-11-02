@@ -9,10 +9,8 @@ use std::io::{ErrorKind, Write};
 use std::net::SocketAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use rusqlite::Connection;
 use speedrun_core::paths;
 use tokio::net::TcpListener;
 
@@ -24,41 +22,19 @@ pub fn prepare_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The daemon's single-instance lock.
-///
-/// It is a SQLite database held in exclusive locking mode with an open write
-/// transaction. The operating system owns the lock and releases it when the
-/// process dies, however it dies, so a crash never leaves a stale lock. A
-/// second daemon fails immediately: the busy timeout is zero.
-pub struct DataDirLock {
-    _conn: Connection,
-}
-
-impl DataDirLock {
-    pub fn acquire(dir: &Path) -> Result<Self> {
-        let path = dir.join("speedrund.lock");
-        let conn = Connection::open(&path).with_context(|| format!("opening {}", path.display()))?;
-        conn.busy_timeout(Duration::ZERO)?;
-        conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
-        conn.execute_batch("BEGIN EXCLUSIVE")
-            .with_context(|| format!("locking {} (is another speedrund running?)", path.display()))?;
-        Ok(Self { _conn: conn })
-    }
-}
-
 /// Bind the daemon's listener: `SPEEDRUN_ADDR`, else the default loopback
 /// address, else a free loopback port when the default is taken. Returns the
 /// listener and the address it bound.
 pub async fn listen() -> Result<(TcpListener, SocketAddr)> {
-    let listener = match std::env::var("SPEEDRUN_ADDR") {
-        Ok(raw) if !raw.trim().is_empty() => {
+    let listener = match paths::configured_addr() {
+        Some(raw) => {
             let addr: SocketAddr = raw.parse().context("SPEEDRUN_ADDR must be host:port")?;
             require_loopback(addr)?;
             TcpListener::bind(addr)
                 .await
                 .with_context(|| format!("binding {addr} (is another speedrund running?)"))?
         }
-        _ => match TcpListener::bind(paths::DEFAULT_ADDR).await {
+        None => match TcpListener::bind(paths::DEFAULT_ADDR).await {
             Ok(listener) => listener,
             Err(error) => {
                 tracing::debug!(
@@ -132,7 +108,12 @@ fn create_token(path: &Path) -> Result<String> {
         Err(error) => return Err(error).with_context(|| format!("linking {}", path.display())),
     }
     fs::remove_file(&temp).with_context(|| format!("removing {}", temp.display()))?;
-    read_token(path)?.ok_or_else(|| anyhow!("token file {} is empty", path.display()))
+    read_token(path)?.ok_or_else(|| {
+        anyhow!(
+            "token file {} is empty; delete it and restart speedrund to create a new one",
+            path.display()
+        )
+    })
 }
 
 /// Write the bound `host:port` to `$DATA_DIR/addr` (0600) by renaming a temp

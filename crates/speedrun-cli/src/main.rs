@@ -551,7 +551,7 @@ fn run(cmd: Cmd) -> Result<()> {
         Cmd::Display { json } => {
             c.ready()?;
             let token = std::fs::read_to_string(speedrun_core::paths::display_token_path())?;
-            let base = c.base_url();
+            let base = c.base_url()?;
             if json {
                 println!(
                     "{}",

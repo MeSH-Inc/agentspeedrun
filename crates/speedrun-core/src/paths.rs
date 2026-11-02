@@ -38,8 +38,12 @@ pub fn secrets_dir() -> PathBuf {
     data_dir().join("secrets")
 }
 
-pub fn daemon_addr() -> String {
-    std::env::var("SPEEDRUN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string())
+/// The address `SPEEDRUN_ADDR` names, when it is set and not empty. The
+/// daemon listens there and clients use it before `$DATA_DIR/addr`.
+pub fn configured_addr() -> Option<String> {
+    std::env::var_os("SPEEDRUN_ADDR")
+        .map(|addr| addr.to_string_lossy().trim().to_string())
+        .filter(|addr| !addr.is_empty())
 }
 
 /// Where the daemon records the `host:port` it bound, mode 0600. Naming the

@@ -2,6 +2,7 @@
 //! the daemon is down are delivered later instead of lost. Every write
 //! carries an event_id, so replaying the spool is safe.
 
+use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -59,6 +60,10 @@ struct SpoolEntry {
 
 pub struct Client {
     agent: ureq::Agent,
+    /// The base URL of the daemon that last proved this data dir's token.
+    /// Requests that carry the token go only here, so a body or the token
+    /// never reaches an address that was not the one probed.
+    verified: RefCell<Option<String>>,
 }
 
 fn spool_dir() -> PathBuf {
@@ -69,8 +74,8 @@ fn spool_dir() -> PathBuf {
 /// `paths::DEFAULT_ADDR`. Naming the addr file is core's business; reading
 /// it is this client's, so core stays free of I/O.
 fn resolve_addr() -> String {
-    if let Some(addr) = std::env::var_os("SPEEDRUN_ADDR") {
-        return addr.to_string_lossy().into_owned();
+    if let Some(addr) = paths::configured_addr() {
+        return addr;
     }
     let file = paths::addr_path();
     match fs::read_to_string(&file) {
@@ -108,13 +113,17 @@ impl Client {
                 .timeout_connect(Duration::from_millis(500))
                 .timeout(timeout)
                 .build(),
+            verified: RefCell::new(None),
         }
     }
 
-    /// Where the daemon listens. Resolved per request, so a daemon that
-    /// starts or rewrites `$DATA_DIR/addr` is found without a restart.
-    fn base(&self) -> String {
-        format!("http://{}", resolve_addr())
+    /// The daemon that proved the token in `ready`. Nothing that carries the
+    /// token is sent before one has.
+    fn verified_base(&self) -> Result<String, CallError> {
+        self.verified
+            .borrow()
+            .clone()
+            .ok_or_else(|| CallError::Unreachable("no daemon has proved this data dir's token".into()))
     }
 
     fn token() -> Result<String, CallError> {
@@ -153,7 +162,7 @@ impl Client {
     ) -> Result<T, CallError> {
         let mut req = self
             .agent
-            .request(method, &format!("{}{path}", self.base()))
+            .request(method, &format!("{}{path}", self.verified_base()?))
             .set("Authorization", &format!("Bearer {token}"));
         if from_spool {
             req = req.set(REPLAY_HEADER, "1");
@@ -167,13 +176,13 @@ impl Client {
                 status: 200,
                 message: format!("unreadable response: {e}"),
             }),
-            Err(ureq::Error::Status(status, r)) => Err(CallError::Api {
-                status,
-                message: r
-                    .into_json::<ErrorBody>()
-                    .map(|b| b.error)
-                    .unwrap_or_else(|_| "unknown error".into()),
-            }),
+            Err(ureq::Error::Status(status, r)) => {
+                let message = match r.into_json::<ErrorBody>() {
+                    Ok(body) => body.error,
+                    Err(e) => format!("unreadable error body: {e}"),
+                };
+                Err(CallError::Api { status, message })
+            }
             Err(ureq::Error::Transport(t)) => Err(CallError::Unreachable(t.to_string())),
         }
     }
@@ -182,18 +191,36 @@ impl Client {
     /// fresh nonce, then `digest::token_proof(token, nonce)` back from
     /// `/v1/health`. A missing or wrong proof is a daemon for another data
     /// directory, so callers spool and send nothing.
+    ///
+    /// The probe itself carries no token and is not retried on 401: it is
+    /// what decides whether the daemon may see the token at all. On success
+    /// the probed address becomes the only one requests are sent to.
     fn verify_health(&self) -> Result<(), CallError> {
+        let base = format!("http://{}", resolve_addr());
         let nonce = speedrun_core::hash::sha256_hex(speedrun_core::new_id().as_bytes());
-        let health: HealthResponse = self.send("GET", &format!("/v1/health?nonce={nonce}"), None, false)?;
+        let health: HealthResponse = match self.agent.get(&format!("{base}/v1/health?nonce={nonce}")).call() {
+            Ok(response) => response
+                .into_json()
+                .map_err(|e| CallError::Unreachable(format!("unreadable health answer from {base}: {e}")))?,
+            Err(ureq::Error::Status(status, _)) => {
+                return Err(CallError::Unreachable(format!(
+                    "health check at {base} answered {status}"
+                )));
+            }
+            Err(ureq::Error::Transport(t)) => return Err(CallError::Unreachable(t.to_string())),
+        };
         let Some(proof) = health.proof else {
-            return Err(CallError::Unreachable("daemon did not prove the token".into()));
+            return Err(CallError::Unreachable(format!(
+                "daemon at {base} did not prove the token"
+            )));
         };
         if proof == speedrun_core::digest::token_proof(&Self::token()?, &nonce) {
+            *self.verified.borrow_mut() = Some(base);
             Ok(())
         } else {
-            Err(CallError::Unreachable(
-                "daemon answers for another data directory".into(),
-            ))
+            Err(CallError::Unreachable(format!(
+                "daemon answers for another data directory ({base})"
+            )))
         }
     }
 
@@ -232,8 +259,9 @@ impl Client {
         }
     }
 
-    pub fn base_url(&self) -> String {
-        self.base()
+    /// The daemon `ready` verified.
+    pub fn base_url(&self) -> Result<String, CallError> {
+        self.verified_base()
     }
 
     /// Follow the live stream with the read-only display token, calling
@@ -253,7 +281,7 @@ impl Client {
         let resp = agent
             .get(&format!(
                 "{}/v1/live/stream?since_hours={since_hours}",
-                self.base()
+                self.verified_base()?
             ))
             .set("Authorization", &format!("Bearer {token}"))
             .call()
@@ -311,20 +339,30 @@ impl Client {
         let live = dir.join("pending.jsonl");
         let claimed = dir.join(format!("flushing-{}.jsonl", speedrun_core::new_id()));
         let mut files = Vec::new();
-        if fs::rename(&live, &claimed).is_ok() {
-            files.push(claimed);
+        match fs::rename(&live, &claimed) {
+            Ok(()) => files.push(claimed),
+            // Nothing is pending.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => report_io_error("claim spool file", &live, &e),
         }
         // Pick up files abandoned by a process that died mid-flush.
-        if let Ok(entries) = fs::read_dir(&dir) {
-            let stale = SystemTime::now() - Duration::from_secs(120);
-            for e in entries.flatten() {
-                let p = e.path();
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-                let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < stale);
-                if name.starts_with("flushing-") && old && !files.contains(&p) {
-                    files.push(p);
+        match fs::read_dir(&dir) {
+            Ok(entries) => {
+                let stale = SystemTime::now() - Duration::from_secs(120);
+                for e in entries.flatten() {
+                    let p = e.path();
+                    let flushing = p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("flushing-"));
+                    let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < stale);
+                    if flushing && old && !files.contains(&p) {
+                        files.push(p);
+                    }
                 }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => report_io_error("list spool directory", &dir, &e),
         }
         let rejected = RejectedLog::new(dir.join("rejected.jsonl"));
         let mut delivered = 0;
@@ -395,12 +433,15 @@ impl Client {
 }
 
 fn spool(path: &str, body: &Value) {
-    let line = serde_json::to_string(&SpoolEntry {
+    let file = spool_dir().join("pending.jsonl");
+    let entry = SpoolEntry {
         path: path.to_string(),
         body: body.clone(),
-    })
-    .expect("spool entry serializes");
-    append_line(&spool_dir().join("pending.jsonl"), line.as_bytes());
+    };
+    match serde_json::to_string(&entry) {
+        Ok(line) => append_line(&file, line.as_bytes()),
+        Err(e) => report_io_error("write spool file", &file, &std::io::Error::other(e)),
+    }
 }
 
 fn append_line(file: &Path, line: &[u8]) {
@@ -509,22 +550,44 @@ fn start_daemon() -> bool {
     if std::env::var_os("SPEEDRUN_NO_AUTOSTART").is_some() {
         return false;
     }
-    let sibling = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("speedrund")))
-        .filter(|p| p.exists());
-    let exe = sibling.unwrap_or_else(|| PathBuf::from("speedrund"));
+    let exe = daemon_executable();
     let dir = paths::data_dir();
-    let _ = fs::create_dir_all(&dir);
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("speedrund.log"));
-    let mut cmd = Command::new(exe);
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).process_group(0);
-    match log {
-        Ok(f) => cmd.stderr(f),
-        Err(_) => cmd.stderr(Stdio::null()),
+    if let Err(e) = fs::create_dir_all(&dir) {
+        report_io_error("create data directory", &dir, &e);
+        return false;
+    }
+    let log_path = dir.join("speedrund.log");
+    let log = match OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(f) => Stdio::from(f),
+        Err(e) => {
+            report_io_error("open daemon log", &log_path, &e);
+            Stdio::null()
+        }
     };
-    cmd.spawn().is_ok()
+    let mut cmd = Command::new(&exe);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log)
+        .process_group(0);
+    match cmd.spawn() {
+        Ok(_) => true,
+        Err(e) => {
+            report_io_error("start", &exe, &e);
+            false
+        }
+    }
+}
+
+/// The `speedrund` installed beside this `speedrun`, else the one on `PATH`.
+fn daemon_executable() -> PathBuf {
+    match std::env::current_exe() {
+        Ok(cli) => {
+            let sibling = cli.with_file_name("speedrund");
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+        Err(e) => report_io_error("locate", Path::new("speedrun"), &e),
+    }
+    PathBuf::from("speedrund")
 }

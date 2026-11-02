@@ -227,6 +227,8 @@ struct Received {
 /// of every request it refused.
 struct RefusingDaemon {
     received: Arc<Mutex<Vec<Received>>>,
+    /// The request lines, health included, of every request that carried the token.
+    shown_token: Arc<Mutex<Vec<String>>>,
 }
 
 impl RefusingDaemon {
@@ -244,14 +246,23 @@ impl RefusingDaemon {
     fn behaving(machine: &Machine, behaviour: Behaviour) -> Self {
         let listener = TcpListener::bind(&machine.addr).unwrap();
         let received = Arc::new(Mutex::new(Vec::new()));
-        let record = Arc::clone(&received);
+        let shown_token = Arc::new(Mutex::new(Vec::new()));
+        let (record, shown) = (Arc::clone(&received), Arc::clone(&shown_token));
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let record = Arc::clone(&record);
-                std::thread::spawn(move || answer(stream, &record, behaviour));
+                let (record, shown) = (Arc::clone(&record), Arc::clone(&shown));
+                std::thread::spawn(move || answer(stream, &record, &shown, behaviour));
             }
         });
-        Self { received }
+        Self {
+            received,
+            shown_token,
+        }
+    }
+
+    /// The request lines of every request, health included, that carried the token.
+    fn shown_token(&self) -> Vec<String> {
+        self.shown_token.lock().unwrap().clone()
     }
 
     /// Every request but health, in the order they arrived.
@@ -264,14 +275,21 @@ impl RefusingDaemon {
     }
 }
 
-fn answer(stream: TcpStream, received: &Mutex<Vec<Received>>, behaviour: Behaviour) -> std::io::Result<()> {
+fn answer(
+    stream: TcpStream,
+    received: &Mutex<Vec<Received>>,
+    shown_token: &Mutex<Vec<String>>,
+    behaviour: Behaviour,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
     let (mut length, mut chunked) = (0, false);
+    let mut carries_token = request_line.contains(TOKEN);
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
+        carries_token |= line.contains(TOKEN);
         let line = line.trim_end();
         if line.is_empty() {
             break;
@@ -300,6 +318,12 @@ fn answer(stream: TcpStream, received: &Mutex<Vec<Received>>, behaviour: Behavio
     } else {
         body.resize(length, 0);
         reader.read_exact(&mut body)?;
+    }
+    if carries_token || contains(&body, TOKEN) {
+        shown_token
+            .lock()
+            .unwrap()
+            .push(request_line.trim_end().to_string());
     }
     let target = request_line
         .split_whitespace()
@@ -790,6 +814,22 @@ fn audit_p0_b_client_sends_nothing_to_a_daemon_that_cannot_prove_the_token() {
     assert!(
         !machine.spooled_containing(text).is_empty(),
         "the prompt must be spooled instead"
+    );
+}
+
+#[test]
+fn audit_p0_b_client_never_shows_the_token_to_a_daemon_that_cannot_prove_it() {
+    // V0.2 W4 (A1-1): the health probe that asks for the proof must not carry the token,
+    // or a process squatting on the port collects it from the probe.
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(false, "200 OK", Duration::ZERO));
+    machine.prompt("add a billing page with invoices");
+    machine.speedrun(&["status"], b"");
+    machine.speedrun(&["watch", "--once"], b"");
+    let shown = daemon.shown_token();
+    assert!(
+        shown.is_empty(),
+        "the token went to a daemon for another data dir in {shown:?}"
     );
 }
 
