@@ -54,7 +54,7 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W6.b | A cloned repo with `project.json` records nothing until `speedrun init --trust`; the project search stops at the git toplevel and `$HOME` | loop | | `audit_w6_b_*` |
 | W7.a | The PB shown comes from the same project | loop | | `audit_w7_a_*` |
 | W7.b | Upgrading the binary does not change a project's category version; the snapshot has `protocol` and `source` | loop | | `audit_w7_b_*` |
-| W8 | Reproducible packaging, no publish on a failing test, release attestation | leader | D1 | |
+| W8 | Reproducible packaging, no publish on a failing test, release attestation | leader | D1 | CI `package` packages twice and compares sha256; `release` builds nothing until `test` passes; `gh attestation verify` passes on the v0.2.0 archives (2026-11-02) |
 | W9.a | A log edited and re-hashed fails `speedrun verify` with a signature error | | | holds: `rewriting_and_rehashing_an_event_fails_the_signature_check` |
 | W9.c | Two device keys append to one run; key rotation keeps earlier events valid | loop | C1 | `audit_w9_c_*` |
 | W9.d | `speedrun export --tier 2` yields a re-derivable commitment and no prompt text | loop | C3 | `audit_w9_d_*` |
