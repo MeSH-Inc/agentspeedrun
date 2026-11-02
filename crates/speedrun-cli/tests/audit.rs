@@ -873,7 +873,6 @@ fn audit_m2_a_prompt_answered_with_500_is_spooled() {
 }
 
 #[test]
-#[ignore = "audit M8"]
 fn audit_m8_a_hook_sends_its_own_prompt_first_and_flushes_within_its_budget() {
     // V0.2 M8: record the fresh event first, then flush what fits in about 3 s.
     let machine = Machine::new();
@@ -921,7 +920,6 @@ fn audit_m8_a_hook_sends_its_own_prompt_first_and_flushes_within_its_budget() {
 }
 
 #[test]
-#[ignore = "audit W4"]
 fn audit_w4_doctor_reports_spooled_and_rejected_counts() {
     // V0.2 W4: `speedrun doctor` prints spool and rejected counts, daemon or not.
     let machine = Machine::new();
@@ -940,7 +938,6 @@ fn audit_w4_doctor_reports_spooled_and_rejected_counts() {
 }
 
 #[test]
-#[ignore = "audit M7.c"]
 fn audit_m7_c_a_failed_spool_write_is_counted_and_doctor_shows_it() {
     // END_STATE M7.c: spool write failures are counted and `doctor` shows them.
     use std::os::unix::fs::PermissionsExt;
@@ -955,7 +952,6 @@ fn audit_m7_c_a_failed_spool_write_is_counted_and_doctor_shows_it() {
 }
 
 #[test]
-#[ignore = "audit W4.a"]
 fn audit_w4_a_doctor_explains_a_daemon_serving_another_data_dir() {
     // V0.2 W4: a hook run with a mismatched data dir spools and `doctor` explains why.
     let machine = Machine::new();
