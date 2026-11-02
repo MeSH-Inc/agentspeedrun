@@ -72,7 +72,7 @@ fn untrusted_message(project: &Project) -> String {
 /// Run a tool against the project enclosing `dir`.
 pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
     let project = Project::require(dir)?;
-    let client = Client::new();
+    let client = Client::agent();
     match name {
         "speedrun_status" => Ok(match ops::active_run(&client, &project)? {
             Some(run) => ops::format_status(&run),
@@ -150,7 +150,7 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
             }
             .evidence(&project)?;
             let resp = ops::append_now(
-                &Client::patient(),
+                &Client::agent_patient(),
                 &project,
                 EventPayload::MilestoneReached {
                     milestone_id,

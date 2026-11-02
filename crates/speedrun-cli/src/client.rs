@@ -58,14 +58,59 @@ impl CallError {
     }
 }
 
+/// Which of the data dir's tokens a request carries. The health proof always
+/// uses the full token; this decides only the authenticated request itself,
+/// so no caller handles a token file directly.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Credential {
+    /// `$DATA_DIR/token`: the user, or a command the user ran.
+    #[default]
+    Full,
+    /// `$DATA_DIR/agent-token`: agent tools such as the MCP server.
+    Agent,
+}
+
+impl Credential {
+    fn is_full(&self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// The token this credential names. A missing file is the same
+    /// unreachable daemon state a missing full token is.
+    fn token(self) -> Result<String, CallError> {
+        let path = match self {
+            Self::Full => paths::token_path(),
+            Self::Agent => paths::agent_token_path(),
+        };
+        fs::read_to_string(&path)
+            .map(|t| t.trim().to_string())
+            .map_err(|e| {
+                let name = match self {
+                    Self::Full => "token",
+                    Self::Agent => "agent token",
+                };
+                CallError::Unreachable(format!("no {name} yet ({}): {e}", path.display()))
+            })
+    }
+}
+
+/// One spooled request. `credential` is omitted for a full-token entry, as
+/// every entry written before agent credentials have it; `"agent"` marks one
+/// written with the agent token, so `flush` replays it with that token.
 #[derive(Serialize, Deserialize)]
 struct SpoolEntry {
     path: String,
     body: Value,
+    #[serde(default, skip_serializing_if = "Credential::is_full")]
+    credential: Credential,
 }
 
 pub struct Client {
     agent: ureq::Agent,
+    /// The token this client sends on every authenticated request. Health
+    /// proofs still cover the full token.
+    credential: Credential,
     /// The base URL of the daemon that last proved this data dir's token.
     /// Requests that carry the token go only here, so a body or the token
     /// never reaches an address that was not the one probed.
@@ -187,21 +232,33 @@ const FLUSH_BUDGET: Duration = Duration::from_secs(3);
 
 impl Client {
     pub fn new() -> Self {
-        Self::with_timeout(Duration::from_secs(5))
+        Self::with_timeout(Duration::from_secs(5), Credential::Full)
     }
 
     /// For milestone claims: the daemon checks evidence before answering,
     /// which can take several network round trips.
     pub fn patient() -> Self {
-        Self::with_timeout(Duration::from_secs(120))
+        Self::with_timeout(Duration::from_secs(120), Credential::Full)
     }
 
-    fn with_timeout(timeout: Duration) -> Self {
+    /// For the MCP server and `speedrun tool`: authenticated requests carry
+    /// the agent token, while the health proof still covers the full token.
+    pub fn agent() -> Self {
+        Self::with_timeout(Duration::from_secs(5), Credential::Agent)
+    }
+
+    /// The patient agent client, for a claim whose evidence the daemon checks.
+    pub fn agent_patient() -> Self {
+        Self::with_timeout(Duration::from_secs(120), Credential::Agent)
+    }
+
+    fn with_timeout(timeout: Duration, credential: Credential) -> Self {
         Self {
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_millis(500))
                 .timeout(timeout)
                 .build(),
+            credential,
             verified: RefCell::new(None),
         }
     }
@@ -215,25 +272,20 @@ impl Client {
             .ok_or_else(|| CallError::Unreachable("no daemon has proved this data dir's token".into()))
     }
 
-    fn token() -> Result<String, CallError> {
-        fs::read_to_string(paths::token_path())
-            .map(|t| t.trim().to_string())
-            .map_err(|_| CallError::Unreachable("no token yet; has speedrund ever run?".into()))
-    }
-
-    /// Send one request, re-reading the token and retrying once on 401: a
-    /// daemon that restarted wrote a fresh token, and the first read may
-    /// predate it.
+    /// Send one request with `credential`, re-reading that token and retrying
+    /// once on 401: a daemon that restarted wrote a fresh token, and the
+    /// first read may predate it.
     fn send<T: DeserializeOwned>(
         &self,
         method: &str,
         path: &str,
         body: Option<&Value>,
         delivery: Delivery,
+        credential: Credential,
     ) -> Result<T, CallError> {
         let mut retried = false;
         loop {
-            let token = Self::token()?;
+            let token = credential.token()?;
             match self.attempt(method, path, body, delivery, &token) {
                 Err(CallError::Api { status: 401, .. }) if !retried => retried = true,
                 other => return other,
@@ -307,7 +359,7 @@ impl Client {
         let Some(proof) = health.proof.as_deref() else {
             return Err(CallError::WrongDataDir { addr: addr.clone() });
         };
-        let expected = speedrun_core::digest::token_proof(&Self::token()?, &nonce);
+        let expected = speedrun_core::digest::token_proof(&Credential::Full.token()?, &nonce);
         if proof == expected.as_str() {
             *self.verified.borrow_mut() = Some(base);
             Ok(health)
@@ -326,12 +378,12 @@ impl Client {
 
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
         self.ready()?;
-        self.send("GET", path, None, Delivery::Fresh)
+        self.send("GET", path, None, Delivery::Fresh, self.credential)
     }
 
     pub fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T, CallError> {
         self.ready()?;
-        self.send("POST", path, Some(body), Delivery::Fresh)
+        self.send("POST", path, Some(body), Delivery::Fresh, self.credential)
     }
 
     /// POST that must not be lost. The fresh event goes out before the spool:
@@ -344,9 +396,10 @@ impl Client {
         path: &str,
         body: &Value,
     ) -> Result<Option<T>, CallError> {
+        let credential = self.credential;
         let outcome = match self.ready() {
             Ok(()) => {
-                let outcome = self.send("POST", path, Some(body), Delivery::Fresh);
+                let outcome = self.send("POST", path, Some(body), Delivery::Fresh, credential);
                 // The fresh write has been attempted; only now touch the backlog.
                 self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
                 outcome
@@ -354,7 +407,7 @@ impl Client {
             // Unproven daemon: keep the event; a later invocation that can
             // prove the token will deliver it with the backlog.
             Err(e) if e.should_spool() => {
-                spool(path, body);
+                spool(path, body, credential);
                 return Ok(None);
             }
             Err(e) => return Err(e),
@@ -362,7 +415,7 @@ impl Client {
         match outcome {
             Ok(value) => Ok(Some(value)),
             Err(e) if e.should_spool() => {
-                spool(path, body);
+                spool(path, body, credential);
                 Ok(None)
             }
             Err(e) => Err(e),
@@ -379,7 +432,7 @@ impl Client {
     /// than treated as a stopped daemon.
     pub(crate) fn shutdown(&self) -> Result<(), CallError> {
         let base = self.verified_base()?;
-        let token = Self::token()?;
+        let token = Credential::Full.token()?;
         let res = self
             .agent
             .request("POST", &format!("{base}/v1/shutdown"))
@@ -560,6 +613,7 @@ impl Client {
                     &entry.path,
                     Some(&entry.body),
                     Delivery::Replay { deadline },
+                    entry.credential,
                 ) {
                     Ok(_) => delivered += 1,
                     Err(e) => {
@@ -596,11 +650,12 @@ impl Client {
     }
 }
 
-fn spool(path: &str, body: &Value) {
+fn spool(path: &str, body: &Value, credential: Credential) {
     let file = spool_dir().join("pending.jsonl");
     let entry = SpoolEntry {
         path: path.to_string(),
         body: body.clone(),
+        credential,
     };
     match serde_json::to_string(&entry) {
         Ok(line) => append_line(&file, line.as_bytes()),

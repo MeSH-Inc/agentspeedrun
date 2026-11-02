@@ -135,6 +135,10 @@ enum Cmd {
         #[arg(long)]
         reason: String,
     },
+    /// Confirm an agent's claim on a milestone, so it counts.
+    Confirm {
+        milestone: String,
+    },
     Pause {
         #[arg(long)]
         reason: Option<String>,
@@ -479,6 +483,9 @@ fn run(cmd: Cmd) -> Result<()> {
         })?,
         Cmd::Invalidate { milestone, reason } => milestone_event(&c, &cwd, &milestone, |milestone_id| {
             EventPayload::MilestoneInvalidated { milestone_id, reason }
+        })?,
+        Cmd::Confirm { milestone } => milestone_event(&c, &cwd, &milestone, |milestone_id| {
+            EventPayload::MilestoneConfirmed { milestone_id }
         })?,
         Cmd::Pause { reason } => {
             ops::append_now(&c, &Project::require(&cwd)?, EventPayload::RunPaused { reason })?;
