@@ -386,7 +386,12 @@ impl RejectedLog {
         let keep = REJECTED_MAX_BYTES / 2;
         let mut total = 0u64;
         let mut kept: Vec<&[u8]> = Vec::new();
-        for line in text.strip_suffix(b"\n").unwrap_or(&text).split(|&b| b == b'\n').rev() {
+        for line in text
+            .strip_suffix(b"\n")
+            .unwrap_or(&text)
+            .split(|&b| b == b'\n')
+            .rev()
+        {
             let len = line.len() as u64 + 1;
             if !kept.is_empty() && total.saturating_add(len) > keep {
                 break;
