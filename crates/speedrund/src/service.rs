@@ -122,6 +122,72 @@ fn proposal_event<'a>(events: &'a [Event], milestone_id: &str) -> Option<&'a Eve
     })
 }
 
+/// Point a milestone event at the id the run already stores for the milestone
+/// it names. A client may give a predefined milestone's category key; the
+/// namespaced id is `start_run`'s rule, so it is looked up through the folded
+/// run rather than rebuilt here. An unknown name is left for `check` to reject.
+fn resolve_milestone_id(run: &RunView, payload: EventPayload) -> EventPayload {
+    let id = match &payload {
+        EventPayload::MilestoneProposed { milestone_id, .. }
+        | EventPayload::MilestoneAccepted { milestone_id, .. }
+        | EventPayload::MilestoneRejected { milestone_id, .. }
+        | EventPayload::MilestoneReached { milestone_id, .. }
+        | EventPayload::MilestoneVerified { milestone_id, .. }
+        | EventPayload::MilestoneInvalidated { milestone_id, .. } => milestone_id.clone(),
+        _ => return payload,
+    };
+    let resolved = match run.milestone(&id) {
+        Some(m) => m.milestone_id.clone(),
+        None => return payload,
+    };
+    match payload {
+        EventPayload::MilestoneProposed {
+            origin,
+            key,
+            title,
+            description,
+            required_trust,
+            ..
+        } => EventPayload::MilestoneProposed {
+            milestone_id: resolved,
+            origin,
+            key,
+            title,
+            description,
+            required_trust,
+        },
+        EventPayload::MilestoneAccepted { required_trust, .. } => EventPayload::MilestoneAccepted {
+            milestone_id: resolved,
+            required_trust,
+        },
+        EventPayload::MilestoneRejected { reason, .. } => EventPayload::MilestoneRejected {
+            milestone_id: resolved,
+            reason,
+        },
+        EventPayload::MilestoneReached { trust, evidence, .. } => EventPayload::MilestoneReached {
+            milestone_id: resolved,
+            trust,
+            evidence,
+        },
+        EventPayload::MilestoneVerified {
+            trust,
+            verifier,
+            evidence,
+            ..
+        } => EventPayload::MilestoneVerified {
+            milestone_id: resolved,
+            trust,
+            verifier,
+            evidence,
+        },
+        EventPayload::MilestoneInvalidated { reason, .. } => EventPayload::MilestoneInvalidated {
+            milestone_id: resolved,
+            reason,
+        },
+        other => other,
+    }
+}
+
 impl Service {
     pub fn new(store: Store, categories: Vec<Category>) -> Self {
         Self {
@@ -255,8 +321,20 @@ impl Service {
         }
 
         let (event, inserted) = self.store.transaction(|tx| {
+            let events = tx.reader().run_events(&req.run_id)?;
+            let run = RunView::fold(&events, Utc::now());
+            // A client may name a predefined milestone by its category key. The
+            // namespaced id is `start_run`'s rule; resolving through the folded
+            // run keeps this path from knowing it, and makes a bare-key retry
+            // compare equal to the namespaced event already stored.
+            let payload = match &run {
+                Some(run) => resolve_milestone_id(run, req.payload.clone()),
+                None => req.payload.clone(),
+            };
             if let Some(existing) = tx.reader().event(&req.event_id)? {
-                if existing.run_id != req.run_id || existing.payload != req.payload {
+                let same = existing.run_id == req.run_id
+                    && (existing.payload == payload || existing.payload == req.payload);
+                if !same {
                     return Err(Error::Conflict(format!(
                         "event_id {} already used for a different event",
                         req.event_id
@@ -264,8 +342,7 @@ impl Service {
                 }
                 return Ok((existing, false));
             }
-            let events = tx.reader().run_events(&req.run_id)?;
-            if let EventPayload::MilestoneProposed { milestone_id, .. } = &req.payload
+            if let EventPayload::MilestoneProposed { milestone_id, .. } = &payload
                 && let Some(existing) = proposal_event(&events, milestone_id)
             {
                 // A retained proposal is a retry, not a conflict: it may have
@@ -273,11 +350,10 @@ impl Service {
                 // must deliver it as a no-op instead of rejecting it.
                 return Ok((existing.clone(), false));
             }
-            let run = RunView::fold(&events, Utc::now())
-                .ok_or_else(|| Error::NotFound(format!("run {}", req.run_id)))?;
-            run.check(&req.payload).map_err(Error::Conflict)?;
+            let run = run.ok_or_else(|| Error::NotFound(format!("run {}", req.run_id)))?;
+            run.check(&payload).map_err(Error::Conflict)?;
             let at = CLOCK.clamp(req.occurred_at, Utc::now());
-            let e = tx.insert(&req.run_id, &req.event_id, at, req.payload.clone())?;
+            let e = tx.insert(&req.run_id, &req.event_id, at, payload)?;
             Ok((e, true))
         })?;
 
@@ -476,7 +552,9 @@ impl Service {
             if tx.reader().event(event_id)?.is_some() {
                 return Ok(None);
             }
-            if fold(tx, run_id)?.check(&payload).is_err() {
+            let run = fold(tx, run_id)?;
+            let payload = resolve_milestone_id(&run, payload);
+            if run.check(&payload).is_err() {
                 return Ok(None);
             }
             Ok(Some(tx.insert(run_id, event_id, at, payload)?))
@@ -629,12 +707,16 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
         },
     )?;
     for m in &cat.milestones {
+        // A predefined milestone's log id names the ruleset it came from, so a
+        // later category edit (or a key shared with another category) cannot
+        // silently change what this run's milestones mean.
+        let milestone_id = format!("{}@{}/{}", cat.id, cat.version, m.key);
         tx.insert(
             &run_id,
             &format!("{base}:m:{}", m.key),
             at,
             EventPayload::MilestoneProposed {
-                milestone_id: m.key.clone(),
+                milestone_id: milestone_id.clone(),
                 origin: MilestoneOrigin::Predefined,
                 key: Some(m.key.clone()),
                 title: m.title.clone(),
@@ -647,7 +729,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
             &format!("{base}:m:{}:accept", m.key),
             at,
             EventPayload::MilestoneAccepted {
-                milestone_id: m.key.clone(),
+                milestone_id,
                 required_trust: None,
             },
         )?;
