@@ -358,7 +358,6 @@ fn stored_chain(extra: serde_json::Value) -> Vec<serde_json::Value> {
 }
 
 #[test]
-#[ignore = "audit A2-5"]
 fn audit_w1_a_stored_hash_keeps_fields_this_build_does_not_know() {
     let body = &stored_chain(serde_json::json!({ "future_field": "x" }))[1];
     assert_eq!(
@@ -368,14 +367,12 @@ fn audit_w1_a_stored_hash_keeps_fields_this_build_does_not_know() {
 }
 
 #[test]
-#[ignore = "audit A2-5"]
 fn audit_w1_a_stored_chain_with_an_unknown_optional_field_verifies() {
     let bodies = stored_chain(serde_json::json!({ "future_field": "x", "future_list": [1, 2] }));
     assert_eq!(speedrun_core::hash::verify_stored_chain(&bodies), Ok(()));
 }
 
 #[test]
-#[ignore = "audit A2-5"]
 fn audit_w1_a_editing_an_unknown_field_is_detected() {
     let mut bodies = stored_chain(serde_json::json!({ "future_field": "x" }));
     bodies[1]["payload"]["future_field"] = serde_json::json!("y");
@@ -386,7 +383,6 @@ fn audit_w1_a_editing_an_unknown_field_is_detected() {
 }
 
 #[test]
-#[ignore = "audit A2-5"]
 fn audit_w1_a_stored_chain_detects_gaps_and_broken_links() {
     let mut gap = stored_chain(serde_json::json!({}));
     gap.remove(1);
@@ -438,7 +434,6 @@ fn device_key() -> ed25519_dalek::SigningKey {
 }
 
 #[test]
-#[ignore = "audit D4"]
 fn audit_w1_e_run_without_a_device_key_fails_the_signature_check() {
     // log() writes a RunStarted with no device_pubkey and no signatures: a v1 log.
     let check = speedrun_core::sign::verify_event_signatures(&log(vec![ended(1)]));
@@ -446,7 +441,6 @@ fn audit_w1_e_run_without_a_device_key_fails_the_signature_check() {
 }
 
 #[test]
-#[ignore = "audit D4"]
 fn audit_w1_e_one_unsigned_event_in_a_signed_run_fails_the_signature_check() {
     let mut events = signed_log(&device_key());
     events[2].sig = None;

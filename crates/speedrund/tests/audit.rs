@@ -490,7 +490,6 @@ fn insert_event_from_a_newer_build(home: &Path, run_id: &str) {
 }
 
 #[test]
-#[ignore = "audit A2-5"]
 fn audit_w1_a_event_with_an_unknown_optional_field_verifies() {
     let d = Daemon::start();
     let run = d.prompt("p1", "proj");
@@ -539,7 +538,6 @@ fn guard_w1_a_edited_event_still_fails_verification() {
 // --- W1.c, A5-4: a binary never runs against a database written by a newer one ----------
 
 #[test]
-#[ignore = "audit A5-4"]
 fn audit_w1_c_database_with_a_newer_schema_stops_the_daemon_with_a_clear_line() {
     let home = tempfile::tempdir().unwrap();
     let output = tempfile::tempdir().unwrap();
@@ -640,7 +638,6 @@ fn run_with_a_recent_event(d: &Daemon) -> String {
 }
 
 #[test]
-#[ignore = "audit A2-6"]
 fn audit_w2_d_marked_replay_older_than_the_last_event_is_accepted() {
     let d = Daemon::start();
     let _run = run_with_a_recent_event(&d);
@@ -683,7 +680,6 @@ fn guard_w2_d_replay_from_before_the_run_started_is_refused() {
 }
 
 #[test]
-#[ignore = "audit A2-6"]
 fn audit_w2_d_prompt_older_than_the_last_event_is_refused() {
     let d = Daemon::start();
     let _run = run_with_a_recent_event(&d);

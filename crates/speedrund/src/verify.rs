@@ -1623,7 +1623,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-2"]
     fn audit_w2_a_invoice_paid_out_of_band_does_not_verify() {
         let (_d, root, _) = repo();
         let v = verifier(stripe_fake().with(
@@ -1639,7 +1638,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-2"]
     fn audit_w2_a_invoice_with_no_charge_fails_closed() {
         let (_d, root, _) = repo();
         let v = verifier(stripe_fake().with(
@@ -1652,7 +1650,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-2"]
     fn audit_w2_a_invoice_resolves_its_charge_through_its_payments() {
         // Current Stripe API versions list an invoice's payments instead of a `charge` field.
         let (_d, root, _) = repo();
@@ -1696,7 +1693,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-2"]
     fn audit_w2_a_checkout_session_without_a_payment_fails_closed() {
         let (_d, root, _) = repo();
         let v = verifier(
@@ -1735,7 +1731,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-2"]
     fn audit_w2_a_stripe_requests_pin_the_api_version() {
         let (_d, root, _) = repo();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1760,7 +1755,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-3"]
     fn audit_w2_a_founder_paying_under_a_plus_alias_is_a_committer() {
         let (_d, root, _) = repo();
         let v = verifier(Fake::default().with(
@@ -1776,7 +1770,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-3"]
     fn audit_w2_a_charge_without_a_customer_email_does_not_verify() {
         let (_d, root, _) = repo();
         let v = verifier(Fake::default().with(
@@ -1792,7 +1785,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-3"]
     fn audit_w2_a_mostly_refunded_charge_counts_as_refunded() {
         let (_d, root, _) = repo();
         let v = verifier(
@@ -1829,7 +1821,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-4"]
     fn audit_w2_a_footer_links_do_not_make_legal_pages() {
         let marketing = format!(
             "<h1>Buy our widget</h1><p>{}</p><footer><a href=/terms>Terms of Service</a> \
@@ -1850,7 +1841,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-4"]
     fn audit_w2_a_nav_links_do_not_make_a_privacy_policy() {
         let home = format!(
             "<nav><a href=/privacy>Privacy Policy</a></nav><h1>Acme</h1><p>{}</p>",
@@ -1870,7 +1860,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-4"]
     fn audit_w2_a_one_url_cannot_be_both_legal_pages() {
         let both = format!(
             "{}{}",
@@ -1883,7 +1872,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-4"]
     fn audit_w2_a_legal_pages_on_another_domain_do_not_verify() {
         let v = verifier(
             Fake::default()
@@ -1910,7 +1898,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit A3-4"]
     fn audit_w2_a_legal_pages_need_a_verified_deployment() {
         let v = verifier(
             Fake::default()

@@ -454,7 +454,6 @@ fn post(machine: &Machine, path: &str, body: &serde_json::Value) -> (u16, serde_
 }
 
 #[test]
-#[ignore = "audit A2-6"]
 fn audit_w2_d_spooled_event_older_than_the_runs_last_event_is_delivered_by_flush() {
     let machine = Machine::new();
     let _daemon = Daemon::start(&machine);
