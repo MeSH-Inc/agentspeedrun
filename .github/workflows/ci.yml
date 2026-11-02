@@ -20,6 +20,8 @@ jobs:
   adapters:
     runs-on: ubuntu-latest
     strategy:
+      # Each adapter's failure is its own; one must not cancel the other.
+      fail-fast: false
       matrix:
         adapter: [opencode, pi]
     steps:
