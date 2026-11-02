@@ -42,5 +42,11 @@ pub fn daemon_addr() -> String {
     std::env::var("SPEEDRUN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string())
 }
 
+/// Where the daemon records the `host:port` it bound, mode 0600. Naming the
+/// file is core's job; reading it is the client's.
+pub fn addr_path() -> PathBuf {
+    data_dir().join("addr")
+}
+
 /// Per-project config, committed alongside the code.
 pub const PROJECT_FILE: &str = ".speedrun/project.json";

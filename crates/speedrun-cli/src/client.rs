@@ -12,7 +12,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use speedrun_core::{api::ErrorBody, live::LiveSnapshot, paths};
+use speedrun_core::{
+    api::{ErrorBody, HealthResponse},
+    live::LiveSnapshot,
+    paths,
+};
 
 #[derive(Debug)]
 pub enum CallError {
@@ -33,6 +37,20 @@ impl std::fmt::Display for CallError {
 
 impl std::error::Error for CallError {}
 
+impl CallError {
+    /// Whether this failure is worth keeping in the spool: the daemon is
+    /// unreachable (a timeout, no listener, or no proof it holds this data
+    /// dir's token), refused the token even after the client re-read it
+    /// (401), or failed on its own side (5xx). Any other 4xx is the client's
+    /// mistake and is reported as it always was.
+    fn should_spool(&self) -> bool {
+        match self {
+            Self::Unreachable(_) => true,
+            Self::Api { status, .. } => *status == 401 || *status >= 500,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct SpoolEntry {
     path: String,
@@ -40,12 +58,33 @@ struct SpoolEntry {
 }
 
 pub struct Client {
-    base: String,
     agent: ureq::Agent,
 }
 
 fn spool_dir() -> PathBuf {
     paths::data_dir().join("spool")
+}
+
+/// Where the daemon listens: `SPEEDRUN_ADDR`, else `$DATA_DIR/addr`, else
+/// `paths::DEFAULT_ADDR`. Naming the addr file is core's business; reading
+/// it is this client's, so core stays free of I/O.
+fn resolve_addr() -> String {
+    if let Some(addr) = std::env::var_os("SPEEDRUN_ADDR") {
+        return addr.to_string_lossy().into_owned();
+    }
+    let file = paths::addr_path();
+    match fs::read_to_string(&file) {
+        Ok(addr) => {
+            let addr = addr.trim();
+            if !addr.is_empty() {
+                return addr.to_string();
+            }
+        }
+        // No daemon has written one yet: fall back to the fixed address.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => report_io_error("read daemon address", &file, &e),
+    }
+    paths::DEFAULT_ADDR.to_string()
 }
 
 /// Header the daemon reads to exempt a spooled write from its last-event
@@ -65,12 +104,17 @@ impl Client {
 
     fn with_timeout(timeout: Duration) -> Self {
         Self {
-            base: format!("http://{}", paths::daemon_addr()),
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_millis(500))
                 .timeout(timeout)
                 .build(),
         }
+    }
+
+    /// Where the daemon listens. Resolved per request, so a daemon that
+    /// starts or rewrites `$DATA_DIR/addr` is found without a restart.
+    fn base(&self) -> String {
+        format!("http://{}", resolve_addr())
     }
 
     fn token() -> Result<String, CallError> {
@@ -79,6 +123,9 @@ impl Client {
             .map_err(|_| CallError::Unreachable("no token yet; has speedrund ever run?".into()))
     }
 
+    /// Send one request, re-reading the token and retrying once on 401: a
+    /// daemon that restarted wrote a fresh token, and the first read may
+    /// predate it.
     fn send<T: DeserializeOwned>(
         &self,
         method: &str,
@@ -86,10 +133,28 @@ impl Client {
         body: Option<&Value>,
         from_spool: bool,
     ) -> Result<T, CallError> {
+        let mut retried = false;
+        loop {
+            let token = Self::token()?;
+            match self.attempt(method, path, body, from_spool, &token) {
+                Err(CallError::Api { status: 401, .. }) if !retried => retried = true,
+                other => return other,
+            }
+        }
+    }
+
+    fn attempt<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        from_spool: bool,
+        token: &str,
+    ) -> Result<T, CallError> {
         let mut req = self
             .agent
-            .request(method, &format!("{}{path}", self.base))
-            .set("Authorization", &format!("Bearer {}", Self::token()?));
+            .request(method, &format!("{}{path}", self.base()))
+            .set("Authorization", &format!("Bearer {token}"));
         if from_spool {
             req = req.set(REPLAY_HEADER, "1");
         }
@@ -113,10 +178,29 @@ impl Client {
         }
     }
 
+    /// Prove the daemon holds this data dir's token before a body is sent: a
+    /// fresh nonce, then `digest::token_proof(token, nonce)` back from
+    /// `/v1/health`. A missing or wrong proof is a daemon for another data
+    /// directory, so callers spool and send nothing.
+    fn verify_health(&self) -> Result<(), CallError> {
+        let nonce = speedrun_core::hash::sha256_hex(speedrun_core::new_id().as_bytes());
+        let health: HealthResponse = self.send("GET", &format!("/v1/health?nonce={nonce}"), None, false)?;
+        let Some(proof) = health.proof else {
+            return Err(CallError::Unreachable("daemon did not prove the token".into()));
+        };
+        if proof == speedrun_core::digest::token_proof(&Self::token()?, &nonce) {
+            Ok(())
+        } else {
+            Err(CallError::Unreachable(
+                "daemon answers for another data directory".into(),
+            ))
+        }
+    }
+
     /// Make sure the daemon is up (starting it if needed), then deliver any
     /// spooled events first so they keep their order relative to new ones.
     pub fn ready(&self) -> Result<(), CallError> {
-        self.with_autostart(|| self.send::<Value>("GET", "/v1/health", None, false))?;
+        self.with_autostart(|| self.verify_health())?;
         self.flush_spool();
         Ok(())
     }
@@ -140,7 +224,7 @@ impl Client {
     ) -> Result<Option<T>, CallError> {
         match self.post(path, body) {
             Ok(v) => Ok(Some(v)),
-            Err(CallError::Unreachable(_)) => {
+            Err(e) if e.should_spool() => {
                 spool(path, body);
                 Ok(None)
             }
@@ -148,8 +232,8 @@ impl Client {
         }
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base
+    pub fn base_url(&self) -> String {
+        self.base()
     }
 
     /// Follow the live stream with the read-only display token, calling
@@ -167,7 +251,10 @@ impl Client {
             .timeout_connect(Duration::from_millis(500))
             .build();
         let resp = agent
-            .get(&format!("{}/v1/live/stream?since_hours={since_hours}", self.base))
+            .get(&format!(
+                "{}/v1/live/stream?since_hours={since_hours}",
+                self.base()
+            ))
             .set("Authorization", &format!("Bearer {token}"))
             .call()
             .map_err(|e| match e {
@@ -276,22 +363,27 @@ impl Client {
                 };
                 match self.send::<Value>("POST", &entry.path, Some(&entry.body), true) {
                     Ok(_) => delivered += 1,
-                    Err(CallError::Unreachable(_)) => {
-                        append_line(&live, &bytes);
-                        for rest in lines.by_ref() {
-                            match rest {
-                                Ok(rest) => append_line(&live, &rest),
-                                Err(e) => {
-                                    report_io_error("read spool file", &file, &e);
-                                    keep_file = true;
-                                    break;
+                    Err(e) => {
+                        if e.should_spool() {
+                            // Still ours to deliver: put it back and break so a later
+                            // flush reaches it. Already-delivered entries are not
+                            // doubled, because every one carries an event_id.
+                            append_line(&live, &bytes);
+                            for rest in lines.by_ref() {
+                                match rest {
+                                    Ok(rest) => append_line(&live, &rest),
+                                    Err(e) => {
+                                        report_io_error("read spool file", &file, &e);
+                                        keep_file = true;
+                                        break;
+                                    }
                                 }
                             }
+                            break;
                         }
-                        break;
+                        // The daemon refused it; keep it for inspection rather than retrying forever.
+                        rejected.append(&bytes);
                     }
-                    // The daemon refused it; keep it for inspection rather than retrying forever.
-                    Err(CallError::Api { .. }) => rejected.append(&bytes),
                 }
             }
             if !keep_file && let Err(e) = fs::remove_file(&file) {
