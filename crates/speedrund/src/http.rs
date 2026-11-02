@@ -36,6 +36,8 @@ pub struct AppState {
     pub verifier: Arc<Verifier>,
     /// Bumped after every successful write; live streams wake on it.
     pub changes: Arc<watch::Sender<u64>>,
+    /// Changes when the daemon starts shutting down; live streams end on it.
+    pub shutdown: watch::Receiver<bool>,
 }
 
 /// Live streams resend a snapshot at least this often, so displays
@@ -333,6 +335,19 @@ async fn live(State(s): State<AppState>, Query(q): Query<LiveQuery>) -> impl Int
     call(&s, move |svc| svc.live(window)).await
 }
 
+/// Resolve when the daemon starts shutting down. A live stream ends on it, so
+/// an open display cannot outlast the shutdown deadline.
+async fn shutdown_started(shutdown: &mut watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow_and_update() {
+            return;
+        }
+        if shutdown.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Server-sent events. Every message is a complete `LiveSnapshot` (event
 /// name `snapshot`, id = cursor): clients replace their state, so there is
 /// nothing to merge and reconnecting needs no resume logic.
@@ -344,9 +359,11 @@ async fn live_stream(
     let rx = s.changes.subscribe();
     let stream = futures_util::stream::unfold((s, rx, true), move |(s, mut rx, first)| async move {
         if !first {
-            // Wake on a write or the periodic refresh, whichever comes first.
+            // Wake on a write, the periodic refresh, or shutdown, whichever comes first.
+            let mut shutdown = s.shutdown.clone();
             tokio::select! {
                 changed = rx.changed() => if changed.is_err() { return None },
+                () = shutdown_started(&mut shutdown) => return None,
                 _ = tokio::time::sleep(LIVE_REFRESH) => {}
             }
         }

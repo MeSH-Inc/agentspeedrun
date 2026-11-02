@@ -8,6 +8,7 @@ mod http;
 mod keys;
 mod logging;
 mod service;
+mod shutdown;
 mod store;
 mod verify;
 
@@ -44,6 +45,9 @@ fn ensure_token(path: &Path) -> Result<String> {
 #[tokio::main]
 async fn main() -> Result<()> {
     logging::init();
+    // Install the stop signal before any startup side effect, so a failure here
+    // leaves the data directory untouched.
+    let shutdown = shutdown::Shutdown::install()?;
 
     let dir = paths::data_dir();
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -79,17 +83,10 @@ async fn main() -> Result<()> {
             display_token: Arc::new(display_token),
             verifier: Arc::new(verify::Verifier::default()),
             changes: Arc::new(tokio::sync::watch::channel(0).0),
+            shutdown: shutdown.watch(),
         },
         &cors_origins,
     );
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let ctrl_c = tokio::signal::ctrl_c();
-            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("install SIGTERM handler");
-            tokio::select! { _ = ctrl_c => {}, _ = term.recv() => {} }
-            tracing::info!("shutting down");
-        })
-        .await?;
-    Ok(())
+    let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown.clone().wait());
+    shutdown.run(serve).await
 }
