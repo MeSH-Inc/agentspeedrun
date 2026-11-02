@@ -1532,3 +1532,129 @@ fn guard_w4_b_health_names_the_daemons_pid() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["pid"], json!(d.child.id()), "{body}");
 }
+
+// --- Wave 4 (P1): the daemon's side of publication. The contract is COMMONS.md §19. ------
+
+fn finish(d: &Daemon, run: &str) {
+    let (status, body) = d.post(
+        "/v1/events",
+        &event(
+            run,
+            "finish",
+            json!({"type": "run_finished", "outcome": "abandoned", "reason": null}),
+        ),
+    );
+    assert_eq!(status, 200, "finishing {run}: {body}");
+}
+
+fn bundle_of(d: &Daemon, run: &str, tier: u8, bearer: &str) -> (u16, Value) {
+    d.get(&format!("/v1/runs/{run}/bundle?tier={tier}"), Some(bearer))
+}
+
+#[test]
+#[ignore = "audit P1.e: no local path in the log"]
+fn audit_p1_e_new_runs_keep_the_project_root_out_of_the_log() {
+    let d = Daemon::start();
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("recipe-box");
+    fs::create_dir_all(&project).unwrap();
+    let (status, body) = d.post(
+        "/v1/prompts",
+        &json!({
+            "event_id": "p1", "project_id": "proj", "project_root": project.to_string_lossy(),
+            "category_id": "any-percent", "session_id": "s1", "host": "test", "model": null,
+            "content": "build it", "occurred_at": null,
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let run = body["run_id"].as_str().unwrap().to_string();
+    let started = payloads_of(&run_events(&d, &run), "run_started");
+    assert_eq!(started.len(), 1);
+    assert!(
+        started[0].get("project_root").is_none(),
+        "the log holds a local path: {}",
+        started[0]
+    );
+    // The daemon still knows the root: the live display names the project by it.
+    let (_, snapshot) = d.get("/v1/live", Some(&d.display_token));
+    let listed = snapshot["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["run_id"] == run.as_str())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(listed["project_name"], "recipe-box", "{snapshot}");
+}
+
+#[test]
+#[ignore = "audit P1.e: the daemon bundles a finished run"]
+fn audit_p1_e_the_daemon_bundles_a_finished_run() {
+    use speedrun_core::bundle::{self, Bundle};
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    finish(&d, &run);
+    let events = run_events(&d, &run);
+    let started = &payloads_of(&events, "run_started")[0];
+    let device_key = started["device_pubkey"].as_str().unwrap().to_string();
+    let prompt_id = events
+        .iter()
+        .find(|e| e["payload"]["type"] == "prompt_submitted")
+        .map(|e| e["event_id"].clone())
+        .unwrap();
+
+    let read = |tier: u8| -> Bundle {
+        let (status, body) = bundle_of(&d, &run, tier, &d.token);
+        assert_eq!(status, 200, "tier {tier}: {body}");
+        let bundle: Bundle = serde_json::from_value(body).unwrap();
+        assert_eq!((bundle.format, bundle.tier), (bundle::BUNDLE_FORMAT, tier));
+        assert_eq!(bundle.run_id, run);
+        assert_eq!(bundle.publisher_pubkey, device_key);
+        assert!(
+            speedrun_core::sign::verify_hash(
+                &device_key,
+                &bundle::digest(&bundle).unwrap(),
+                &bundle.signature
+            ),
+            "tier {tier} bundle signature"
+        );
+        bundle
+    };
+
+    let tier_2 = read(2);
+    assert_eq!(
+        tier_2.events, events,
+        "the bundle carries the stored log verbatim"
+    );
+    assert!(tier_2.chain_heads.is_empty());
+    assert_eq!(tier_2.prompts.len(), 1);
+    assert_eq!(json!(tier_2.prompts[0].event_id), prompt_id);
+
+    let tier_1 = read(1);
+    assert_eq!(tier_1.events, events);
+    assert!(tier_1.prompts.is_empty());
+
+    let tier_0 = read(0);
+    assert!(tier_0.events.is_empty() && tier_0.prompts.is_empty());
+    let last = events.last().unwrap();
+    assert_eq!(tier_0.chain_heads.len(), 1);
+    assert_eq!(json!(tier_0.chain_heads[0].device_id), last["device_id"]);
+    assert_eq!(json!(tier_0.chain_heads[0].seq), last["seq"]);
+    assert_eq!(json!(tier_0.chain_heads[0].hash), last["hash"]);
+}
+
+#[test]
+#[ignore = "audit P1.e: the daemon bundles a finished run"]
+fn audit_p1_e_only_a_finished_run_is_bundled_and_only_for_the_full_token() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    let (unfinished, body) = bundle_of(&d, &run, 1, &d.token);
+    assert_eq!(unfinished, 409, "{body}");
+    finish(&d, &run);
+    let (tier_3, body) = bundle_of(&d, &run, 3, &d.token);
+    assert_eq!(tier_3, 400, "{body}");
+    let (as_agent, _) = bundle_of(&d, &run, 1, &d.agent_token());
+    let (as_display, _) = bundle_of(&d, &run, 1, &d.display_token);
+    assert_eq!((as_agent, as_display), (401, 401));
+    assert_eq!(bundle_of(&d, &run, 1, &d.token).0, 200);
+}

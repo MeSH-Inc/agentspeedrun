@@ -145,7 +145,8 @@ impl Machine {
             .env("SPEEDRUN_HOME", self.data_dir())
             .env("SPEEDRUN_NO_AUTOSTART", "1")
             .env("HOME", self.root.path())
-            .env_remove("XDG_DATA_HOME");
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("SPEEDRUN_COMMONS_URL");
         if addr {
             command.env("SPEEDRUN_ADDR", &self.addr);
         } else {
@@ -1354,4 +1355,123 @@ fn audit_w4_b_daemon_stop_returns_after_the_daemon_has_exited() {
     );
     let after = machine.speedrun(&["daemon", "status"], b"");
     assert_eq!(after.status.code(), Some(1), "{}", text_of(&after));
+}
+
+// --- Wave 4 (P1): publishing. The contract is COMMONS.md §19. ----------------------------
+
+/// The commons server, built beside the `speedrun` binary, on a free loopback port with its
+/// own data directory. Killed when dropped.
+struct CommonsServer {
+    child: std::process::Child,
+    base: String,
+    _home: tempfile::TempDir,
+}
+
+impl CommonsServer {
+    fn start() -> Self {
+        let exe = Path::new(env!("CARGO_BIN_EXE_speedrun")).with_file_name("speedrun-commons");
+        assert!(
+            exe.exists(),
+            "{} is missing; run `cargo build -p speedrun-commons`",
+            exe.display()
+        );
+        let home = tempfile::tempdir().unwrap();
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+        let child = Command::new(exe)
+            .env("SPEEDRUN_COMMONS_HOME", home.path().join("data"))
+            .env("SPEEDRUN_COMMONS_ADDR", &addr)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let server = Self {
+            child,
+            base: format!("http://{addr}"),
+            _home: home,
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while ureq::get(&format!("{}/v1/health", server.base)).call().is_err() {
+            assert!(Instant::now() < deadline, "speedrun-commons did not answer");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        server
+    }
+}
+
+impl Drop for CommonsServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+#[ignore = "audit P1.d: speedrun publish"]
+fn audit_p1_d_deleting_the_local_data_after_publish_loses_nothing_public() {
+    let commons = CommonsServer::start();
+    let machine = Machine::new();
+    let daemon = Daemon::start(&machine);
+    assert!(machine.prompt("build a recipe box").status.success());
+    let run = machine.active_run()["run_id"].as_str().unwrap().to_string();
+    let reset = machine.speedrun(&["reset", "--yes"], b"");
+    assert!(reset.status.success(), "{}", text_of(&reset));
+
+    let out = machine.speedrun(
+        &["publish", "--tier", "2", "--run", &run, "--to", &commons.base],
+        b"",
+    );
+    assert!(out.status.success(), "{}", text_of(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let digest = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("published "))
+        .unwrap_or_else(|| panic!("no `published <digest>` line: {stdout}"))
+        .trim()
+        .to_string();
+    assert!(
+        digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{stdout}"
+    );
+    assert!(has_line(&stdout, "leaf 0 of 1"), "{stdout}");
+
+    drop(daemon);
+    std::fs::remove_dir_all(machine.data_dir()).unwrap();
+
+    let published: serde_json::Value = ureq::get(&format!("{}/v1/runs/{run}", commons.base))
+        .call()
+        .expect("the commons still has the run")
+        .into_json()
+        .unwrap();
+    assert_eq!(published["bundle_digest"], digest.as_str());
+    assert_eq!(published["tier"], 2);
+    assert_eq!(published["view"]["run_id"], run.as_str());
+    assert_eq!(published["view"]["prompt_count"], 1);
+    assert_eq!(published["bundle"]["prompts"].as_array().map(Vec::len), Some(1));
+    assert!(
+        !published.to_string().contains("recipe box"),
+        "prompt text reached the commons"
+    );
+}
+
+#[test]
+#[ignore = "audit P1.d: speedrun publish"]
+fn audit_p1_d_publish_without_a_commons_address_sends_nothing() {
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::ZERO));
+    let out = machine.speedrun(&["publish", "--tier", "1", "--run", "01ANYRUN"], b"");
+    assert_eq!(out.status.code(), Some(1), "{}", text_of(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("SPEEDRUN_COMMONS_URL"),
+        "{}",
+        text_of(&out)
+    );
+    assert!(
+        daemon.received().is_empty(),
+        "it asked the daemon for a bundle it could not send"
+    );
 }

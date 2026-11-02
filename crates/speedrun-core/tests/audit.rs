@@ -692,3 +692,128 @@ fn audit_w9_c_fold_merges_device_chains_by_occurred_at() {
     assert_eq!(v.status, RunStatus::Paused);
     assert_eq!(v.timing.agent_ms, MINUTE_MS);
 }
+
+// --- P1.c: the commons log is an RFC 9162 Merkle tree (COMMONS.md §19) ------------------
+//
+// The reference below follows RFC 9162 §2.1 directly and shares no code with
+// `speedrun_core::merkle`, so the module is checked against the RFC, not itself.
+
+mod rfc_9162 {
+    use sha2::{Digest, Sha256};
+
+    pub fn hash(bytes: &[u8]) -> Vec<u8> {
+        Sha256::digest(bytes).to_vec()
+    }
+
+    pub fn leaf(data: &[u8]) -> Vec<u8> {
+        hash(&[&[0u8][..], data].concat())
+    }
+
+    fn node(left: &[u8], right: &[u8]) -> Vec<u8> {
+        hash(&[&[1u8][..], left, right].concat())
+    }
+
+    /// The largest power of two smaller than `n` (n > 1).
+    fn split(n: usize) -> usize {
+        let mut k = 1;
+        while k * 2 < n {
+            k *= 2;
+        }
+        k
+    }
+
+    pub fn root(leaves: &[Vec<u8>]) -> Vec<u8> {
+        match leaves.len() {
+            0 => hash(b""),
+            1 => leaves[0].clone(),
+            n => {
+                let k = split(n);
+                node(&root(&leaves[..k]), &root(&leaves[k..]))
+            }
+        }
+    }
+
+    pub fn path(m: usize, leaves: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let n = leaves.len();
+        if n <= 1 {
+            return Vec::new();
+        }
+        let k = split(n);
+        if m < k {
+            let mut p = path(m, &leaves[..k]);
+            p.push(root(&leaves[k..]));
+            p
+        } else {
+            let mut p = path(m - k, &leaves[k..]);
+            p.push(root(&leaves[..k]));
+            p
+        }
+    }
+}
+
+fn hex_all(hashes: &[Vec<u8>]) -> Vec<String> {
+    hashes.iter().map(hex::encode).collect()
+}
+
+#[test]
+#[ignore = "audit P1.c: Merkle log"]
+fn audit_p1_c_a_leaf_is_the_rfc_9162_leaf_of_the_publication_text() {
+    let (bundle, judgment) = ("ab".repeat(32), "cd".repeat(32));
+    let expected = hex::encode(rfc_9162::leaf(format!("{bundle}:{judgment}").as_bytes()));
+    assert_eq!(speedrun_core::merkle::leaf_hash(&bundle, &judgment), expected);
+}
+
+#[test]
+#[ignore = "audit P1.c: Merkle log"]
+fn audit_p1_c_roots_and_inclusion_proofs_match_rfc_9162() {
+    use speedrun_core::merkle;
+    for n in 0..=17usize {
+        let raw: Vec<Vec<u8>> = (0..n)
+            .map(|i| rfc_9162::leaf(format!("leaf {i}").as_bytes()))
+            .collect();
+        let leaves = hex_all(&raw);
+        let root = hex::encode(rfc_9162::root(&raw));
+        assert_eq!(merkle::root(&leaves), root, "root of {n} leaves");
+        assert_eq!(
+            merkle::inclusion_proof(n as u64, &leaves),
+            None,
+            "leaf {n} of {n}"
+        );
+        for m in 0..n {
+            let expected = hex_all(&rfc_9162::path(m, &raw));
+            let proof = merkle::inclusion_proof(m as u64, &leaves);
+            assert_eq!(proof.as_ref(), Some(&expected), "path of leaf {m} of {n}");
+            let size = n as u64;
+            assert!(merkle::verify_inclusion(
+                &leaves[m], m as u64, size, &expected, &root
+            ));
+            assert!(!merkle::verify_inclusion(
+                &leaves[m],
+                m as u64,
+                size + 1,
+                &expected,
+                &root
+            ));
+            if n > 1 {
+                let other = (m + 1) % n;
+                assert!(!merkle::verify_inclusion(
+                    &leaves[m],
+                    other as u64,
+                    size,
+                    &expected,
+                    &root
+                ));
+                let mut tampered = expected.clone();
+                tampered[0] = hex::encode(rfc_9162::hash(b"not a sibling"));
+                assert!(!merkle::verify_inclusion(
+                    &leaves[m], m as u64, size, &tampered, &root
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn guard_p1_c_garbage_never_verifies() {
+    assert!(!speedrun_core::merkle::verify_inclusion("zz", 0, 1, &[], "zz"));
+}

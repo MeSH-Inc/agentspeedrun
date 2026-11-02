@@ -8,7 +8,8 @@ This is an index of the acceptance items in `V0.2.md` and `COMMONS.md` §14, whi
 them. **Who**: `loop` means a bounded change a test can judge, which an automated proposer
 can make once the test exists; `leader` means it needs design, a schema or category change,
 or code outside the Rust workspace. **Test**: the test that shows the item holds, or an ignored
-objective test that fails until it does. Every named `audit_` test passes as of 2026-11-02.
+objective test that fails until it does. Every named `audit_` test in the v0.2 table passes as of 2026-11-02; the P1 tests are
+the Wave 4 objective tests and fail until their items hold. The P1 contract is `COMMONS.md` §19.
 
 ## v0.2 (COMMONS P0)
 
@@ -66,10 +67,11 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 
 | Item | Condition | Who | Decision | Test |
 |---|---|---|---|---|
-| P1.a | A locally forged `evidence_verified` is rejected by the server | leader | C1, C4 | |
-| P1.b | A published run is reproducible from its bundle alone | leader | C4 | |
-| P1.c | An inclusion proof verifies in a standalone test | loop | C4 | |
-| P1.d | Deleting the local DB after publish loses nothing public | leader | C3, C4 | |
+| P1.a | A locally forged `evidence_verified` is rejected by the server; the commons signs its judgment | loop | C1, C4 | `audit_p1_a_*`, `audit_p1_ingest_*` |
+| P1.b | A published run is reproducible from its bundle alone | loop | C4 | `audit_p1_b_*` |
+| P1.c | An inclusion proof verifies in a standalone test | loop | C4 | `audit_p1_c_*` |
+| P1.d | Deleting the local DB after publish loses nothing public | loop | C3, C4 | `audit_p1_d_*` |
+| P1.e | A run's log holds no local path; the daemon bundles a finished run for the full token | loop | C3 | `audit_p1_e_*` |
 
 The owner decided D1–D7 and C1, C3 and C4 on 2026-11-01; the choices are in `V0.2.md` §5 and
 `COMMONS.md` §16. D4 retires every v0.1 format, which removed the items for labelling v0.1 PBs

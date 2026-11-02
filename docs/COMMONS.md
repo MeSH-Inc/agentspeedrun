@@ -477,3 +477,84 @@ that P3's commit-then-reveal works without a second schema bump.
 If only one sentence survives review: **the daemon stays a personal instrument,
 and the commons is a publishing pipeline around it that recomputes every claim
 and cannot rewrite its own past.**
+
+## 19. P1 contract (Wave 4)
+
+Fixed by the leader for the Wave 4 tests. Scope is the record core: bundle, publish, ingest,
+judgment and log. GitHub OAuth, the run page and deployment wait for Wave 5. Decisions taken here,
+each with its reason:
+
+- *Tiers.* Tier 0 anchors the run's chain heads and publishes no event. Tiers 1 and 2 publish the
+  whole signed log, because a signed chain cannot drop events and still verify; the log carries
+  prompts only as digests under the device's prompt key, which never leaves the machine. Tier 2 adds
+  one commitment per prompt under the run's disclosure key, revealable in P3. How much of a tier 1
+  log a page shows is the run page's concern (Wave 5).
+- *Finished runs only.* A bundle is a final record, so only a completed or abandoned run is
+  bundled; corrections are later publications, never edits.
+- *No local paths.* A run's log is published verbatim, so it must not hold the project root. New
+  runs write `RunStarted` without `project_root`; the daemon keeps each run's root in its own
+  database, outside the log, for git checks and the live display. A run whose stored log holds a
+  `project_root` cannot be bundled.
+- *Judgment.* The commons runs `speedrun-verify` with no project root and no secrets of the
+  author's. So in P1 it can verify URL evidence and nothing that needs the repository or the
+  author's Stripe key; those claims keep their claimed trust capped at `agent_claimed`, and P2's
+  control proofs widen this. Judgments carry verdicts and problems; the `observed` facts of §6
+  arrive with P2's crawler.
+- *Storage.* `speedrun-commons` is a crate in this workspace: axum and sqlx on SQLite (decision
+  C4; the owner chose SQLite on 2026-11-02, so no hosting choice is needed yet). speedrund pins
+  rusqlite 0.39, which shares `libsqlite3-sys` with sqlx 0.9.
+
+**Bundle (`speedrun_core::bundle`, format 1, schema `schema/bundle.schema.json`).** `events` are
+the run's stored bodies, verbatim, ordered by `device_id` then `seq`. `digest` is the canonical
+digest without `signature`; `signature` is `sign::sign_hash(device key, digest)`; the publisher key
+must sign one of the run's chains (its `RunStarted`/`DeviceJoined` key or a `DeviceRotated` new
+key). Tier 2's `prompts` are `speedrun export`'s commitments, one per `prompt_submitted` event.
+
+**Daemon.** `GET /v1/runs/{run_id}/bundle?tier=<0|1|2>`, full token only (agent and display tokens
+401), returns the signed `Bundle` from the current device key. 409 when the run is not finished or
+its log holds a `project_root`; 400 for another tier.
+
+**CLI.** `speedrun publish --tier <0|1|2> --run <run_id> [--to <url>]` fetches the bundle from the
+daemon and posts it to the commons at `--to`, else `SPEEDRUN_COMMONS_URL`; with neither it exits 1
+and sends nothing. Publishing is always a command the user runs (C3). On success it prints
+`published <bundle_digest>`, then `leaf <index> of <tree_size>`, then one line per milestone
+judgment, `<milestone_id>: <granted or none>` followed by ` (<problems joined by "; ">)` when
+there are problems.
+
+**Commons (`speedrun-commons`).** `SPEEDRUN_COMMONS_HOME` is its data directory (`commons.key`,
+`commons.sqlite`); `SPEEDRUN_COMMONS_ADDR` its address, 127.0.0.1:7478 by default. Types are in
+`speedrun_core::commons`. Every signature is `sign::sign_hash(commons key, digest)` over
+`judgment_digest` or `tree_head_digest`, checkable with `/v1/health`'s `commons_pubkey`.
+
+- `POST /v1/bundles` takes a `Bundle`. It is refused with 400 and nothing stored unless all of
+  these hold: `format` is 1 and `tier` at most 2; the signature verifies over `digest`; at tier 0,
+  `events` and `prompts` are empty and `chain_heads` is not; at tiers 1 and 2, `chain_heads` is
+  empty, every event names the bundle's `run_id`, `hash::verify_stored_chain` passes,
+  `sign::verify_event_signatures` passes, the publisher key signs one of the run's chains, the run
+  folds and is finished, no `RunStarted` holds a `project_root`, and `prompts` is empty at tier 1
+  and at tier 2 names each `prompt_submitted` event exactly once. A valid bundle is stored with its
+  body exactly as received, judged, signed, and appended as the next leaf; the answer is a
+  `PublishReceipt` with the new signed tree head and the leaf's inclusion proof against it. A
+  bundle whose digest is already stored is answered with its existing judgment and leaf, a current
+  tree head and a proof against it, and adds no leaf.
+- *Judging* (`judge::judge`). For each milestone of the folded run, in order: `claimed` is its
+  trust. If its current claim (the last `milestone_reached` since the last invalidation) carries
+  checkable evidence, the commons builds a `speedrun_verify::Job` from that claim (its event id,
+  key, evidence and `occurred_at`; the run's start; no project root; as `deployed_url` the URL of
+  the run's `deployed` claim when the commons verified it) and runs the verifier: if it passes,
+  `granted` is `evidence_verified` with no problems; otherwise `granted` is `claimed` capped at
+  `agent_claimed` and `problems` are the verifier's. Without checkable evidence, `granted` is
+  `claimed` capped at `agent_claimed`. An unclaimed milestone has neither.
+- *Log* (`speedrun_core::merkle`, RFC 9162 §2.1). A leaf is `leaf_hash(bundle_digest,
+  judgment_digest)`, the hash of the text `<bundle_digest>:<judgment_digest>` with the 0x00 leaf
+  prefix. Leaf indices are 0, 1, 2, … in arrival order. Every append issues a signed `TreeHead`.
+- `GET /v1/log/head` is the latest tree head (for an empty log, size 0 and the root of the empty
+  tree, signed). `GET /v1/log/proof/{leaf_index}?tree_size=<n>` is the `InclusionProof` against the
+  head of size `n` (default the current size): 404 when the leaf is not in that tree, 400 when `n`
+  exceeds the log.
+- `GET /v1/bundles/{digest}` and `GET /v1/runs/{run_id}` return the `PublishedRun` of that bundle,
+  or of the run's latest publication: the bundle as stored, its judgment, its leaf index, and at
+  tiers 1 and 2 the view `RunView::fold(events, the latest occurred_at among them)`. 404 when
+  unknown.
+- `GET /v1/health` is `CommonsHealth`.
+
