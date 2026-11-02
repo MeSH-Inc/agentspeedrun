@@ -19,6 +19,24 @@ pub struct StoredPublication {
     pub tier: u8,
     pub judgment: String,
     pub leaf_index: u64,
+    /// When the commons received the publication, as stored.
+    pub received_at: DateTime<Utc>,
+    /// The hex key that signed the bundle, when the row records one.
+    pub publisher_pubkey: Option<String>,
+}
+
+/// One publication as a public page lists it: its summary, the key that
+/// signed it, and the person that key is linked to, if any.
+pub struct ListedPublication {
+    pub summary: PublicationSummary,
+    pub publisher_pubkey: Option<String>,
+    pub person: Option<Person>,
+}
+
+/// One device linked to a person, with when the link was made.
+pub struct LinkedDevice {
+    pub link: Link,
+    pub linked_at: DateTime<Utc>,
 }
 
 /// Everything one append writes, gathered before the transaction begins.
@@ -67,6 +85,16 @@ pub struct NewPendingLink<'a> {
 
 type PendingRow = (String, String, String, String, Option<i64>, Option<String>);
 type PublicationRow = (String, String, i64, String, i64);
+type ListedRow = (
+    String,
+    String,
+    i64,
+    String,
+    i64,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
 
 impl Store {
     /// Open (creating if absent) and migrate the database at `path`.
@@ -110,24 +138,24 @@ impl Store {
 
     /// A bundle with its judgment and leaf, by bundle digest.
     pub async fn publication(&self, digest: &str) -> Result<Option<StoredPublication>> {
-        let row = sqlx::query_as::<_, (String, i64, String, i64)>(
-            "SELECT bundles.body, bundles.tier, judgments.body, log_leaves.leaf_index \
-             FROM bundles \
-             JOIN judgments ON judgments.bundle_digest = bundles.digest \
-             JOIN log_leaves ON log_leaves.bundle_digest = bundles.digest \
-             WHERE bundles.digest = ?",
+        let row = sqlx::query_as::<_, (String, i64, String, i64, String, Option<String>)>(
+            "SELECT bundles.body, bundles.tier, judgments.body, log_leaves.leaf_index, bundles.received_at, bundles.publisher_pubkey FROM bundles JOIN judgments ON judgments.bundle_digest = bundles.digest JOIN log_leaves ON log_leaves.bundle_digest = bundles.digest WHERE bundles.digest = ?",
         )
         .bind(digest)
         .fetch_optional(&self.pool)
         .await?;
         match row {
-            Some((body, tier, judgment, leaf_index)) => Ok(Some(StoredPublication {
-                digest: digest.to_string(),
-                body,
-                tier: u8::try_from(tier)?,
-                judgment,
-                leaf_index: u64::try_from(leaf_index)?,
-            })),
+            Some((body, tier, judgment, leaf_index, received_at, publisher_pubkey)) => {
+                Ok(Some(StoredPublication {
+                    digest: digest.to_string(),
+                    body,
+                    tier: u8::try_from(tier)?,
+                    judgment,
+                    leaf_index: u64::try_from(leaf_index)?,
+                    received_at: time(&received_at, "a stored publication's time")?,
+                    publisher_pubkey,
+                }))
+            }
             None => Ok(None),
         }
     }
@@ -352,6 +380,86 @@ impl Store {
             links,
             publications,
         }))
+    }
+
+    /// The newest publications, newest first, with the person each is shown
+    /// as. A publication is shown as the person whose latest link names the
+    /// key that signed its bundle.
+    pub async fn recent_publications(&self, limit: u32) -> Result<Vec<ListedPublication>> {
+        let rows = sqlx::query_as::<_, ListedRow>(
+            "SELECT b.run_id, b.digest, b.tier, b.received_at, l.leaf_index, b.publisher_pubkey, (SELECT p.github_id FROM links lk JOIN people p ON p.github_id = lk.github_id WHERE lk.device_pubkey = b.publisher_pubkey ORDER BY lk.rowid DESC LIMIT 1), (SELECT p.login FROM links lk JOIN people p ON p.github_id = lk.github_id WHERE lk.device_pubkey = b.publisher_pubkey ORDER BY lk.rowid DESC LIMIT 1) FROM bundles b JOIN log_leaves l ON l.bundle_digest = b.digest ORDER BY b.received_at DESC, b.rowid DESC LIMIT ?",
+        )
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await?;
+        let mut listed = Vec::with_capacity(rows.len());
+        for row in rows {
+            let run_id = row.0;
+            let bundle_digest = row.1;
+            let tier = row.2;
+            let received_at = row.3;
+            let leaf_index = row.4;
+            let publisher_pubkey = row.5;
+            let github_id = row.6;
+            let login = row.7;
+            let person = match (github_id, login) {
+                (Some(github_id), Some(login)) => Some(Person {
+                    github_id: u64::try_from(github_id)?,
+                    login,
+                }),
+                (None, None) => None,
+                _ => return Err(anyhow::anyhow!("a publication's link names half a person")),
+            };
+            listed.push(ListedPublication {
+                summary: PublicationSummary {
+                    run_id,
+                    bundle_digest,
+                    tier: u8::try_from(tier)?,
+                    received_at: time(&received_at, "a stored publication's time")?,
+                    leaf_index: u64::try_from(leaf_index)?,
+                },
+                publisher_pubkey,
+                person,
+            });
+        }
+        Ok(listed)
+    }
+
+    /// The person whose latest link names `device_pubkey`, if any.
+    pub async fn person_for_device(&self, device_pubkey: &str) -> Result<Option<Person>> {
+        let row = sqlx::query_as::<_, (i64, String)>(
+            "SELECT p.github_id, p.login FROM links lk JOIN people p ON p.github_id = lk.github_id WHERE lk.device_pubkey = ? ORDER BY lk.rowid DESC LIMIT 1",
+        )
+        .bind(device_pubkey)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some((github_id, login)) => Ok(Some(Person {
+                github_id: u64::try_from(github_id)?,
+                login,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// A person's links, oldest first, with when each was made.
+    pub async fn person_devices(&self, github_id: i64) -> Result<Vec<LinkedDevice>> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT body, linked_at FROM links WHERE github_id = ? ORDER BY rowid",
+        )
+        .bind(github_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut devices = Vec::with_capacity(rows.len());
+        for (body, linked_at) in rows {
+            let link = serde_json::from_str(&body)
+                .map_err(|error| anyhow::anyhow!("a stored link is not JSON: {error}"))?;
+            devices.push(LinkedDevice {
+                link,
+                linked_at: time(&linked_at, "a stored link's time")?,
+            });
+        }
+        Ok(devices)
     }
 }
 

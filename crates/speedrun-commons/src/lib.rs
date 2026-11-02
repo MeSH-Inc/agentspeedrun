@@ -11,5 +11,6 @@ pub mod judge;
 pub mod keys;
 pub mod link;
 pub mod log;
+pub mod pages;
 pub mod record;
 pub mod store;

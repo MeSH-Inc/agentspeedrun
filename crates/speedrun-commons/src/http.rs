@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ed25519_dalek::SigningKey;
@@ -18,6 +19,7 @@ use speedrun_verify::Verifier;
 
 use crate::link::{self, LinkError};
 use crate::log::{self, LogError};
+use crate::pages;
 use crate::record::{self, PublishError};
 use crate::store::Store;
 
@@ -44,6 +46,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/links/{link_id}/poll", post(poll_link))
         .route("/v1/links/{link_id}/confirm", post(confirm_link))
         .route("/v1/people/{login}", get(person_record))
+        .route("/", get(front_page))
+        .route("/runs/{run_id}", get(run_page))
+        .route("/people/{login}", get(person_page))
         .with_state(state)
 }
 
@@ -110,6 +115,58 @@ async fn person_record(
 ) -> Result<Json<PersonRecord>, (StatusCode, String)> {
     let record = link::person(s.store.as_ref(), &login).await.map_err(link_error)?;
     Ok(Json(record))
+}
+
+async fn front_page(State(s): State<AppState>) -> Result<Response, (StatusCode, String)> {
+    page_response(pages::front(s.store.as_ref()).await)
+}
+
+async fn run_page(
+    State(s): State<AppState>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, (StatusCode, String)> {
+    let base = page_origin(&headers)?;
+    page_response(pages::run(s.store.as_ref(), s.key.as_ref(), &base, &run_id).await)
+}
+
+async fn person_page(
+    State(s): State<AppState>,
+    Path(login): Path<String>,
+) -> Result<Response, (StatusCode, String)> {
+    page_response(pages::person(s.store.as_ref(), &login).await)
+}
+
+/// The base the run page's `curl` commands name, from the request's Host.
+fn page_origin(headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
+    match headers.get(header::HOST) {
+        Some(value) => {
+            let host = value.to_str().map_err(|error| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("the Host header is not text: {error}"),
+                )
+            })?;
+            Ok(format!("http://{host}"))
+        }
+        None => Ok(String::new()),
+    }
+}
+
+fn page_response(result: anyhow::Result<pages::Page>) -> Result<Response, (StatusCode, String)> {
+    let page = result.map_err(internal)?;
+    let mut response = Response::new(Body::from(page.body.into_string()));
+    *response.status_mut() = page.status;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static(pages::CONTENT_SECURITY_POLICY),
+    );
+    Ok(response)
 }
 
 async fn log_head(State(s): State<AppState>) -> Result<Json<TreeHead>, (StatusCode, String)> {
