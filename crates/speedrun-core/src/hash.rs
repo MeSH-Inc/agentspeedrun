@@ -43,6 +43,12 @@ fn write_canonical(v: &Value, out: &mut String) {
     }
 }
 
+/// sha256 (hex) of a JSON value's canonical form: a stable digest of a JSON
+/// document, independent of field order.
+pub fn canonical_digest(v: &Value) -> String {
+    hex::encode(Sha256::digest(canonical_json(v).as_bytes()))
+}
+
 /// A stable id derived from `parts`: their sha256, hex-encoded. Each part is
 /// NUL-terminated, so `["ab", "c"]` and `["a", "bc"]` differ. The same parts
 /// always give the same id, which lets a retried request name the same thing.

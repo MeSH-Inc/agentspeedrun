@@ -49,6 +49,12 @@ pub fn find<'a>(all: &'a [Category], id: &str, version: Option<u32>) -> Option<&
         .max_by_key(|c| c.version)
 }
 
+/// The sha256 of a category's canonical JSON: the `ruleset_digest` a run
+/// records, so a published run names its rules even after `categories/` changes.
+pub fn digest(c: &Category) -> Result<String, serde_json::Error> {
+    serde_json::to_value(c).map(|value| crate::hash::canonical_digest(&value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -690,6 +690,15 @@ fn deployed_url(run: &RunView) -> Option<String> {
 fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<Utc>) -> Result<String> {
     let run_id = speedrun_core::new_id();
     let base = &req.event_id;
+    let (start_head, start_head_committed_at) = match req.project_root.as_deref() {
+        Some(root) => match crate::git::head(root) {
+            Ok(Some(head)) => (Some(head.sha), Some(head.committed_at)),
+            Ok(None) => (None, None),
+            Err(e) => return Err(Error::Internal(anyhow::Error::msg(e))),
+        },
+        None => (None, None),
+    };
+    let ruleset_digest = category::digest(cat).map_err(|e| Error::Internal(e.into()))?;
     tx.insert(
         &run_id,
         &format!("{base}:run"),
@@ -700,9 +709,9 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
             category_id: cat.id.clone(),
             category_version: cat.version,
             device_pubkey: Some(tx.device_pubkey()),
-            start_head: None,
-            start_head_committed_at: None,
-            ruleset_digest: None,
+            start_head,
+            start_head_committed_at,
+            ruleset_digest: Some(ruleset_digest),
             disclosure_commitment: None,
         },
     )?;

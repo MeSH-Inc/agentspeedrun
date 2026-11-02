@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::git::{commit_time as git_commit_time, output as git_output};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use speedrun_core::{Evidence, api::VerificationReport, paths};
@@ -660,17 +661,6 @@ fn parse_actions_run(raw: &str) -> Result<(String, String, u64), String> {
     }
 }
 
-fn git_output(root: &str, args: &[&str]) -> Option<String> {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-}
-
 /// Some remote of the project points at github.com/<owner>/<repo>.
 fn git_remote_matches(root: &str, owner: &str, repo: &str) -> bool {
     let want = format!("{owner}/{repo}").to_ascii_lowercase();
@@ -692,15 +682,6 @@ fn git_commit_in_history(root: &str, sha: &str) -> bool {
     well_formed
         && git_output(root, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_some()
         && git_output(root, &["merge-base", "--is-ancestor", sha, "HEAD"]).is_some()
-}
-
-/// The commit's committer time, in whole seconds since the Unix epoch.
-fn git_commit_time(root: &str, sha: &str) -> Result<i64, String> {
-    let raw = git_output(root, &["show", "-s", "--format=%ct", sha])
-        .ok_or_else(|| format!("commit {sha} has no readable committer time"))?;
-    raw.trim()
-        .parse()
-        .map_err(|_| format!("commit {sha} has no readable committer time"))
 }
 
 /// Whether `sha` was committed before the run began. Git records whole
