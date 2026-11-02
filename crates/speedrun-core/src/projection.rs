@@ -565,7 +565,13 @@ impl RunView {
             }
         }
 
-        let end = view.finished_at.unwrap_or(now).max(start);
+        // An unfinished run is the ordinary case, not a missing value: its
+        // span runs to the view's clock.
+        let end = match view.finished_at {
+            Some(finished) => finished,
+            None => now,
+        }
+        .max(start);
         let mut any_open = false;
         for list in turns.values() {
             for turn in list {
