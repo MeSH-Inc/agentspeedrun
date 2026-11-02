@@ -11,6 +11,7 @@ use speedrun_core::{
         AppendRequest, AppendResponse, ChainReport, ExportResponse, ProjectAppendRequest, PromptCommitment,
         PromptRequest, PromptResponse, RotateResponse,
     },
+    bundle::Bundle,
     category,
     hash::verify_stored_chain,
     live::{LIVE_PROTOCOL_VERSION, LiveRun, LiveSnapshot, LiveSource, LiveSourceKind, SnapshotError},
@@ -789,6 +790,53 @@ impl Service {
             disclosure_commitment,
             prompts,
         })
+    }
+
+    /// A finished run's publication bundle at `tier` (COMMONS.md §19), signed
+    /// by this device. Tiers 1 and 2 carry every stored body verbatim in
+    /// `device_id`/`seq` order; tier 0 carries only each chain's head. A run
+    /// that is still running, or whose stored log holds a project root, is a
+    /// conflict, not a bundle.
+    pub fn bundle(&self, run_id: &str, tier: u8) -> Result<Bundle> {
+        if tier > 2 {
+            return Err(Error::BadRequest(format!(
+                "tier {tier} is not defined; expected 0, 1 or 2"
+            )));
+        }
+        let rows = self.store.reader().run_rows(run_id)?;
+        if rows.is_empty() {
+            return Err(Error::NotFound(format!("run {run_id}")));
+        }
+        let events: Vec<Event> = rows.iter().map(|(event, _)| event.clone()).collect();
+        let Some(view) = RunView::fold(&events, Utc::now()) else {
+            return Err(Error::NotFound(format!("run {run_id}")));
+        };
+        if !view.is_finished() {
+            return Err(Error::Conflict(format!("run {run_id} is not finished")));
+        }
+        let holds_root = rows.iter().any(|(event, _)| {
+            matches!(
+                &event.payload,
+                EventPayload::RunStarted {
+                    project_root: Some(_),
+                    ..
+                }
+            )
+        });
+        if holds_root {
+            return Err(Error::Conflict(format!(
+                "run {run_id} holds a project_root in its stored log"
+            )));
+        }
+        let prompts = if tier == 2 {
+            self.export(run_id, 2)?.prompts
+        } else {
+            Vec::new()
+        };
+        let publisher_pubkey = self.store.device_pubkey();
+        let sign = |digest: &str| self.store.sign_digest(digest);
+        crate::bundle::build(tier, run_id, rows, prompts, publisher_pubkey, sign)
+            .map_err(|e| Error::Internal(e.into()))
     }
 }
 

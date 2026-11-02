@@ -131,6 +131,7 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .route("/v1/shutdown", post(shutdown_daemon))
         .route("/v1/runs/{run_id}/verify", get(verify))
         .route("/v1/runs/{run_id}/export", get(export))
+        .route("/v1/runs/{run_id}/bundle", get(bundle))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
         .route("/v1/health", get(health))
@@ -494,6 +495,20 @@ async fn export(
     Query(q): Query<ExportQuery>,
 ) -> impl IntoResponse {
     call(&s, move |svc| svc.export(&run_id, q.tier)).await
+}
+
+#[derive(Deserialize)]
+struct BundleQuery {
+    /// 0, 1 or 2; anything else is refused, not defaulted.
+    tier: u8,
+}
+
+async fn bundle(
+    State(s): State<AppState>,
+    Path(run_id): Path<String>,
+    Query(q): Query<BundleQuery>,
+) -> impl IntoResponse {
+    call(&s, move |svc| svc.bundle(&run_id, q.tier)).await
 }
 
 async fn categories(State(s): State<AppState>) -> impl IntoResponse {

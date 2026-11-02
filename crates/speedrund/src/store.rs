@@ -156,6 +156,12 @@ impl Store {
         pubkey_hex(&self.key)
     }
 
+    /// Sign a publication digest with the current device key: the bundle's
+    /// `signature`, checkable against [`Store::device_pubkey`].
+    pub fn sign_digest(&self, digest: &str) -> String {
+        sign_hash(&self.key, digest)
+    }
+
     /// Read the disclosure key a run started with, for a tier 2 export.
     pub fn disclosure_key(&self, run_id: &str) -> Result<[u8; SEED_LEN]> {
         self.disclosure.load(run_id)
@@ -412,6 +418,24 @@ impl Reader<'_> {
             .prepare_cached("SELECT body FROM events WHERE run_id = ?1 ORDER BY seq")?;
         let rows = stmt.query_map([run_id], |r| r.get::<_, String>(0))?;
         rows.map(|b| parse_body(&b?)).collect()
+    }
+
+    /// A run's events paired with the body each was stored as, ordered by
+    /// `device_id` then `seq`: the order a publication publishes them in. One
+    /// query, because a bundle needs the typed event to fold and the exact
+    /// stored body to publish verbatim.
+    pub fn run_rows(&self, run_id: &str) -> rusqlite::Result<Vec<(Event, serde_json::Value)>> {
+        let mut stmt = self.0.prepare_cached(
+            "SELECT body FROM events WHERE run_id = ?1
+             ORDER BY json_extract(body, '$.device_id'), json_extract(body, '$.seq')",
+        )?;
+        let rows = stmt.query_map([run_id], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let body = row?;
+            out.push((parse(&body)?, parse_body(&body)?));
+        }
+        Ok(out)
     }
 
     /// When the run's first and newest events (by `seq`) say they happened.
