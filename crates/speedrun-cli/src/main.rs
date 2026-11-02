@@ -6,6 +6,7 @@ mod hook;
 mod mcp;
 mod ops;
 mod project;
+mod publish;
 mod redacted;
 mod secret;
 mod setup;
@@ -162,6 +163,20 @@ enum Cmd {
         /// Disclosure tier to export (only 2 is defined).
         #[arg(long, default_value_t = 2)]
         tier: u8,
+    },
+    /// Publish a finished run: fetch its signed bundle from the daemon and
+    /// post it to a commons.
+    Publish {
+        /// Disclosure tier: 0 anchors chain heads, 1 publishes the signed log,
+        /// 2 adds prompt commitments.
+        #[arg(long)]
+        tier: u8,
+        /// The run to publish.
+        #[arg(long)]
+        run: String,
+        /// Commons base URL; defaults to SPEEDRUN_COMMONS_URL.
+        #[arg(long)]
+        to: Option<String>,
     },
     /// List available categories.
     Categories,
@@ -560,6 +575,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 c.get(&format!("/v1/runs/{}/export?tier={tier}", run.run_id))?;
             println!("{}", serde_json::to_string_pretty(&export)?);
         }
+        Cmd::Publish { tier, run, to } => publish::run(&c, tier, &run, to.as_deref())?,
         Cmd::Categories => {
             let r: CategoriesResponse = c.get("/v1/categories")?;
             for k in r.categories {
