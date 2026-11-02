@@ -96,6 +96,11 @@ fn resolve_addr() -> String {
 /// clock bound. Only `flush_spool` marks a delivery this way.
 const REPLAY_HEADER: &str = "X-Speedrun-Replay";
 
+/// How long a durable write may spend draining the backlog after its own
+/// event has been attempted. Hooks must return to their host quickly, so an
+/// entry this does not reach stays spooled for a later flush.
+const FLUSH_BUDGET: Duration = Duration::from_secs(3);
+
 impl Client {
     pub fn new() -> Self {
         Self::with_timeout(Duration::from_secs(5))
@@ -224,12 +229,12 @@ impl Client {
         }
     }
 
-    /// Make sure the daemon is up (starting it if needed), then deliver any
-    /// spooled events first so they keep their order relative to new ones.
+    /// Make sure the daemon is up and has proved this data dir's token
+    /// (starting it if needed). Delivery is deliberately separate: a durable
+    /// write sends its own event before the backlog, and `flush_spool` owns
+    /// how long that backlog may take.
     pub fn ready(&self) -> Result<(), CallError> {
-        self.with_autostart(|| self.verify_health())?;
-        self.flush_spool();
-        Ok(())
+        self.with_autostart(|| self.verify_health())
     }
 
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
@@ -242,15 +247,33 @@ impl Client {
         self.send("POST", path, Some(body), false)
     }
 
-    /// POST that must not be lost: if the daemon is unreachable the request
-    /// is spooled and `Ok(None)` is returned.
+    /// POST that must not be lost. The fresh event goes out before the spool:
+    /// verify the daemon, attempt this write, then flush the backlog for at
+    /// most [`FLUSH_BUDGET`]. Entries the budget does not reach stay spooled,
+    /// in order. When the daemon has not proved the token, the write is
+    /// spooled without a flush because there is no proven base to deliver to.
     pub fn post_durable<T: DeserializeOwned>(
         &self,
         path: &str,
         body: &Value,
     ) -> Result<Option<T>, CallError> {
-        match self.post(path, body) {
-            Ok(v) => Ok(Some(v)),
+        let outcome = match self.ready() {
+            Ok(()) => {
+                let outcome = self.send("POST", path, Some(body), false);
+                // The fresh write has been attempted; only now touch the backlog.
+                self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
+                outcome
+            }
+            // Unproven daemon: keep the event; a later invocation that can
+            // prove the token will deliver it with the backlog.
+            Err(e) if e.should_spool() => {
+                spool(path, body);
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        match outcome {
+            Ok(value) => Ok(Some(value)),
             Err(e) if e.should_spool() => {
                 spool(path, body);
                 Ok(None)
@@ -334,7 +357,11 @@ impl Client {
 
     /// Deliver spooled requests (call `ready` first to start the daemon). Claims the spool by renaming it, so
     /// concurrent hook processes never deliver the same file twice.
-    pub fn flush_spool(&self) -> usize {
+    ///
+    /// `deadline` bounds the wall clock spent here. Once it passes, the entry
+    /// in hand and every entry after it go back to the pending spool in their
+    /// original order, for a later flush. `None` means no bound.
+    pub fn flush_spool(&self, deadline: Option<Instant>) -> usize {
         let dir = spool_dir();
         let live = dir.join("pending.jsonl");
         let claimed = dir.join(format!("flushing-{}.jsonl", speedrun_core::new_id()));
@@ -366,6 +393,7 @@ impl Client {
         }
         let rejected = RejectedLog::new(dir.join("rejected.jsonl"));
         let mut delivered = 0;
+        let mut out_of_time = false;
         for file in files {
             let f = match fs::File::open(&file) {
                 Ok(f) => f,
@@ -389,6 +417,23 @@ impl Client {
                         break;
                     }
                 };
+                if deadline.is_some_and(|d| Instant::now() >= d) {
+                    // Out of time: put this entry and the rest back, in order, so a
+                    // later flush reaches them instead of spending a hook's budget.
+                    out_of_time = true;
+                    append_line(&live, &bytes);
+                    for rest in lines.by_ref() {
+                        match rest {
+                            Ok(rest) => append_line(&live, &rest),
+                            Err(e) => {
+                                report_io_error("read spool file", &file, &e);
+                                keep_file = true;
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
                 // A line that is not text or not an entry can never be delivered; keep it
                 // for inspection and go on with the rest of the file.
                 let entry = match serde_json::from_slice::<SpoolEntry>(&bytes) {
@@ -426,6 +471,9 @@ impl Client {
             }
             if !keep_file && let Err(e) = fs::remove_file(&file) {
                 report_io_error("remove spool file", &file, &e);
+            }
+            if out_of_time {
+                break;
             }
         }
         delivered
