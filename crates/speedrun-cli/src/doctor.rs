@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use speedrun_core::paths;
+use speedrun_core::{api::HealthResponse, paths};
 
 use crate::client::{self, CallError, Client};
 
@@ -16,16 +16,8 @@ pub fn print(client: &Client) -> Result<()> {
     println!("cli: {}", env!("CARGO_PKG_VERSION"));
     let addr = client::resolve_addr();
     match client.verify_health() {
-        Ok(health) => println!(
-            "daemon: {} (protocol {})",
-            health.version, health.protocol_version
-        ),
-        Err(CallError::WrongDataDir { .. }) => {
-            println!("daemon: answers for another data directory ({addr})")
-        }
-        Err(CallError::Unreachable(_) | CallError::Api { .. }) => {
-            println!("daemon: not reachable at {addr}")
-        }
+        Ok(health) => println!("{}", daemon_line(&health)),
+        Err(e) => println!("{}", daemon_failure(&e, &addr)),
     }
     let data_dir = paths::data_dir();
     println!("data dir: {}", data_dir.display());
@@ -34,6 +26,28 @@ pub fn print(client: &Client) -> Result<()> {
     println!("rejected: {}", stats.rejected);
     println!("spool write failures: {}", stats.write_failures);
     print_log_tail(&data_dir)
+}
+
+/// The `daemon:` line doctor prints for a daemon that proved this data
+/// dir's token. `daemon status` prints it and adds the pid and address.
+pub(crate) fn daemon_line(health: &HealthResponse) -> String {
+    format!(
+        "daemon: {} (protocol {})",
+        health.version, health.protocol_version
+    )
+}
+
+/// The `daemon:` line doctor prints when a probe did not prove the token.
+/// `daemon status`, `stop` and `restart` share it, so its wording lives once.
+pub(crate) fn daemon_failure(error: &CallError, addr: &str) -> String {
+    match error {
+        CallError::WrongDataDir { .. } => {
+            format!("daemon: answers for another data directory ({addr})")
+        }
+        CallError::Unreachable(_) | CallError::Api { .. } => {
+            format!("daemon: not reachable at {addr}")
+        }
+    }
 }
 
 fn print_log_tail(data_dir: &Path) -> Result<()> {

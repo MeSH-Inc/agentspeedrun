@@ -374,6 +374,30 @@ impl Client {
         self.verified_base()
     }
 
+    /// Ask the daemon at the verified base to stop. The full token goes only
+    /// to a daemon that proved it, and a failed request is reported rather
+    /// than treated as a stopped daemon.
+    pub(crate) fn shutdown(&self) -> Result<(), CallError> {
+        let base = self.verified_base()?;
+        let token = Self::token()?;
+        let res = self
+            .agent
+            .request("POST", &format!("{base}/v1/shutdown"))
+            .set("Authorization", &format!("Bearer {token}"))
+            .call();
+        match res {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(status, r)) => {
+                let message = match r.into_json::<ErrorBody>() {
+                    Ok(body) => body.error,
+                    Err(e) => format!("unreadable error body: {e}"),
+                };
+                Err(CallError::Api { status, message })
+            }
+            Err(ureq::Error::Transport(t)) => Err(CallError::Unreachable(t.to_string())),
+        }
+    }
+
     /// Follow the live stream with the read-only display token, calling
     /// `on_snapshot` for each snapshot. Returns when the connection ends.
     pub fn stream_live(
@@ -428,7 +452,7 @@ impl Client {
     /// On an unreachable daemon, try to start it once and retry.
     fn with_autostart<T>(&self, f: impl Fn() -> Result<T, CallError>) -> Result<T, CallError> {
         match f() {
-            Err(CallError::Unreachable(_)) if start_daemon() => {
+            Err(CallError::Unreachable(_)) if start_daemon(false) => {
                 let deadline = Instant::now() + Duration::from_millis(1500);
                 loop {
                     std::thread::sleep(Duration::from_millis(100));
@@ -711,9 +735,42 @@ impl RejectedLog {
     }
 }
 
+/// How often a wait for a daemon looks again.
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Whether `pid` has exited, by `kill -0` on the `kill` binary. Not `ps`,
+/// which the check sandbox cannot execute because it is setuid.
+pub(crate) fn pid_exited(pid: u32) -> std::io::Result<bool> {
+    let pid = pid.to_string();
+    let status = Command::new("kill")
+        .args(["-0", pid.as_str()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    Ok(!status.success())
+}
+
+/// Poll `pid` until it exits, or `timeout` passes. `Ok(true)` means it exited.
+pub(crate) fn wait_for_exit(pid: u32, timeout: Duration) -> std::io::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if pid_exited(pid)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
 /// Spawn speedrund in its own process group so it outlives this process.
-fn start_daemon() -> bool {
-    if std::env::var_os("SPEEDRUN_NO_AUTOSTART").is_some() {
+///
+/// With `forced` false, `SPEEDRUN_NO_AUTOSTART` suppresses the spawn, as an
+/// ordinary request does. An explicit `daemon restart` passes true: the user
+/// asked for a daemon, so the variable does not veto it.
+pub(crate) fn start_daemon(forced: bool) -> bool {
+    if !forced && std::env::var_os("SPEEDRUN_NO_AUTOSTART").is_some() {
         return false;
     }
     let exe = daemon_executable();

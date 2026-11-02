@@ -14,17 +14,18 @@ mod trust;
 mod watch;
 
 use std::io::Read;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use speedrun_core::{
     Claimant, EventPayload, MilestoneOrigin, RunOutcome, Trust,
-    api::{CategoriesResponse, ChainReport, RotateResponse},
+    api::{CategoriesResponse, ChainReport, HealthResponse, RotateResponse},
     category::DEFAULT_CATEGORY,
 };
 
-use client::Client;
+use client::{CallError, Client};
 use project::Project;
 
 #[derive(Parser)]
@@ -55,6 +56,16 @@ enum KeyCmd {
     /// Replace this device's signing key. The daemon certifies the new key
     /// with the old one, so runs signed before the rotation still verify.
     Rotate,
+}
+
+#[derive(Subcommand)]
+enum DaemonCmd {
+    /// Print the running daemon's version, protocol and pid.
+    Status,
+    /// Stop the running daemon and wait for it to exit.
+    Stop,
+    /// Stop the running daemon, if any, then start a fresh one.
+    Restart,
 }
 
 #[derive(Subcommand)]
@@ -148,6 +159,11 @@ enum Cmd {
     Categories,
     /// Print diagnostics: versions, daemon health, spool counts and the log tail.
     Doctor,
+    /// Manage the local speedrund daemon.
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonCmd,
+    },
     /// Deliver events spooled while the daemon was unreachable.
     Flush,
     /// Entry point for host hooks, e.g. `speedrun hook claude-code user-prompt-submit`.
@@ -525,6 +541,11 @@ fn run(cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Doctor => doctor::print(&c)?,
+        Cmd::Daemon { action } => match action {
+            DaemonCmd::Status => daemon_status(&c)?,
+            DaemonCmd::Stop => daemon_stop(&c)?,
+            DaemonCmd::Restart => daemon_restart(&c)?,
+        },
         Cmd::Flush => {
             c.ready()?; // Starts the daemon and proves its token.
             println!("delivered {} spooled events", c.flush_spool(None));
@@ -618,6 +639,110 @@ fn run(cmd: Cmd) -> Result<()> {
         Cmd::Hook { .. } => unreachable!("handled in main"),
     }
     Ok(())
+}
+
+/// `daemon stop` waits this long for the daemon's pid to exit.
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `daemon restart` waits this long for the new daemon to prove the token.
+const RESTART_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What the stop half of `daemon stop`/`restart` found.
+enum StopOutcome {
+    /// Nothing answered at the address, so there is no daemon to stop.
+    NotRunning,
+    /// The daemon shut down and its pid exited.
+    Exited,
+}
+
+fn daemon_status(c: &Client) -> Result<()> {
+    let addr = client::resolve_addr();
+    match c.verify_health() {
+        Ok(health) => {
+            println!("{} pid {} at {addr}", doctor::daemon_line(&health), health.pid);
+            Ok(())
+        }
+        Err(e) => Err(print_and_fail(doctor::daemon_failure(&e, &addr))),
+    }
+}
+
+fn daemon_stop(c: &Client) -> Result<()> {
+    match stop_daemon(c)? {
+        StopOutcome::NotRunning => println!("daemon: not running"),
+        StopOutcome::Exited => {}
+    }
+    Ok(())
+}
+
+fn daemon_restart(c: &Client) -> Result<()> {
+    stop_daemon(c)?;
+    // An explicit restart starts speedrund even when autostart is disabled.
+    if !client::start_daemon(true) {
+        return Err(print_and_fail(doctor_daemon_line(c)));
+    }
+    match wait_until_proven(c, RESTART_TIMEOUT) {
+        Ok(health) => {
+            let addr = client::resolve_addr();
+            println!("{} pid {} at {addr}", doctor::daemon_line(&health), health.pid);
+            Ok(())
+        }
+        Err(e) => {
+            let addr = client::resolve_addr();
+            Err(print_and_fail(doctor::daemon_failure(&e, &addr)))
+        }
+    }
+}
+
+/// The stop half shared by `daemon stop` and `daemon restart`. It never
+/// starts a daemon: a command that is stopping one must not replace it.
+fn stop_daemon(c: &Client) -> Result<StopOutcome> {
+    let addr = client::resolve_addr();
+    let health = match c.verify_health() {
+        Ok(health) => health,
+        Err(CallError::Unreachable(_)) => return Ok(StopOutcome::NotRunning),
+        Err(e) => return Err(print_and_fail(doctor::daemon_failure(&e, &addr))),
+    };
+    c.shutdown().context("stopping the daemon")?;
+    if client::wait_for_exit(health.pid, STOP_TIMEOUT).context("waiting for the daemon to exit")? {
+        Ok(StopOutcome::Exited)
+    } else {
+        bail!(
+            "daemon pid {} is still running after {} s",
+            health.pid,
+            STOP_TIMEOUT.as_secs()
+        )
+    }
+}
+
+/// Poll until a daemon proves this data dir's token, or `timeout` passes.
+fn wait_until_proven(c: &Client, timeout: Duration) -> std::result::Result<HealthResponse, CallError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match c.verify_health() {
+            Ok(health) => return Ok(health),
+            Err(e) => {
+                if Instant::now() >= deadline {
+                    return Err(e);
+                }
+            }
+        }
+        std::thread::sleep(client::POLL_INTERVAL);
+    }
+}
+
+/// Doctor's daemon line for however the daemon answers now.
+fn doctor_daemon_line(c: &Client) -> String {
+    let addr = client::resolve_addr();
+    match c.verify_health() {
+        Ok(health) => doctor::daemon_line(&health),
+        Err(e) => doctor::daemon_failure(&e, &addr),
+    }
+}
+
+/// Print a line doctor would print, then fail through `main`'s ordinary path.
+fn print_and_fail(line: String) -> anyhow::Error {
+    println!("{line}");
+    anyhow::anyhow!("{line}")
 }
 
 fn ingest(
