@@ -828,6 +828,20 @@ impl Service {
                 "run {run_id} holds a project_root in its stored log"
             )));
         }
+        let committed = rows.iter().any(|(event, _)| {
+            matches!(
+                &event.payload,
+                EventPayload::RunStarted {
+                    disclosure_commitment: Some(_),
+                    ..
+                }
+            )
+        });
+        if tier == 2 && !committed {
+            return Err(Error::Conflict(format!(
+                "run {run_id} has no disclosure commitment, so it cannot be published at tier 2"
+            )));
+        }
         let prompts = if tier == 2 {
             self.export(run_id, 2)?.prompts
         } else {
