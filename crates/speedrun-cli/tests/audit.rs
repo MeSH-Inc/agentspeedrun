@@ -1121,7 +1121,6 @@ fn milestone_of(run: &serde_json::Value, key: &str) -> serde_json::Value {
 }
 
 #[test]
-#[ignore = "audit W6.a: tools send with the agent token"]
 fn audit_w6_a_tools_send_with_the_agent_token() {
     let machine = Machine::new();
     let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::ZERO));
@@ -1137,7 +1136,6 @@ fn audit_w6_a_tools_send_with_the_agent_token() {
 }
 
 #[test]
-#[ignore = "audit W6.a: a spooled agent request keeps its credential"]
 fn audit_w6_a_a_spooled_tool_request_is_replayed_with_the_agent_token() {
     let machine = Machine::new();
     let out = propose(&machine, "Recipes persist");
@@ -1165,7 +1163,6 @@ fn audit_w6_a_a_spooled_tool_request_is_replayed_with_the_agent_token() {
 }
 
 #[test]
-#[ignore = "audit W6.a: speedrun confirm"]
 fn audit_w6_a_speedrun_confirm_makes_an_agent_claim_count() {
     let machine = Machine::new();
     let _daemon = Daemon::start(&machine);
@@ -1197,7 +1194,6 @@ fn project_config(root: &Path) -> serde_json::Value {
 }
 
 #[test]
-#[ignore = "audit W7.b: init pins the category version"]
 fn audit_w7_b_init_pins_the_latest_category_version() {
     let machine = Machine::new();
     let _daemon = Daemon::start(&machine);
@@ -1215,7 +1211,6 @@ fn audit_w7_b_init_pins_the_latest_category_version() {
 }
 
 #[test]
-#[ignore = "audit W7.b: init --upgrade-category"]
 fn audit_w7_b_upgrade_category_pins_an_unpinned_project_and_keeps_its_id() {
     let machine = Machine::new();
     let created_at = "2026-11-01T00:00:00Z";
@@ -1245,7 +1240,6 @@ fn audit_w7_b_upgrade_category_pins_an_unpinned_project_and_keeps_its_id() {
 }
 
 #[test]
-#[ignore = "audit W7.b: prompts carry the pinned version"]
 fn audit_w7_b_a_prompt_carries_the_pinned_category_version() {
     let machine = Machine::new();
     let daemon = RefusingDaemon::start(&machine);
@@ -1327,7 +1321,6 @@ impl Machine {
 }
 
 #[test]
-#[ignore = "audit W4.b: speedrun daemon restart"]
 fn audit_w4_b_daemon_restart_with_a_stream_open_leaves_one_daemon() {
     let machine = Machine::new();
     let mut reaper = Reaper(Vec::new());
@@ -1343,7 +1336,6 @@ fn audit_w4_b_daemon_restart_with_a_stream_open_leaves_one_daemon() {
 }
 
 #[test]
-#[ignore = "audit W4.b: speedrun daemon stop and status"]
 fn audit_w4_b_daemon_stop_returns_after_the_daemon_has_exited() {
     let machine = Machine::new();
     let mut reaper = Reaper(Vec::new());

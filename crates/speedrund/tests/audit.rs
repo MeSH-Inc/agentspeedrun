@@ -1307,7 +1307,6 @@ fn counts(milestone: &Value) -> bool {
 }
 
 #[test]
-#[ignore = "audit W6.a: provenance and confirmation"]
 fn audit_w6_a_agent_claim_on_a_self_declared_milestone_counts_only_after_confirmation() {
     let d = Daemon::start();
     let run = d.prompt("p1", "proj");
@@ -1341,7 +1340,6 @@ fn audit_w6_a_agent_claim_on_a_self_declared_milestone_counts_only_after_confirm
 }
 
 #[test]
-#[ignore = "audit W6.a: provenance and confirmation"]
 fn audit_w6_a_the_claimant_and_trust_come_from_the_token_not_the_body() {
     let d = Daemon::start();
     let run = d.prompt("p1", "proj");
@@ -1362,7 +1360,6 @@ fn audit_w6_a_the_claimant_and_trust_come_from_the_token_not_the_body() {
 }
 
 #[test]
-#[ignore = "audit W6.a: provenance and confirmation"]
 fn audit_w6_a_the_agent_token_cannot_confirm_accept_or_reach_full_routes() {
     let d = Daemon::start();
     let run = d.prompt("p1", "proj");
@@ -1403,7 +1400,6 @@ fn audit_w6_a_the_agent_token_cannot_confirm_accept_or_reach_full_routes() {
 }
 
 #[test]
-#[ignore = "audit W6.a: provenance and confirmation"]
 fn audit_w6_a_an_agent_claim_on_an_agent_claimed_milestone_counts_at_once() {
     let d = Daemon::start();
     let run = d.prompt("p1", "proj");
@@ -1465,7 +1461,6 @@ fn prompt_with_version(event_id: &str, version: Value) -> Value {
 }
 
 #[test]
-#[ignore = "audit W7.b: pinned category versions"]
 fn audit_w7_b_an_unknown_category_version_is_refused_and_starts_no_run() {
     let d = Daemon::start();
     let (status, body) = d.post("/v1/prompts", &prompt_with_version("p1", json!(99)));
@@ -1488,7 +1483,6 @@ fn guard_w7_b_a_known_category_version_starts_a_run_with_that_version() {
 }
 
 #[test]
-#[ignore = "audit W7.b: the live snapshot names its protocol and source"]
 fn audit_w7_b_the_live_snapshot_names_its_protocol_and_source() {
     let d = Daemon::start();
     d.prompt("p1", "proj");
@@ -1504,7 +1498,6 @@ fn audit_w7_b_the_live_snapshot_names_its_protocol_and_source() {
 }
 
 #[test]
-#[ignore = "audit W4.b: POST /v1/shutdown"]
 fn audit_w4_b_shutdown_stops_the_daemon_with_a_stream_open() {
     let mut d = Daemon::start();
     let stream = open_live_stream(&d);
@@ -1519,7 +1512,6 @@ fn audit_w4_b_shutdown_stops_the_daemon_with_a_stream_open() {
 }
 
 #[test]
-#[ignore = "audit W4.b: POST /v1/shutdown"]
 fn audit_w4_b_shutdown_takes_only_the_full_token() {
     let mut d = Daemon::start();
     let (as_agent, _) = d.post_as(&d.agent_token(), "/v1/shutdown", &json!({}));
