@@ -28,6 +28,10 @@ pub enum CallError {
     WrongDataDir { addr: String },
     /// The daemon answered with an error status.
     Api { status: u16, message: String },
+    /// The request went out, but no answer came back in time (V0.2 M8): the
+    /// daemon may have recorded it. Every write carries an event id, so
+    /// sending it again cannot double it.
+    DeliveryUnknown(String),
 }
 
 impl std::fmt::Display for CallError {
@@ -38,6 +42,12 @@ impl std::fmt::Display for CallError {
                 write!(f, "daemon answers for another data directory ({addr})")
             }
             Self::Api { status, message } => write!(f, "speedrund error {status}: {message}"),
+            Self::DeliveryUnknown(m) => {
+                write!(
+                    f,
+                    "speedrund did not answer in time; it may have recorded the request: {m}"
+                )
+            }
         }
     }
 }
@@ -46,14 +56,52 @@ impl std::error::Error for CallError {}
 
 impl CallError {
     /// Whether this failure is worth keeping in the spool: the daemon is
-    /// unreachable (a timeout, no listener, or no proof it holds this data
-    /// dir's token), refused the token even after the client re-read it
+    /// unreachable (no listener, or no proof it holds this data dir's
+    /// token), did not answer a request it may have recorded, refused the token even after the client re-read it
     /// (401), or failed on its own side (5xx). Any other 4xx is the client's
     /// mistake and is reported as it always was.
     fn should_spool(&self) -> bool {
         match self {
-            Self::Unreachable(_) | Self::WrongDataDir { .. } => true,
+            Self::Unreachable(_) | Self::WrongDataDir { .. } | Self::DeliveryUnknown(_) => true,
             Self::Api { status, .. } => *status == 401 || *status >= 500,
+        }
+    }
+}
+
+/// What became of a write that must not be lost.
+pub enum Durable<T> {
+    /// The daemon recorded it and answered.
+    Recorded(T),
+    /// It is in the spool for a later flush, for this reason.
+    Spooled(SpoolReason),
+}
+
+/// Why a durable write went to the spool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpoolReason {
+    /// The daemon never received it: not running, not proven, or failing.
+    Undelivered,
+    /// It was sent but not answered in time, so the daemon may hold it already.
+    DeliveryUnknown,
+}
+
+impl SpoolReason {
+    fn of(error: &CallError) -> Self {
+        match error {
+            CallError::DeliveryUnknown(_) => Self::DeliveryUnknown,
+            CallError::Unreachable(_) | CallError::WrongDataDir { .. } | CallError::Api { .. } => {
+                Self::Undelivered
+            }
+        }
+    }
+}
+
+impl<T> Durable<T> {
+    /// The daemon's answer, or `None` when the write was spooled.
+    pub fn recorded(self) -> Option<T> {
+        match self {
+            Self::Recorded(value) => Some(value),
+            Self::Spooled(_) => None,
         }
     }
 }
@@ -329,7 +377,7 @@ impl Client {
                 };
                 Err(CallError::Api { status, message })
             }
-            Err(ureq::Error::Transport(t)) => Err(CallError::Unreachable(t.to_string())),
+            Err(ureq::Error::Transport(t)) => Err(transport_error(&t)),
         }
     }
 
@@ -395,7 +443,7 @@ impl Client {
         &self,
         path: &str,
         body: &Value,
-    ) -> Result<Option<T>, CallError> {
+    ) -> Result<Durable<T>, CallError> {
         let credential = self.credential;
         let outcome = match self.ready() {
             Ok(()) => {
@@ -408,15 +456,15 @@ impl Client {
             // prove the token will deliver it with the backlog.
             Err(e) if e.should_spool() => {
                 spool(path, body, credential);
-                return Ok(None);
+                return Ok(Durable::Spooled(SpoolReason::of(&e)));
             }
             Err(e) => return Err(e),
         };
         match outcome {
-            Ok(value) => Ok(Some(value)),
+            Ok(value) => Ok(Durable::Recorded(value)),
             Err(e) if e.should_spool() => {
                 spool(path, body, credential);
-                Ok(None)
+                Ok(Durable::Spooled(SpoolReason::of(&e)))
             }
             Err(e) => Err(e),
         }
@@ -647,6 +695,29 @@ impl Client {
             }
         }
         delivered
+    }
+}
+
+/// A transport failure on an authenticated request. One that ends before the
+/// request is sent (no connection, a bad address) means the daemon never saw
+/// it. Any other (a timeout or reset while sending or awaiting the answer, an
+/// answer that does not parse) leaves unknown whether the daemon recorded it.
+fn transport_error(t: &ureq::Transport) -> CallError {
+    use ureq::ErrorKind;
+    match t.kind() {
+        ErrorKind::InvalidUrl
+        | ErrorKind::UnknownScheme
+        | ErrorKind::Dns
+        | ErrorKind::InsecureRequestHttpsOnly
+        | ErrorKind::ConnectionFailed
+        | ErrorKind::InvalidProxyUrl
+        | ErrorKind::ProxyConnect
+        | ErrorKind::ProxyUnauthorized => CallError::Unreachable(t.to_string()),
+        ErrorKind::TooManyRedirects
+        | ErrorKind::BadStatus
+        | ErrorKind::BadHeader
+        | ErrorKind::Io
+        | ErrorKind::HTTP => CallError::DeliveryUnknown(t.to_string()),
     }
 }
 

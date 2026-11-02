@@ -27,7 +27,7 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | M7.c | Spool and `rejected.jsonl` write failures are counted and `doctor` shows them | loop | | `audit_m7_c_*` |
 | M7.d | Trimming `rejected.jsonl` loses no line under concurrent refusals | leader | | `trimming_the_rejected_log_loses_no_line_under_concurrent_refusals` |
 | M8 | A hook records its own event first and flushes the spool within about 3 s | loop | | `audit_m8_*` |
-| M8.b | A timeout on a sent request is "delivered-unknown", not Unreachable; claim replays are idempotent by event id | leader | | |
+| M8.b | A timeout on a sent request is "delivered-unknown", not Unreachable; claim replays are idempotent by event id | leader | | `a_write_the_daemon_took_but_never_answered_is_delivery_unknown_and_spooled`, `a_retried_claim_is_answered_from_the_log_without_a_second_check` |
 | M9.a | A user's claim satisfies `agent_claimed` on a non-predefined milestone | loop | | `audit_a6_5_*` |
 | M9.b | `accept` can set `required_trust` | leader | | `audit_m9_b_*` |
 | M10 | The docs claim only what the code does | leader | | |

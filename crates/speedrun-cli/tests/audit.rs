@@ -955,6 +955,28 @@ fn audit_m8_a_hook_sends_its_own_prompt_first_and_flushes_within_its_budget() {
 }
 
 #[test]
+fn a_write_the_daemon_took_but_never_answered_is_delivery_unknown_and_spooled() {
+    // V0.2 M8.b: a timeout on a request already sent is not "unreachable". The
+    // change is kept for replay, and the user is told it may already be recorded.
+    let machine = Machine::new();
+    // Longer than the client's 5 s wait for an answer.
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::from_secs(7)));
+    let out = machine.speedrun(&["add", "export the report as csv"], b"");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("may already have recorded the change"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("not reachable"), "{stderr}");
+    assert_eq!(daemon.received().len(), 1, "the change was not sent once");
+    assert!(
+        !machine.spooled_containing("export the report as csv").is_empty(),
+        "the change was not kept for replay"
+    );
+}
+
+#[test]
 fn audit_w4_doctor_reports_spooled_and_rejected_counts() {
     // V0.2 W4: `speedrun doctor` prints spool and rejected counts, daemon or not.
     let machine = Machine::new();

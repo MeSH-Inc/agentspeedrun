@@ -7,7 +7,7 @@ use speedrun_core::{
     api::{ActiveRunResponse, AppendResponse, PromptResponse, VerificationReport},
 };
 
-use crate::client::Client;
+use crate::client::{Client, Durable, SpoolReason};
 use crate::project::Project;
 use crate::redacted::RedactedText;
 
@@ -41,11 +41,15 @@ pub fn record_prompt(
         };
         body_object.insert("category_version".to_string(), json!(version));
     }
-    Ok(c.post_durable("/v1/prompts", &body)?)
+    Ok(c.post_durable("/v1/prompts", &body)?.recorded())
 }
 
 /// Append to the project's active run; spooled if the daemon is down.
 pub fn append(c: &Client, p: &Project, payload: EventPayload) -> Result<Option<AppendResponse>> {
+    Ok(send_append(c, p, payload)?.recorded())
+}
+
+fn send_append(c: &Client, p: &Project, payload: EventPayload) -> Result<Durable<AppendResponse>> {
     p.require_trusted()?;
     let body = json!({
         "event_id": speedrun_core::new_id(),
@@ -57,9 +61,14 @@ pub fn append(c: &Client, p: &Project, payload: EventPayload) -> Result<Option<A
 
 /// Append and require the daemon to have accepted it now (interactive commands).
 pub fn append_now(c: &Client, p: &Project, payload: EventPayload) -> Result<AppendResponse> {
-    match append(c, p, payload)? {
-        Some(r) => Ok(r),
-        None => bail!("speedrund is not reachable; the change was spooled and will be sent when it is"),
+    match send_append(c, p, payload)? {
+        Durable::Recorded(r) => Ok(r),
+        Durable::Spooled(SpoolReason::Undelivered) => {
+            bail!("speedrund is not reachable; the change was spooled and will be sent when it is")
+        }
+        Durable::Spooled(SpoolReason::DeliveryUnknown) => bail!(
+            "speedrund did not answer in time; it may already have recorded the change, and the spooled copy will be replayed without doubling it"
+        ),
     }
 }
 

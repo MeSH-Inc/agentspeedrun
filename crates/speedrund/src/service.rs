@@ -425,9 +425,17 @@ impl Service {
             Ok((e, true))
         })?;
 
-        // Derived steps run even on retries; their event ids make them
-        // idempotent, and a retried claim re-checks its evidence.
-        let job = self.verification_job(&event)?;
+        // A retry is answered from the log (V0.2 M8): a claim's evidence is
+        // checked once, for the write that recorded it. Rechecking a slow
+        // check on every replay would time out each replay and keep the claim
+        // spooled for ever; a claim that should be checked again is a new
+        // claim with its own event id. Completion is derived again, which its
+        // event id makes idempotent.
+        let job = if inserted {
+            self.verification_job(&event)?
+        } else {
+            None
+        };
         let derived: Vec<Event> = self.complete_if_done(&event.run_id)?.into_iter().collect();
         if std::iter::once(&event)
             .chain(&derived)
@@ -1019,6 +1027,32 @@ mod tests {
             append(&mut s, &a.run_id, "t1", other),
             Err(Error::Conflict(_))
         ));
+    }
+
+    #[test]
+    fn a_retried_claim_is_answered_from_the_log_without_a_second_check() {
+        // V0.2 M8: a replay of a claim whose check outlasted the client's
+        // wait must not start the check again.
+        let (mut s, _d) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        let claim = || AppendRequest {
+            event_id: "claim".into(),
+            run_id: run.clone(),
+            occurred_at: None,
+            payload: EventPayload::MilestoneReached {
+                milestone_id: "scaffold-runs".into(),
+                trust: Trust::SelfDeclared,
+                evidence: vec![Evidence::GitCommit { sha: "ab".repeat(20) }],
+                claimant: Claimant::User,
+            },
+        };
+        let first = s.append(claim()).unwrap();
+        assert!(first.response.inserted);
+        assert!(first.job.is_some(), "the recorded claim is checked");
+        let retry = s.append(claim()).unwrap();
+        assert!(!retry.response.inserted);
+        assert_eq!(retry.response.event, first.response.event);
+        assert!(retry.job.is_none(), "a retry started a second check");
     }
 
     #[test]
