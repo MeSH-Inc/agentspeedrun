@@ -20,6 +20,7 @@ use axum::{
 };
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
+use speedrun_core::Claimant;
 use speedrun_core::api::{
     ActiveRunResponse, AppendRequest, CategoriesResponse, ErrorBody, ProjectAppendRequest, PromptRequest,
 };
@@ -27,7 +28,7 @@ use tokio::sync::watch;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::health::Health;
-use crate::provenance::{Caller, admit};
+use crate::provenance::admit;
 use crate::service::{Appended, Error, Service};
 use crate::verify::Verifier;
 
@@ -233,10 +234,10 @@ impl TokenPolicy<'_> {
 
     /// Participant routes take a write token in the header and report which
     /// one it was, since that is what decides a claim's provenance.
-    fn participant(&self, presented: Option<Credential<'_>>) -> Option<Caller> {
+    fn participant(&self, presented: Option<Credential<'_>>) -> Option<Claimant> {
         match presented {
-            Some(Credential::Header(token)) if self.is_full(token) => Some(Caller::User),
-            Some(Credential::Header(token)) if self.is_agent(token) => Some(Caller::Agent),
+            Some(Credential::Header(token)) if self.is_full(token) => Some(Claimant::User),
+            Some(Credential::Header(token)) if self.is_agent(token) => Some(Claimant::Agent),
             _ => None,
         }
     }
@@ -287,8 +288,8 @@ async fn display_auth(State(state): State<AppState>, req: Request, next: Next) -
 /// recorded for the write paths that must distinguish the user from an agent.
 async fn participant_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     match state.token_policy().participant(credential(&req)) {
-        Some(caller) => {
-            req.extensions_mut().insert(caller);
+        Some(claimant) => {
+            req.extensions_mut().insert(claimant);
             next.run(req).await
         }
         None => unauthorized(),
@@ -338,11 +339,11 @@ async fn shutdown_daemon(State(s): State<AppState>) -> impl IntoResponse {
 
 async fn append(
     State(s): State<AppState>,
-    Extension(caller): Extension<Caller>,
+    Extension(claimant): Extension<Claimant>,
     headers: HeaderMap,
     Json(mut req): Json<AppendRequest>,
 ) -> Result<Json<speedrun_core::api::AppendResponse>, Error> {
-    admit(caller, &mut req.payload)?;
+    admit(claimant, &mut req.payload)?;
     let from_spool = is_replay(&headers);
     let res = blocking(&s, move |svc| {
         svc.check_occurred_at(&req.event_id, &req.run_id, req.occurred_at, from_spool)?;
@@ -394,12 +395,12 @@ async fn active_run(State(s): State<AppState>, Path(project_id): Path<String>) -
 
 async fn append_to_project(
     State(s): State<AppState>,
-    Extension(caller): Extension<Caller>,
+    Extension(claimant): Extension<Claimant>,
     Path(project_id): Path<String>,
     headers: HeaderMap,
     Json(mut req): Json<ProjectAppendRequest>,
 ) -> Result<Json<speedrun_core::api::AppendResponse>, Error> {
-    admit(caller, &mut req.payload)?;
+    admit(claimant, &mut req.payload)?;
     let from_spool = is_replay(&headers);
     let res = blocking(&s, move |svc| svc.append_to_project(&project_id, req, from_spool)).await;
     finish_append(s, res).await

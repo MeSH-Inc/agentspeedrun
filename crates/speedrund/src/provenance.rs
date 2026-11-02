@@ -9,15 +9,6 @@
 
 use speedrun_core::{Claimant, EventPayload, Trust};
 
-/// The identity a request proved by the token it carried.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Caller {
-    /// The full token: the user, or a command the user ran.
-    User,
-    /// The agent token, held by the MCP server and `speedrun tool`.
-    Agent,
-}
-
 /// Why a write may not be appended, before the run's own rules are consulted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Refusal {
@@ -30,21 +21,11 @@ impl Refusal {
     }
 }
 
-impl Caller {
-    /// The claimant recorded for a claim this caller makes.
-    fn claimant(self) -> Claimant {
-        match self {
-            Self::User => Claimant::User,
-            Self::Agent => Claimant::Agent,
-        }
-    }
-
-    /// The trust a claim starts at. Evidence only raises it by verification.
-    fn claim_trust(self) -> Trust {
-        match self {
-            Self::User => Trust::SelfDeclared,
-            Self::Agent => Trust::AgentClaimed,
-        }
+/// The trust a claim starts at. Evidence only raises it by verification.
+fn claim_trust(claimant: Claimant) -> Trust {
+    match claimant {
+        Claimant::User => Trust::SelfDeclared,
+        Claimant::Agent => Trust::AgentClaimed,
     }
 }
 
@@ -60,20 +41,25 @@ fn agent_may_send(payload: &EventPayload) -> bool {
     )
 }
 
-/// Refuse a payload this caller may not send, and stamp a claim with the
+/// Refuse a payload this claimant may not send, and stamp a claim with the
 /// claimant and trust its token implies. The claim's trust is left as sent
 /// when it is already `evidence_verified`, so the service keeps refusing it.
-pub fn admit(caller: Caller, payload: &mut EventPayload) -> Result<(), Refusal> {
-    if matches!(caller, Caller::Agent) && !agent_may_send(payload) {
+pub fn admit(claimant: Claimant, payload: &mut EventPayload) -> Result<(), Refusal> {
+    if claimant == Claimant::Agent && !agent_may_send(payload) {
         return Err(Refusal {
             reason: "the agent token may not send this event",
         });
     }
-    if let EventPayload::MilestoneReached { trust, claimant, .. } = payload {
+    if let EventPayload::MilestoneReached {
+        trust,
+        claimant: recorded,
+        ..
+    } = payload
+    {
         if *trust < Trust::EvidenceVerified {
-            *trust = caller.claim_trust();
+            *trust = claim_trust(claimant);
         }
-        *claimant = caller.claimant();
+        *recorded = claimant;
     }
     Ok(())
 }

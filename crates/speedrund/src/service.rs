@@ -212,22 +212,16 @@ fn resolve_milestone_id(run: &RunView, payload: EventPayload) -> EventPayload {
 }
 
 impl Service {
-    pub fn new(store: Store, categories: Vec<Category>) -> Self {
+    /// `source_id` names the daemon in every live snapshot: its `data_dir_id`,
+    /// which `/v1/health` reports and `Health` owns, passed in rather than
+    /// computed again.
+    pub fn new(store: Store, categories: Vec<Category>, source_id: String) -> Self {
         Self {
             store,
             categories,
-            source_id: String::new(),
+            source_id,
             pb_cache: HashMap::new(),
         }
-    }
-
-    /// Name the daemon these snapshots come from. The id is the daemon's
-    /// `data_dir_id`, which `/v1/health` reports and `Health` owns; the
-    /// daemon passes that one value here once at startup instead of letting
-    /// the snapshot compute it again. A service built only to fold logs is
-    /// never exposed over HTTP and keeps no source id.
-    pub fn serve_as(&mut self, data_dir_id: String) {
-        self.source_id = data_dir_id;
     }
 
     pub fn categories(&self) -> &[Category] {
@@ -1396,7 +1390,7 @@ mod tests {
 
     fn open_in(dir: &tempfile::TempDir) -> Service {
         let store = Store::open(&dir.path().join("db.sqlite"), &dir.path().join("device.key")).unwrap();
-        Service::new(store, category::builtin().unwrap())
+        Service::new(store, category::builtin().unwrap(), "test-source".into())
     }
 
     /// W9.c guard: a run that did not write between two rotations gets both
