@@ -233,7 +233,7 @@ impl Service {
                 }
             };
             let (content, redacted) = redact(&req.content);
-            let event = tx.insert(
+            let event = tx.insert_prompt(
                 &run_id,
                 &req.event_id,
                 at,
@@ -241,12 +241,11 @@ impl Service {
                     session_id: req.session_id.clone(),
                     host: req.host.clone(),
                     model: req.model.clone(),
-                    // Not yet: the digest under the device's prompt key, and
-                    // the text in the prompts table (W1.d).
                     content_digest: String::new(),
                     length: content.chars().count() as u64,
                     redacted,
                 },
+                &content,
             )?;
             if req.starts_turn {
                 tx.insert(

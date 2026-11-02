@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use speedrun_core::{
     Event, EventPayload, SCHEMA_VERSION,
     hash::compute_hash,
-    sign::{fingerprint, pubkey_hex, sign_hash},
+    sign::{SEED_LEN, fingerprint, pubkey_hex, sign_hash},
 };
 
 const MIGRATIONS: &[&str] = &[
@@ -52,12 +52,22 @@ UPDATE runs SET
                         WHERE e.run_id = runs.run_id AND e.seq = 1);
 CREATE INDEX runs_by_category ON runs (category_id, category_version);
 "#,
+    r#"
+-- Prompt text lives outside the append-only chain, keyed by its event id.
+-- There is deliberately no delete trigger: a user may erase prompt text
+-- without touching the events that commit to it.
+CREATE TABLE prompts (
+    event_id TEXT PRIMARY KEY,
+    content  TEXT NOT NULL
+);
+"#,
 ];
 
 pub struct Store {
     conn: Connection,
     device_id: String,
     key: SigningKey,
+    prompt_key: [u8; SEED_LEN],
 }
 
 impl Store {
@@ -89,7 +99,14 @@ impl Store {
                 fingerprint
             }
         };
-        Ok(Self { conn, device_id, key })
+        let prompt_key_path = path.with_file_name(crate::keys::PROMPT_KEY_FILE);
+        let prompt_key = crate::keys::load_or_create_secret(&prompt_key_path)?;
+        Ok(Self {
+            conn,
+            device_id,
+            key,
+            prompt_key,
+        })
     }
 
     /// Run `f` in an IMMEDIATE transaction; commit only if it returns Ok.
@@ -104,6 +121,7 @@ impl Store {
             tx,
             device_id: &self.device_id,
             key: &self.key,
+            prompt_key: &self.prompt_key,
         };
         let out = f(&mut w)?;
         w.tx.commit()?;
@@ -332,6 +350,7 @@ pub struct Tx<'c> {
     tx: Transaction<'c>,
     device_id: &'c str,
     key: &'c SigningKey,
+    prompt_key: &'c [u8; SEED_LEN],
 }
 
 impl Tx<'_> {
@@ -409,6 +428,29 @@ impl Tx<'_> {
                 ],
             )?;
         }
+        Ok(event)
+    }
+
+    /// Append a prompt event and keep its redacted text in `prompts`, outside
+    /// the chain. The digest is filled in here from that text under the
+    /// daemon's prompt key, so no caller handles the key or can store text
+    /// without its commitment.
+    pub fn insert_prompt(
+        &mut self,
+        run_id: &str,
+        event_id: &str,
+        occurred_at: DateTime<Utc>,
+        mut payload: EventPayload,
+        text: &str,
+    ) -> rusqlite::Result<Event> {
+        if let EventPayload::PromptSubmitted { content_digest, .. } = &mut payload {
+            *content_digest = speedrun_core::digest::text_digest(self.prompt_key, text);
+        }
+        let event = self.insert(run_id, event_id, occurred_at, payload)?;
+        self.tx.execute(
+            "INSERT INTO prompts (event_id, content) VALUES (?1, ?2)",
+            params![event_id, text],
+        )?;
         Ok(event)
     }
 

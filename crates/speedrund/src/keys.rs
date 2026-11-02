@@ -8,16 +8,33 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use ed25519_dalek::SigningKey;
-use speedrun_core::sign::{generate, parse_seed, seed_hex};
+use speedrun_core::sign::{SEED_LEN, generate, parse_seed, seed_hex};
+
+/// File name of the prompt key beside the database in the data directory.
+pub const PROMPT_KEY_FILE: &str = "prompt.key";
 
 /// Read the device key, creating it with mode 0600 if it does not exist.
 ///
 /// A missing key is a first start; an unreadable one is an error, never a
 /// silent regeneration, because a new key breaks every signature already made.
 pub fn load_or_create(path: &Path) -> Result<SigningKey> {
+    load_or_create_seed(path, "to generate a new device key")
+}
+
+/// Read a 32-byte secret stored as hex with mode 0600, creating it if absent.
+///
+/// The prompt key is one: a silent regeneration would make every prompt
+/// digest already in a log uncheckable.
+pub fn load_or_create_secret(path: &Path) -> Result<[u8; SEED_LEN]> {
+    let key = load_or_create_seed(path, "to regenerate the prompt key")?;
+    Ok(key.to_bytes())
+}
+
+/// The one definition of how a key is kept at rest: hex in a 0600 file,
+/// created once and never silently replaced.
+fn load_or_create_seed(path: &Path, advice: &str) -> Result<SigningKey> {
     match fs::read_to_string(path) {
-        Ok(text) => parse_seed(&text)
-            .map_err(|e| anyhow!("{e}; delete {} to generate a new device key", path.display())),
+        Ok(text) => parse_seed(&text).map_err(|e| anyhow!("{e}; delete {} {advice}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => create(path),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
