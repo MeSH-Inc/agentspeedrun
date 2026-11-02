@@ -1659,7 +1659,6 @@ fn audit_p1_e_only_a_finished_run_is_bundled_and_only_for_the_full_token() {
 // --- P1.f: the device's side of a GitHub link (COMMONS.md §20) ---------------------------
 
 #[test]
-#[ignore = "audit P1.f: GitHub link"]
 fn audit_p1_f_the_daemon_signs_link_claims_for_its_own_key_only() {
     use speedrun_core::commons::{DeviceKey, DeviceSignature, LINK_FORMAT, LinkClaim, link_claim_digest};
     let d = Daemon::start();

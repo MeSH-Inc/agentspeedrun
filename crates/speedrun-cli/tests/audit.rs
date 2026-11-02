@@ -1514,7 +1514,6 @@ fn audit_p1_d_publish_without_a_commons_address_sends_nothing() {
 mod fake_github;
 
 #[test]
-#[ignore = "audit P1.f: speedrun link"]
 fn audit_p1_f_speedrun_link_links_this_device_to_the_github_account() {
     let github = fake_github::FakeGitHub::start(fake_github::Behaviour {
         interval: 0,
@@ -1568,7 +1567,6 @@ fn audit_p1_f_speedrun_link_links_this_device_to_the_github_account() {
 }
 
 #[test]
-#[ignore = "audit P1.f: speedrun link"]
 fn audit_p1_f_link_without_a_commons_address_sends_nothing() {
     let machine = Machine::new();
     let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::ZERO));

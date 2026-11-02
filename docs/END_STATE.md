@@ -8,9 +8,7 @@ This is an index of the acceptance items in `V0.2.md` and `COMMONS.md` §14, whi
 them. **Who**: `loop` means a bounded change a test can judge, which an automated proposer
 can make once the test exists; `leader` means it needs design, a schema or category change,
 or code outside the Rust workspace. **Test**: the test that shows the item holds, or an ignored
-objective test that fails until it does. Every named `audit_` test for v0.2 and P1.a–e passes as of 2026-11-02; the P1.f–h tests are
-the Wave 5 objective tests and fail until their items hold. The P1 contract is `COMMONS.md` §19
-and §20.
+objective test that fails until it does. Every named `audit_` test passes as of 2026-11-02. The P1 contract is `COMMONS.md` §19 and §20.
 
 ## v0.2 (COMMONS P0)
 

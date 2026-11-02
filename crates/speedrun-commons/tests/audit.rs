@@ -951,7 +951,6 @@ fn person_record(commons: &Commons, login: &str) -> PersonRecord {
 }
 
 #[test]
-#[ignore = "audit P1.f: GitHub link"]
 fn audit_p1_f_a_device_links_to_the_github_account_that_authorized_it() {
     let github = FakeGitHub::start(fake_github::Behaviour::default());
     let commons = commons_with_github(&github);
@@ -1041,7 +1040,6 @@ fn audit_p1_f_a_device_links_to_the_github_account_that_authorized_it() {
 }
 
 #[test]
-#[ignore = "audit P1.f: GitHub link"]
 fn audit_p1_f_a_link_needs_the_devices_signature_and_the_authorized_person() {
     let github = FakeGitHub::start(fake_github::Behaviour::default());
     let commons = commons_with_github(&github);
@@ -1110,7 +1108,6 @@ fn audit_p1_f_a_link_needs_the_devices_signature_and_the_authorized_person() {
 }
 
 #[test]
-#[ignore = "audit P1.f: GitHub link"]
 fn audit_p1_f_a_refused_authorization_links_nothing() {
     let github = FakeGitHub::start(fake_github::Behaviour {
         deny: true,
@@ -1142,7 +1139,6 @@ fn audit_p1_f_a_refused_authorization_links_nothing() {
 }
 
 #[test]
-#[ignore = "audit P1.f: GitHub link"]
 fn audit_p1_f_the_commons_keeps_no_github_token() {
     let github = FakeGitHub::start(fake_github::Behaviour::default());
     let commons = commons_with_github(&github);
@@ -1164,7 +1160,6 @@ fn audit_p1_f_the_commons_keeps_no_github_token() {
 }
 
 #[test]
-#[ignore = "audit P1.f: GitHub link"]
 fn audit_p1_f_a_persons_publications_are_those_their_devices_signed() {
     let github = FakeGitHub::start(fake_github::Behaviour::default());
     let commons = commons_with_github(&github);
@@ -1235,7 +1230,6 @@ fn published(commons: &Commons, run_id: &str) -> PublishedRun {
 }
 
 #[test]
-#[ignore = "audit P1.g: pages"]
 fn audit_p1_g_the_run_page_shows_the_published_record() {
     let github = FakeGitHub::start(fake_github::Behaviour::default());
     let commons = commons_with_github(&github);
@@ -1285,7 +1279,6 @@ fn audit_p1_g_the_run_page_shows_the_published_record() {
 }
 
 #[test]
-#[ignore = "audit P1.g: pages"]
 fn audit_p1_g_pages_escape_what_the_log_says() {
     let commons = Commons::start();
     let log = Log::start("01RUNESCAPE")
@@ -1317,7 +1310,6 @@ fn audit_p1_g_pages_escape_what_the_log_says() {
 }
 
 #[test]
-#[ignore = "audit P1.g: pages"]
 fn audit_p1_g_the_front_page_lists_publications_newest_first() {
     let github = FakeGitHub::start(fake_github::Behaviour::default());
     let commons = commons_with_github(&github);
@@ -1343,7 +1335,6 @@ fn audit_p1_g_the_front_page_lists_publications_newest_first() {
 }
 
 #[test]
-#[ignore = "audit P1.g: pages"]
 fn audit_p1_g_pages_carry_the_security_policy_and_fit_a_phone() {
     let commons = Commons::start();
     commons.publish(&plain_run("01RUNPOLICY").bundle(1));
@@ -1374,7 +1365,6 @@ fn audit_p1_g_pages_carry_the_security_policy_and_fit_a_phone() {
 }
 
 #[test]
-#[ignore = "audit P1.g: pages"]
 fn audit_p1_g_a_tier_0_page_shows_chain_heads_only() {
     let commons = Commons::start();
     let log = plain_run("01RUNHEADSONLY");
@@ -1427,7 +1417,6 @@ fn guard_p1_g_curl_commands_name_the_configured_address_never_the_host_header() 
 // --- P1.h: running the commons on a host (COMMONS.md §20) ------------------------------------
 
 #[test]
-#[ignore = "audit P1.h: hosting"]
 fn audit_p1_h_the_commons_listens_on_port_when_no_address_is_set() {
     let home = tempfile::tempdir().unwrap();
     let port = free_port();
@@ -1452,7 +1441,6 @@ fn audit_p1_h_the_commons_listens_on_port_when_no_address_is_set() {
 }
 
 #[test]
-#[ignore = "audit P1.h: hosting"]
 fn audit_p1_h_a_backup_restores_the_log() {
     let commons = Commons::start();
     commons.publish(&plain_run("01RUNBACKUPONE").bundle(1));
