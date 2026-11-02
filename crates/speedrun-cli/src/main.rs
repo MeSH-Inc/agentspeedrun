@@ -235,8 +235,12 @@ enum Cmd {
         #[arg(long)]
         project_dir: Option<std::path::PathBuf>,
     },
-    /// Print the JSON Schema of the plugin ↔ daemon protocol.
-    Schema,
+    /// Print the JSON Schema of the plugin ↔ daemon protocol, or with
+    /// `--bundle` of the publication bundle format.
+    Schema {
+        #[arg(long)]
+        bundle: bool,
+    },
     /// Store credentials the daemon's verifiers use (Stripe, GitHub).
     Secret {
         #[command(subcommand)]
@@ -654,10 +658,14 @@ fn run(cmd: Cmd) -> Result<()> {
             }
         },
         Cmd::Mcp { project_dir } => mcp::serve(project_dir.as_deref())?,
-        Cmd::Schema => println!(
-            "{}",
-            serde_json::to_string_pretty(&speedrun_core::api::protocol_schema())?
-        ),
+        Cmd::Schema { bundle } => {
+            let schema = if bundle {
+                speedrun_core::bundle::bundle_schema()
+            } else {
+                speedrun_core::api::protocol_schema()
+            };
+            println!("{}", serde_json::to_string_pretty(&schema)?);
+        }
         Cmd::Hook { .. } => unreachable!("handled in main"),
     }
     Ok(())

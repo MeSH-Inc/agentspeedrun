@@ -54,6 +54,11 @@ pub(crate) fn device_chains(events: &[Event]) -> Vec<Vec<&Event>> {
 pub enum EventPayload {
     RunStarted {
         project_id: String,
+        /// A local path, so never written by this build: the daemon keeps a
+        /// run's root outside the log, which is published verbatim. Read only
+        /// so that older logs still load; a run whose log holds one cannot be
+        /// published.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         project_root: Option<String>,
         category_id: String,
         category_version: u32,

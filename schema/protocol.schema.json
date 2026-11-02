@@ -145,6 +145,7 @@
               "type": "string"
             },
             "project_root": {
+              "description": "A local path, so never written by this build: the daemon keeps a\nrun's root outside the log, which is published verbatim. Read only\nso that older logs still load; a run whose log holds one cannot be\npublished.",
               "type": [
                 "string",
                 "null"

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bundle",
+  "type": "object",
+  "properties": {
+    "format": {
+      "description": "[`BUNDLE_FORMAT`].",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "tier": {
+      "description": "Disclosure tier (COMMONS.md §5). 0 anchors the run's chain heads and\npublishes nothing else; 1 publishes the signed log; 2 adds one\ncommitment per prompt under the run's disclosure key.",
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "events": {
+      "description": "Tiers 1 and 2: every event of the run, each exactly as the daemon\nstored it (`hash` and `sig` included), ordered by `device_id` then\n`seq`. Empty at tier 0.",
+      "type": "array",
+      "items": true,
+      "default": []
+    },
+    "chain_heads": {
+      "description": "Tier 0: the last event of each device chain. Empty at tiers 1 and 2.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ChainHead"
+      },
+      "default": []
+    },
+    "prompts": {
+      "description": "Tier 2: one commitment per prompt, in log order, as `speedrun export`\ngives them. Empty at tiers 0 and 1.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PromptCommitment"
+      },
+      "default": []
+    },
+    "publisher_pubkey": {
+      "description": "Hex ed25519 public key of the device that signs this bundle. At tiers\n1 and 2 it must be a key that signs one of the run's chains.",
+      "type": "string"
+    },
+    "signature": {
+      "description": "Hex signature of `publisher_pubkey` over [`digest`] of this bundle\n(`sign::sign_hash`).",
+      "type": "string"
+    }
+  },
+  "required": [
+    "format",
+    "run_id",
+    "tier",
+    "publisher_pubkey",
+    "signature"
+  ],
+  "$defs": {
+    "ChainHead": {
+      "description": "The last event of one device's chain in a run.",
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "seq",
+        "hash"
+      ]
+    },
+    "PromptCommitment": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "commitment": {
+          "description": "HMAC-SHA256 (hex) of the redacted prompt text under the run's\ndisclosure key.",
+          "type": "string"
+        },
+        "length": {
+          "description": "Length of the redacted text, in characters.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "redacted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "event_id",
+        "commitment",
+        "length",
+        "redacted"
+      ]
+    }
+  }
+}

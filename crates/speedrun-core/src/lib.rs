@@ -4,11 +4,14 @@
 //! Everything a run "is" is derived by folding its append-only event log.
 
 pub mod api;
+pub mod bundle;
 pub mod category;
+pub mod commons;
 pub mod digest;
 pub mod event;
 pub mod hash;
 pub mod live;
+pub mod merkle;
 pub mod paths;
 pub mod projection;
 pub mod redact;
