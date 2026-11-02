@@ -7,15 +7,53 @@
 //! a command that cannot name a commons sends nothing at all.
 
 use anyhow::{Context, Result, bail};
+use serde::{Serialize, de::DeserializeOwned};
 use speedrun_core::Trust;
 use speedrun_core::bundle::Bundle;
 use speedrun_core::commons::{MilestoneJudgment, PublishReceipt};
 
 use crate::client::Client;
 
-/// Where a publication goes. The command line and the environment are read
-/// once here; the rest of the command sees only a resolved base URL.
+/// A commons to talk to: its base URL, and the plain requests it accepts.
+/// The commons is a different server, so nothing here carries a speedrun
+/// token. The command line and the environment are read once, in `resolve`;
+/// the rest of a command sees only this value.
+pub(crate) struct Commons {
+    destination: Destination,
+}
+
+/// Where a commons lives. Any trailing slash on the base is absorbed by
+/// `url`, so callers pass only the route.
 struct Destination(String);
+
+impl Commons {
+    /// `--to`, else `SPEEDRUN_COMMONS_URL`. Neither is an error, not a
+    /// fallback to some default server.
+    pub(crate) fn resolve(to: Option<&str>) -> Result<Self> {
+        Ok(Self {
+            destination: Destination::resolve(to)?,
+        })
+    }
+
+    /// One GET, decoded as JSON.
+    pub(crate) fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let url = self.destination.url(path);
+        let response = ureq::get(&url).call().map_err(|e| refusal(&url, e))?;
+        response
+            .into_json()
+            .with_context(|| format!("reading the answer from {url}"))
+    }
+
+    /// One POST of a JSON body, decoded as JSON. Any 2xx status is success,
+    /// so a 202 from a poll parses like a 200.
+    pub(crate) fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
+        let url = self.destination.url(path);
+        let response = ureq::post(&url).send_json(body).map_err(|e| refusal(&url, e))?;
+        response
+            .into_json()
+            .with_context(|| format!("reading the answer from {url}"))
+    }
+}
 
 impl Destination {
     /// `--to`, else `SPEEDRUN_COMMONS_URL`. Neither is an error, not a
@@ -35,9 +73,25 @@ impl Destination {
         }
     }
 
-    /// The ingest route, with any trailing slash on the base absorbed.
-    fn bundles_url(&self) -> String {
-        format!("{}/v1/bundles", self.0.trim_end_matches('/'))
+    /// `path`, which starts with `/`, on this base.
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.0.trim_end_matches('/'))
+    }
+}
+
+/// A non-2xx answer, or no answer, as the command reports it.
+fn refusal(url: &str, error: ureq::Error) -> anyhow::Error {
+    match error {
+        ureq::Error::Status(code, response) => {
+            let reason = match response.into_string() {
+                Ok(reason) => reason,
+                Err(e) => format!("unreadable refusal body: {e}"),
+            };
+            anyhow::anyhow!("the commons at {url} refused the request (HTTP {code}): {reason}")
+        }
+        ureq::Error::Transport(transport) => {
+            anyhow::anyhow!("talking to the commons at {url}: {transport}")
+        }
     }
 }
 
@@ -49,10 +103,10 @@ pub fn run(client: &Client, tier: u8, run_id: &str, to: Option<&str>) -> Result<
     }
     // Resolve the destination first: an unnamed commons leaves the daemon
     // untouched, so nothing is fetched or sent.
-    let destination = Destination::resolve(to)?;
+    let commons = Commons::resolve(to)?;
     let path = format!("/v1/runs/{}/bundle?tier={tier}", path_segment(run_id));
     let bundle: Bundle = client.get(&path)?;
-    let receipt = post_bundle(&destination, &bundle)?;
+    let receipt: PublishReceipt = commons.post("/v1/bundles", &bundle)?;
     print_receipt(&receipt);
     Ok(())
 }
@@ -70,26 +124,6 @@ fn path_segment(text: &str) -> String {
         }
     }
     out
-}
-
-/// The commons is not the daemon: a plain request, no `Authorization`
-/// header, nothing but the bundle itself.
-fn post_bundle(destination: &Destination, bundle: &Bundle) -> Result<PublishReceipt> {
-    let url = destination.bundles_url();
-    let response = match ureq::post(&url).send_json(bundle) {
-        Ok(response) => response,
-        // A refusal carries the commons' reason in its body; show it.
-        Err(ureq::Error::Status(code, response)) => {
-            let reason = response
-                .into_string()
-                .with_context(|| format!("reading the refusal from {url}"))?;
-            bail!("the commons at {url} refused the bundle (HTTP {code}): {reason}")
-        }
-        Err(e) => bail!("posting the bundle to {url}: {e}"),
-    };
-    response
-        .into_json::<PublishReceipt>()
-        .with_context(|| format!("reading the receipt from {url}"))
 }
 
 fn print_receipt(receipt: &PublishReceipt) {

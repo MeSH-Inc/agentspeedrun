@@ -3,6 +3,7 @@
 mod client;
 mod doctor;
 mod hook;
+mod link;
 mod mcp;
 mod ops;
 mod project;
@@ -174,6 +175,12 @@ enum Cmd {
         /// The run to publish.
         #[arg(long)]
         run: String,
+        /// Commons base URL; defaults to SPEEDRUN_COMMONS_URL.
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Link this device to a GitHub account through a commons.
+    Link {
         /// Commons base URL; defaults to SPEEDRUN_COMMONS_URL.
         #[arg(long)]
         to: Option<String>,
@@ -576,6 +583,7 @@ fn run(cmd: Cmd) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&export)?);
         }
         Cmd::Publish { tier, run, to } => publish::run(&c, tier, &run, to.as_deref())?,
+        Cmd::Link { to } => link::run(&c, to.as_deref())?,
         Cmd::Categories => {
             let r: CategoriesResponse = c.get("/v1/categories")?;
             for k in r.categories {
