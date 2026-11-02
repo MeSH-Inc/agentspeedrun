@@ -81,6 +81,11 @@ fn guard_other_commands_still_reject_bad_arguments() {
 struct Machine {
     root: tempfile::TempDir,
     addr: String,
+    /// The listener that picked `addr`, held so no other test's process can take
+    /// the port before a stand-in daemon here does. Released the first time
+    /// anything else is pointed at `addr`, so a real daemon can bind it and an
+    /// absent one refuses connections.
+    reserved: Mutex<Option<TcpListener>>,
 }
 
 /// The project every machine tracks, as its committed `.speedrun/project.json` names it.
@@ -115,16 +120,33 @@ impl Machine {
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(data.join("token"), TOKEN).unwrap();
         std::fs::write(data.join("agent-token"), AGENT_TOKEN).unwrap();
-        let addr = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
-        Self { root, addr }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        Self {
+            root,
+            addr,
+            reserved: Mutex::new(Some(listener)),
+        }
     }
 
     fn data_dir(&self) -> PathBuf {
         self.root.path().join("data")
+    }
+
+    /// The daemon address, for anything but a stand-in daemon: the reserved
+    /// listener is dropped first.
+    fn addr(&self) -> &str {
+        self.reserved.lock().unwrap().take();
+        &self.addr
+    }
+
+    /// The reserved listener for a stand-in daemon, or a fresh bind of `addr`
+    /// when the reservation was already released.
+    fn listener(&self) -> TcpListener {
+        match self.reserved.lock().unwrap().take() {
+            Some(listener) => listener,
+            None => TcpListener::bind(&self.addr).unwrap(),
+        }
     }
 
     fn project_root(&self) -> PathBuf {
@@ -148,7 +170,7 @@ impl Machine {
             .env_remove("XDG_DATA_HOME")
             .env_remove("SPEEDRUN_COMMONS_URL");
         if addr {
-            command.env("SPEEDRUN_ADDR", &self.addr);
+            command.env("SPEEDRUN_ADDR", self.addr());
         } else {
             command.env_remove("SPEEDRUN_ADDR");
         }
@@ -251,7 +273,7 @@ impl RefusingDaemon {
     }
 
     fn behaving(machine: &Machine, behaviour: Behaviour) -> Self {
-        let listener = TcpListener::bind(&machine.addr).unwrap();
+        let listener = machine.listener();
         let received = Arc::new(Mutex::new(Vec::new()));
         let shown_token = Arc::new(Mutex::new(Vec::new()));
         let (record, shown) = (Arc::clone(&received), Arc::clone(&shown_token));
@@ -400,7 +422,7 @@ impl Daemon {
         );
         let child = Command::new(exe)
             .env("SPEEDRUN_HOME", machine.data_dir())
-            .env("SPEEDRUN_ADDR", &machine.addr)
+            .env("SPEEDRUN_ADDR", machine.addr())
             .env("HOME", machine.root.path())
             .env_remove("XDG_DATA_HOME")
             .stdin(Stdio::null())
@@ -410,7 +432,7 @@ impl Daemon {
             .unwrap();
         let daemon = Self(child);
         let deadline = Instant::now() + Duration::from_secs(10);
-        while TcpStream::connect(&machine.addr).is_err() {
+        while TcpStream::connect(machine.addr()).is_err() {
             assert!(Instant::now() < deadline, "speedrund did not start listening");
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -581,7 +603,7 @@ fn guard_proposals_with_different_titles_during_an_outage_all_arrive() {
 
 /// POST to the machine's daemon with its token; the status and JSON body.
 fn post(machine: &Machine, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
-    let result = ureq::post(&format!("http://{}{path}", machine.addr))
+    let result = ureq::post(&format!("http://{}{path}", machine.addr()))
         .set("Authorization", &format!("Bearer {TOKEN}"))
         .send_json(body.clone());
     match result {
@@ -633,7 +655,7 @@ fn audit_w2_d_spooled_event_older_than_the_runs_last_event_is_delivered_by_flush
     std::fs::write(spool.join("pending.jsonl"), format!("{entry}\n")).unwrap();
 
     let out = machine.speedrun(&["flush"], b"");
-    let events = ureq::get(&format!("http://{}/v1/runs/{run}/events", machine.addr))
+    let events = ureq::get(&format!("http://{}/v1/runs/{run}/events", machine.addr()))
         .set("Authorization", &format!("Bearer {TOKEN}"))
         .call()
         .unwrap()
@@ -681,7 +703,7 @@ fn guard_an_unreadable_spool_line_loses_none_of_the_entries_after_it() {
     std::fs::write(spool.join("pending.jsonl"), bytes).unwrap();
 
     machine.speedrun(&["flush"], b"");
-    let events = ureq::get(&format!("http://{}/v1/runs/{run}/events", machine.addr))
+    let events = ureq::get(&format!("http://{}/v1/runs/{run}/events", machine.addr()))
         .set("Authorization", &format!("Bearer {TOKEN}"))
         .call()
         .unwrap()
@@ -768,13 +790,15 @@ impl Machine {
 
     /// The run the machine's real daemon holds for the project, or `Null`.
     fn active_run(&self) -> serde_json::Value {
-        let body: serde_json::Value =
-            ureq::get(&format!("http://{}/v1/projects/{PROJECT}/active-run", self.addr))
-                .set("Authorization", &format!("Bearer {TOKEN}"))
-                .call()
-                .unwrap()
-                .into_json()
-                .unwrap();
+        let body: serde_json::Value = ureq::get(&format!(
+            "http://{}/v1/projects/{PROJECT}/active-run",
+            self.addr()
+        ))
+        .set("Authorization", &format!("Bearer {TOKEN}"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
         body["run"].clone()
     }
 
@@ -794,7 +818,7 @@ fn audit_w4_a_client_finds_the_daemon_through_the_addr_file() {
     // V0.2 W4 / D3: clients read `$DATA_DIR/addr`; 7477 is only the fallback.
     let machine = Machine::new();
     let _daemon = Daemon::start(&machine);
-    std::fs::write(machine.data_dir().join("addr"), &machine.addr).unwrap();
+    std::fs::write(machine.data_dir().join("addr"), machine.addr()).unwrap();
     machine.run_in(
         &machine.project_root(),
         &["ingest", "prompt", "--host", "test", "--session", "s"],
@@ -1035,7 +1059,7 @@ fn status_stderr(machine: &Machine, cwd: &Path, home: &Path) -> String {
         .args(["status"])
         .current_dir(cwd)
         .env("SPEEDRUN_HOME", machine.data_dir())
-        .env("SPEEDRUN_ADDR", &machine.addr)
+        .env("SPEEDRUN_ADDR", machine.addr())
         .env("SPEEDRUN_NO_AUTOSTART", "1")
         .env("HOME", home)
         .env_remove("XDG_DATA_HOME")
@@ -1281,7 +1305,7 @@ impl Drop for Reaper {
 impl Machine {
     /// The pid in the health answer at this machine's address, if a daemon answers.
     fn daemon_pid(&self) -> Option<u32> {
-        let body: serde_json::Value = ureq::get(&format!("http://{}/v1/health", self.addr))
+        let body: serde_json::Value = ureq::get(&format!("http://{}/v1/health", self.addr()))
             .call()
             .ok()?
             .into_json()
@@ -1292,13 +1316,13 @@ impl Machine {
     /// Open the live stream with the display token and wait for its first snapshot.
     fn open_live_stream(&self) -> TcpStream {
         let token = std::fs::read_to_string(self.data_dir().join("display-token")).unwrap();
-        let mut stream = TcpStream::connect(&self.addr).unwrap();
+        let mut stream = TcpStream::connect(self.addr()).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         write!(
             stream,
             "GET /v1/live/stream?token={} HTTP/1.1\r\nHost: {}\r\nAccept: text/event-stream\r\n\r\n",
             token.trim(),
-            self.addr
+            self.addr()
         )
         .unwrap();
         let mut seen = Vec::new();
