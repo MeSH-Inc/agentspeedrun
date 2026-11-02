@@ -10,13 +10,12 @@ use anyhow::anyhow;
 use chrono::{SecondsFormat, Utc};
 use ed25519_dalek::SigningKey;
 use speedrun_core::bundle::{self, BUNDLE_FORMAT, Bundle};
-use speedrun_core::commons::{
-    InclusionProof, Judgment, PublishReceipt, PublishedRun, TreeHead, judgment_digest, tree_head_digest,
-};
+use speedrun_core::commons::{Judgment, PublishReceipt, PublishedRun, TreeHead, judgment_digest};
 use speedrun_core::{Event, EventPayload, RunView, hash, merkle, sign};
 use speedrun_verify::Verifier;
 
 use crate::judge;
+use crate::log::{self, LogError};
 use crate::store::{Publication, Store, StoredPublication};
 
 /// Why a publication was refused or could not be completed.
@@ -31,6 +30,17 @@ pub enum PublishError {
 impl From<anyhow::Error> for PublishError {
     fn from(error: anyhow::Error) -> Self {
         Self::Internal(error)
+    }
+}
+
+impl From<LogError> for PublishError {
+    fn from(error: LogError) -> Self {
+        match error {
+            LogError::Internal(error) => Self::Internal(error),
+            LogError::NotInTree | LogError::BeyondLog => {
+                Self::Internal(anyhow!("the log's stored state is inconsistent"))
+            }
+        }
     }
 }
 
@@ -82,19 +92,8 @@ pub async fn publish(
     let leaf_hash = merkle::leaf_hash(&digest, &judgment_digest_value);
     let mut tree_leaves = leaves;
     tree_leaves.push(leaf_hash.clone());
-    let root_hash = merkle::root(&tree_leaves)
-        .ok_or_else(|| PublishError::Internal(anyhow!("the log holds a malformed leaf hash")))?;
-    let audit_path = merkle::inclusion_proof(leaf_index, &tree_leaves)
-        .ok_or_else(|| PublishError::Internal(anyhow!("the new leaf has no inclusion path")))?;
-    let mut tree_head = TreeHead {
-        tree_size,
-        root_hash,
-        issued_at,
-        signature: String::new(),
-    };
-    let tree_head_digest_value =
-        tree_head_digest(&tree_head).map_err(|error| PublishError::Internal(error.into()))?;
-    tree_head.signature = sign::sign_hash(key, &tree_head_digest_value);
+    let inclusion = log::proof(&tree_leaves, leaf_index, Some(tree_size))?;
+    let tree_head = log::signed_head(key, &tree_leaves, issued_at)?;
     let tree_head_body =
         serde_json::to_string(&tree_head).map_err(|error| PublishError::Internal(error.into()))?;
 
@@ -118,12 +117,7 @@ pub async fn publish(
         bundle_digest: digest,
         judgment,
         tree_head,
-        inclusion: InclusionProof {
-            leaf_index,
-            tree_size,
-            leaf_hash,
-            audit_path,
-        },
+        inclusion,
     })
 }
 
@@ -167,25 +161,12 @@ async fn existing_receipt(store: &Store, stored: StoredPublication) -> Result<Pu
             "the latest tree head does not match the log's leaves"
         )));
     }
-    let leaf_index =
-        usize::try_from(stored.leaf_index).map_err(|error| PublishError::Internal(error.into()))?;
-    let leaf_hash = leaves
-        .get(leaf_index)
-        .ok_or_else(|| PublishError::Internal(anyhow!("stored leaf index is outside the log")))?
-        .clone();
-    let audit_path = merkle::inclusion_proof(stored.leaf_index, &leaves)
-        .ok_or_else(|| PublishError::Internal(anyhow!("a stored leaf hash is malformed")))?;
-    let tree_size = tree_head.tree_size;
+    let inclusion = log::proof(&leaves, stored.leaf_index, Some(tree_head.tree_size))?;
     Ok(PublishReceipt {
         bundle_digest: stored.digest,
         judgment,
         tree_head,
-        inclusion: InclusionProof {
-            leaf_index: stored.leaf_index,
-            tree_size,
-            leaf_hash,
-            audit_path,
-        },
+        inclusion,
     })
 }
 

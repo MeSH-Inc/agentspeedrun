@@ -3,15 +3,17 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ed25519_dalek::SigningKey;
+use serde::Deserialize;
 use speedrun_core::bundle::Bundle;
-use speedrun_core::commons::{CommonsHealth, PublishReceipt, PublishedRun};
+use speedrun_core::commons::{CommonsHealth, InclusionProof, PublishReceipt, PublishedRun, TreeHead};
 use speedrun_verify::Verifier;
 
+use crate::log::{self, LogError};
 use crate::record::{self, PublishError};
 use crate::store::Store;
 
@@ -28,6 +30,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/bundles", post(publish))
         .route("/v1/bundles/{digest}", get(published_bundle))
         .route("/v1/runs/{run_id}", get(published_run))
+        .route("/v1/log/head", get(log_head))
+        .route("/v1/log/proof/{leaf_index}", get(log_proof))
         .with_state(state)
 }
 
@@ -39,6 +43,29 @@ async fn health(State(s): State<AppState>) -> Result<Json<CommonsHealth>, (Statu
         commons_pubkey: speedrun_core::sign::pubkey_hex(s.key.as_ref()),
         tree_size,
     }))
+}
+
+async fn log_head(State(s): State<AppState>) -> Result<Json<TreeHead>, (StatusCode, String)> {
+    let head = log::latest(s.store.as_ref(), s.key.as_ref())
+        .await
+        .map_err(log_error)?;
+    Ok(Json(head))
+}
+
+#[derive(Deserialize)]
+struct ProofQuery {
+    tree_size: Option<u64>,
+}
+
+async fn log_proof(
+    State(s): State<AppState>,
+    Path(leaf_index): Path<u64>,
+    Query(query): Query<ProofQuery>,
+) -> Result<Json<InclusionProof>, (StatusCode, String)> {
+    let proof = log::inclusion(s.store.as_ref(), leaf_index, query.tree_size)
+        .await
+        .map_err(log_error)?;
+    Ok(Json(proof))
 }
 
 async fn publish(
@@ -99,6 +126,14 @@ fn publish_error(error: PublishError) -> (StatusCode, String) {
     match error {
         PublishError::Refused(message) => (StatusCode::BAD_REQUEST, message),
         PublishError::Internal(error) => internal(error),
+    }
+}
+
+fn log_error(error: LogError) -> (StatusCode, String) {
+    match error {
+        LogError::NotInTree => (StatusCode::NOT_FOUND, "the leaf is not in that tree".into()),
+        LogError::BeyondLog => (StatusCode::BAD_REQUEST, "tree_size exceeds the log".into()),
+        LogError::Internal(error) => internal(error),
     }
 }
 

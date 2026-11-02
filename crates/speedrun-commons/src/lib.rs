@@ -8,5 +8,6 @@
 pub mod http;
 pub mod judge;
 pub mod keys;
+pub mod log;
 pub mod record;
 pub mod store;
