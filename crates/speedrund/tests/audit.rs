@@ -1126,7 +1126,6 @@ fn open_live_stream(d: &Daemon) -> std::net::TcpStream {
 }
 
 #[test]
-#[ignore = "audit M4"]
 fn audit_m4_sigterm_with_a_live_stream_open_ends_the_daemon_within_3_seconds() {
     let mut d = Daemon::start();
     let stream = open_live_stream(&d);
@@ -1150,7 +1149,6 @@ fn guard_m4_sigterm_without_a_stream_ends_the_daemon() {
 }
 
 #[test]
-#[ignore = "audit D3"]
 fn audit_w4_a_daemon_writes_the_address_it_listens_on_to_the_data_dir() {
     use std::os::unix::fs::PermissionsExt;
     let home = tempfile::tempdir().unwrap();
@@ -1170,7 +1168,6 @@ fn audit_w4_a_daemon_writes_the_address_it_listens_on_to_the_data_dir() {
 }
 
 #[test]
-#[ignore = "audit P0.b"]
 fn audit_p0_b_health_proves_the_token_without_sending_it() {
     use sha2::Digest;
     let d = Daemon::start();
@@ -1207,7 +1204,6 @@ fn guard_p0_b_health_without_a_nonce_answers_without_a_proof() {
 }
 
 #[test]
-#[ignore = "audit M2"]
 fn audit_m2_a_daemon_that_cannot_bind_leaves_its_data_dir_untouched() {
     // V0.2 M2: bind (or lock) first, then create the token, then migrate.
     let first = Daemon::start();
@@ -1232,7 +1228,6 @@ fn audit_m2_a_daemon_that_cannot_bind_leaves_its_data_dir_untouched() {
 }
 
 #[test]
-#[ignore = "audit M2"]
 fn audit_m2_concurrent_starts_on_one_data_dir_give_no_token_mismatch() {
     // END_STATE W4.a: two daemons started concurrently 50 times give 0 token mismatches.
     for start in 0..50 {

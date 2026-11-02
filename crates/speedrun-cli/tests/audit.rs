@@ -779,7 +779,6 @@ fn has_line(text: &str, line: &str) -> bool {
 }
 
 #[test]
-#[ignore = "audit D3"]
 fn audit_w4_a_client_finds_the_daemon_through_the_addr_file() {
     // V0.2 W4 / D3: clients read `$DATA_DIR/addr`; 7477 is only the fallback.
     let machine = Machine::new();
@@ -799,7 +798,6 @@ fn audit_w4_a_client_finds_the_daemon_through_the_addr_file() {
 }
 
 #[test]
-#[ignore = "audit P0.b"]
 fn audit_p0_b_client_sends_nothing_to_a_daemon_that_cannot_prove_the_token() {
     // V0.2 W4: the client checks HMAC(token, nonce) from /v1/health before sending a body.
     let machine = Machine::new();
@@ -845,7 +843,6 @@ fn guard_p0_b_client_sends_to_a_daemon_that_proves_the_token() {
 }
 
 #[test]
-#[ignore = "audit M2"]
 fn audit_m2_a_prompt_refused_with_401_is_spooled() {
     // V0.2 M2: the client spools on 401 (after re-reading the token once), 5xx and timeouts.
     let machine = Machine::new();
@@ -860,7 +857,6 @@ fn audit_m2_a_prompt_refused_with_401_is_spooled() {
 }
 
 #[test]
-#[ignore = "audit M2"]
 fn audit_m2_a_prompt_answered_with_500_is_spooled() {
     let machine = Machine::new();
     let daemon = RefusingDaemon::behaving(
@@ -969,7 +965,6 @@ fn audit_w4_a_doctor_explains_a_daemon_serving_another_data_dir() {
 }
 
 #[test]
-#[ignore = "audit W6.b"]
 fn audit_w6_b_an_untrusted_project_records_nothing_until_init_trust() {
     // V0.2 W6: a cloned repo with project.json records nothing until `speedrun init --trust`.
     let machine = Machine::untrusted();
@@ -1044,7 +1039,6 @@ fn status_stderr(machine: &Machine, cwd: &Path, home: &Path) -> String {
 }
 
 #[test]
-#[ignore = "audit W6.b"]
 fn audit_w6_b_project_search_never_goes_above_home() {
     let machine = Machine::new();
     let home = machine.root.path().join("home");
@@ -1071,7 +1065,6 @@ fn git_init(dir: &Path) {
 }
 
 #[test]
-#[ignore = "audit W6.b"]
 fn audit_w6_b_project_search_stops_at_the_git_toplevel() {
     let machine = Machine::new();
     let nested = machine.project_root().join("vendor/lib");
