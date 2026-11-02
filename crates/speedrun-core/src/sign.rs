@@ -7,6 +7,8 @@
 //!
 //! This module has no I/O: key files are the daemon's business.
 
+use std::collections::BTreeMap;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
@@ -57,18 +59,16 @@ pub const ROTATION_MESSAGE_PREFIX: &str = "agentspeedrun-rotation:";
 
 /// The old key's signature (hex) over the new public key: the `certificate`
 /// of a `DeviceRotated` event.
-///
-/// Not implemented yet: returns an empty string.
-pub fn rotation_certificate(_old: &SigningKey, _new_pubkey_hex: &str) -> String {
-    String::new()
+pub fn rotation_certificate(old: &SigningKey, new_pubkey_hex: &str) -> String {
+    let message = format!("{ROTATION_MESSAGE_PREFIX}{new_pubkey_hex}");
+    hex::encode(old.sign(message.as_bytes()).to_bytes())
 }
 
 /// Whether `certificate` is `old_pubkey_hex`'s signature over
 /// `new_pubkey_hex`. Malformed input does not verify.
-///
-/// Not implemented yet: nothing verifies.
-pub fn verify_rotation(_old_pubkey_hex: &str, _new_pubkey_hex: &str, _certificate: &str) -> bool {
-    false
+pub fn verify_rotation(old_pubkey_hex: &str, new_pubkey_hex: &str, certificate: &str) -> bool {
+    let message = format!("{ROTATION_MESSAGE_PREFIX}{new_pubkey_hex}");
+    verify_hash(old_pubkey_hex, &message, certificate)
 }
 
 /// Check `sig_hex` over `hash_hex` against a hex public key. Malformed input
@@ -120,67 +120,100 @@ impl SignatureCheck {
     }
 }
 
-/// Check every signature in one run's chain against the key the run names.
+/// Check every signature in one run's log. Events are grouped by the device
+/// that wrote them, since each device signs its own chain with the key that
+/// chain names or is rotated to.
 ///
-/// A run must name a device key in `RunStarted`, and every event must carry
-/// a signature over its hash. A missing key or a missing signature is an
-/// error: unsigned v1 logs are retired.
+/// A chain's first event names its key in `RunStarted.device_pubkey` or
+/// `DeviceJoined.device_pubkey`. Every event must carry a signature over its
+/// hash. A missing key or a missing signature is an error: unsigned v1 logs
+/// are retired.
 pub fn verify_event_signatures(events: &[Event]) -> SignatureCheck {
     let mut check = SignatureCheck::default();
-    let key = run_key(events);
-    if names_no_device_key(events) {
-        check.error = Some("run_started names no device key".into());
-    }
-    for e in events {
-        match (&e.sig, key) {
-            (Some(sig), Some(k)) => {
-                if verify_hash(k, &e.hash, sig) {
-                    check.signed += 1;
-                } else if check.error.is_none() {
-                    check.error = Some(format!("event seq {}: signature does not match", e.seq));
-                }
-            }
-            (Some(_), None) => {
-                if check.error.is_none() {
-                    check.error = Some(format!(
-                        "event seq {}: signed, but the run names no device key",
-                        e.seq
-                    ));
-                }
-            }
-            (None, _) => {
-                check.unsigned += 1;
-                if check.error.is_none() {
-                    check.error = Some(format!("event seq {}: no signature", e.seq));
-                }
-            }
-        }
+    let chains = device_chains(events);
+    for chain in chains.values() {
+        verify_device_chain(chain, &mut check);
     }
     check
 }
 
-/// The device key a run's `RunStarted` names.
-fn run_key(events: &[Event]) -> Option<&str> {
-    events.iter().find_map(|e| match &e.payload {
+/// Events grouped by `device_id`, each chain ordered by `seq`.
+fn device_chains(events: &[Event]) -> BTreeMap<&str, Vec<&Event>> {
+    let mut chains: BTreeMap<&str, Vec<&Event>> = BTreeMap::new();
+    for event in events {
+        chains.entry(event.device_id.as_str()).or_default().push(event);
+    }
+    for chain in chains.values_mut() {
+        chain.sort_by_key(|event| event.seq);
+    }
+    chains
+}
+
+/// Check one device's chain, following key rotations as it goes.
+fn verify_device_chain(chain: &[&Event], check: &mut SignatureCheck) {
+    let Some(&first) = chain.first() else {
+        return;
+    };
+    let mut key = match &first.payload {
         EventPayload::RunStarted {
             device_pubkey: Some(k),
             ..
         } => Some(k.as_str()),
+        EventPayload::RunStarted {
+            device_pubkey: None, ..
+        } => {
+            note_error(check, "run_started names no device key".into());
+            None
+        }
+        EventPayload::DeviceJoined { device_pubkey } => Some(device_pubkey.as_str()),
         _ => None,
-    })
+    };
+    for &event in chain {
+        if let EventPayload::DeviceRotated {
+            new_pubkey,
+            certificate,
+        } = &event.payload
+        {
+            match key {
+                Some(current) if verify_rotation(current, new_pubkey, certificate) => {
+                    key = Some(new_pubkey.as_str());
+                }
+                Some(_) => note_error(
+                    check,
+                    format!("event seq {}: rotation certificate does not verify", event.seq),
+                ),
+                None => {}
+            }
+        }
+        match (&event.sig, key) {
+            (Some(sig), Some(k)) => {
+                if verify_hash(k, &event.hash, sig) {
+                    check.signed += 1;
+                } else {
+                    note_error(
+                        check,
+                        format!("event seq {}: signature does not match", event.seq),
+                    );
+                }
+            }
+            (Some(_), None) => {
+                note_error(
+                    check,
+                    format!("event seq {}: signed, but the run names no device key", event.seq),
+                );
+            }
+            (None, _) => {
+                check.unsigned += 1;
+                note_error(check, format!("event seq {}: no signature", event.seq));
+            }
+        }
+    }
 }
 
-/// Whether any `RunStarted` in the chain fails to name a device key.
-fn names_no_device_key(events: &[Event]) -> bool {
-    events.iter().any(|e| {
-        matches!(
-            &e.payload,
-            EventPayload::RunStarted {
-                device_pubkey: None,
-                ..
-            }
-        )
-    })
+fn note_error(check: &mut SignatureCheck, message: String) {
+    if check.error.is_none() {
+        check.error = Some(message);
+    }
 }
 
 #[cfg(test)]
