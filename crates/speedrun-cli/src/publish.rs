@@ -60,10 +60,10 @@ impl Destination {
     /// fallback to some default server.
     fn resolve(to: Option<&str>) -> Result<Self> {
         if let Some(url) = to.map(str::trim).filter(|url| !url.is_empty()) {
-            return Ok(Self(url.to_string()));
+            return Self::checked(url);
         }
         match std::env::var("SPEEDRUN_COMMONS_URL") {
-            Ok(url) if !url.trim().is_empty() => Ok(Self(url.trim().to_string())),
+            Ok(url) if !url.trim().is_empty() => Self::checked(url.trim()),
             Ok(_) | Err(std::env::VarError::NotPresent) => {
                 bail!("no commons address: pass --to <url> or set SPEEDRUN_COMMONS_URL")
             }
@@ -71,6 +71,34 @@ impl Destination {
                 Err(anyhow::anyhow!("SPEEDRUN_COMMONS_URL is not valid unicode: {e}"))
             }
         }
+    }
+
+    /// `url` as a destination, if it is https, or plain http to this machine.
+    /// A commons tells the device whom to link it to and receives its
+    /// bundles, so a network path must not be able to answer for it.
+    fn checked(url: &str) -> Result<Self> {
+        let lower = url.to_ascii_lowercase();
+        if lower.starts_with("https://") {
+            return Ok(Self(url.to_string()));
+        }
+        let Some(rest) = lower.strip_prefix("http://") else {
+            bail!("{url} is not an http or https address");
+        };
+        let authority = match rest.split_once('/') {
+            Some((authority, _)) => authority,
+            None => rest,
+        };
+        let host = match authority.rsplit_once(':') {
+            Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+            _ => authority,
+        };
+        let loopback_v4 = host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback());
+        if host == "localhost" || host == "[::1]" || loopback_v4 {
+            return Ok(Self(url.to_string()));
+        }
+        bail!("the commons at {url} is not https; only a commons on this machine may use plain http")
     }
 
     /// `path`, which starts with `/`, on this base.
@@ -163,5 +191,32 @@ mod tests {
     fn a_run_id_stays_one_path_segment() {
         assert_eq!(super::path_segment("01JABC"), "01JABC");
         assert_eq!(super::path_segment("a/b?c#d e"), "a%2Fb%3Fc%23d%20e");
+    }
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::Destination;
+
+    #[test]
+    fn a_remote_commons_must_be_https() {
+        for allowed in [
+            "https://commons.example",
+            "HTTPS://commons.example/",
+            "http://127.0.0.1:7478",
+            "http://localhost:7478/",
+            "http://[::1]:7478",
+        ] {
+            assert!(Destination::checked(allowed).is_ok(), "{allowed}");
+        }
+        for refused in [
+            "http://commons.example",
+            "http://127.0.0.1.evil.example",
+            "http://localhost.evil.example:80",
+            "ftp://commons.example",
+            "commons.example",
+        ] {
+            assert!(Destination::checked(refused).is_err(), "{refused}");
+        }
     }
 }
