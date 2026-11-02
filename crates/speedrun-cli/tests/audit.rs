@@ -560,7 +560,6 @@ fn guard_an_unreadable_spool_line_loses_none_of_the_entries_after_it() {
 // --- Wave 2b: export and key rotation from the command line ------------------------------
 
 #[test]
-#[ignore = "audit C3"]
 fn audit_w9_d_speedrun_export_prints_commitments_and_no_prompt_text() {
     let machine = Machine::new();
     let _daemon = Daemon::start(&machine);

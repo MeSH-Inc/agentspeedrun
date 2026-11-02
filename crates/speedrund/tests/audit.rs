@@ -950,7 +950,6 @@ fn audit_w9_c_rotating_the_device_key_keeps_every_run_verifiable() {
 }
 
 #[test]
-#[ignore = "audit C3"]
 fn audit_w9_d_tier_2_export_commits_to_prompts_without_text() {
     let d = Daemon::start();
     let run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
