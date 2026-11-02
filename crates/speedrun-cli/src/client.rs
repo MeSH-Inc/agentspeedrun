@@ -268,7 +268,8 @@ impl Client {
                 // for inspection and go on with the rest of the file.
                 let entry = match serde_json::from_slice::<SpoolEntry>(&bytes) {
                     Ok(entry) => entry,
-                    Err(_) => {
+                    Err(e) => {
+                        report_unreadable_entry(&file, &e);
                         rejected.append(&bytes);
                         continue;
                     }
@@ -332,6 +333,12 @@ fn append_line_result(file: &Path, line: &[u8]) -> std::io::Result<()> {
     f.write_all(&record)
 }
 
+fn report_unreadable_entry(file: &Path, e: &serde_json::Error) {
+    if std::env::var_os("SPEEDRUN_DEBUG").is_some() {
+        eprintln!("speedrun: refused an unreadable entry in {}: {e}", file.display());
+    }
+}
+
 fn report_io_error(action: &str, file: &Path, e: &std::io::Error) {
     if std::env::var_os("SPEEDRUN_DEBUG").is_some() {
         eprintln!("speedrun: could not {action} {}: {e}", file.display());
@@ -386,12 +393,11 @@ impl RejectedLog {
         let keep = REJECTED_MAX_BYTES / 2;
         let mut total = 0u64;
         let mut kept: Vec<&[u8]> = Vec::new();
-        for line in text
-            .strip_suffix(b"\n")
-            .unwrap_or(&text)
-            .split(|&b| b == b'\n')
-            .rev()
-        {
+        for line in text.split(|&b| b == b'\n').rev() {
+            // The empty piece after the final newline is not a line.
+            if line.is_empty() {
+                continue;
+            }
             let len = line.len() as u64 + 1;
             if !kept.is_empty() && total.saturating_add(len) > keep {
                 break;
