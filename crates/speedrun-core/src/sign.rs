@@ -51,6 +51,26 @@ pub fn sign_hash(key: &SigningKey, hash_hex: &str) -> String {
     hex::encode(key.sign(hash_hex.as_bytes()).to_bytes())
 }
 
+/// What a rotation certificate signs: this prefix followed by the new hex
+/// public key, as bytes.
+pub const ROTATION_MESSAGE_PREFIX: &str = "agentspeedrun-rotation:";
+
+/// The old key's signature (hex) over the new public key: the `certificate`
+/// of a `DeviceRotated` event.
+///
+/// Not implemented yet: returns an empty string.
+pub fn rotation_certificate(_old: &SigningKey, _new_pubkey_hex: &str) -> String {
+    String::new()
+}
+
+/// Whether `certificate` is `old_pubkey_hex`'s signature over
+/// `new_pubkey_hex`. Malformed input does not verify.
+///
+/// Not implemented yet: nothing verifies.
+pub fn verify_rotation(_old_pubkey_hex: &str, _new_pubkey_hex: &str, _certificate: &str) -> bool {
+    false
+}
+
 /// Check `sig_hex` over `hash_hex` against a hex public key. Malformed input
 /// is not an error: it simply does not verify.
 pub fn verify_hash(pubkey_hex: &str, hash_hex: &str, sig_hex: &str) -> bool {
@@ -189,6 +209,10 @@ mod tests {
                     category_id: "any-percent".into(),
                     category_version: 1,
                     device_pubkey: Some(pubkey_hex(run_key)),
+                    start_head: None,
+                    start_head_committed_at: None,
+                    ruleset_digest: None,
+                    disclosure_commitment: None,
                 }
             } else {
                 EventPayload::AgentTurnEnded {

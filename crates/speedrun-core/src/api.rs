@@ -125,6 +125,8 @@ pub struct Protocol {
     active_run_response: ActiveRunResponse,
     categories_response: CategoriesResponse,
     chain_report: ChainReport,
+    export_response: ExportResponse,
+    rotate_response: RotateResponse,
     live_snapshot: LiveSnapshot,
     error_body: ErrorBody,
 }
@@ -145,4 +147,36 @@ mod tests {
             "schema/protocol.schema.json is stale; run `cargo run -q --bin speedrun -- schema > schema/protocol.schema.json`"
         );
     }
+}
+
+/// `GET /v1/runs/{run_id}/export?tier=2`: what a tier 2 publication would
+/// carry about the run's prompts. No prompt text.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportResponse {
+    pub run_id: String,
+    pub tier: u8,
+    /// sha256 (hex) of the run's disclosure key, as in `RunStarted`.
+    pub disclosure_commitment: String,
+    /// One entry per prompt, in log order.
+    pub prompts: Vec<PromptCommitment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PromptCommitment {
+    pub event_id: String,
+    /// HMAC-SHA256 (hex) of the redacted prompt text under the run's
+    /// disclosure key.
+    pub commitment: String,
+    /// Length of the redacted text, in characters.
+    pub length: u64,
+    pub redacted: bool,
+}
+
+/// `POST /v1/device/rotate`: the device's signing key was replaced.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RotateResponse {
+    /// The key that signs from now on (hex).
+    pub device_pubkey: String,
+    /// The key it replaced (hex).
+    pub previous_pubkey: String,
 }

@@ -299,7 +299,9 @@ impl RunView {
             view.last_event_at = view.last_event_at.max(e.recorded_at);
             let t = e.occurred_at.max(start);
             match &e.payload {
-                EventPayload::RunStarted { .. } => {}
+                EventPayload::RunStarted { .. }
+                | EventPayload::DeviceJoined { .. }
+                | EventPayload::DeviceRotated { .. } => {}
                 EventPayload::PromptSubmitted { session_id, host, .. } => {
                     view.prompt_count += 1;
                     view.sessions.insert(session_id.clone());
@@ -606,6 +608,9 @@ impl RunView {
         }
         match payload {
             P::RunStarted { .. } => Err("run already started".into()),
+            P::DeviceJoined { .. } | P::DeviceRotated { .. } => {
+                Err("device events are written by the daemon, not sent by clients".into())
+            }
             P::PromptSubmitted { .. } | P::AgentTurnStarted { .. } | P::AgentTurnEnded { .. } => Ok(()),
             P::MilestoneProposed {
                 milestone_id,
@@ -673,6 +678,10 @@ mod tests {
                 category_id: "any-percent".into(),
                 category_version: 1,
                 device_pubkey: None,
+                start_head: None,
+                start_head_committed_at: None,
+                ruleset_digest: None,
+                disclosure_commitment: None,
             },
         )];
         all.extend(items);

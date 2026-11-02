@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Bump when the envelope or a payload changes incompatibly.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// A single immutable fact in a run's log, as stored by the daemon.
 ///
@@ -27,8 +27,8 @@ pub struct Event {
     pub prev_hash: Option<String>,
     /// sha256 over the canonical JSON of this event without `hash` or `sig`.
     pub hash: String,
-    /// Ed25519 signature over the `hash` (hex), from the device's key.
-    /// Absent in schema v1 events.
+    /// Ed25519 signature over the `hash` (hex), from the key that signs this
+    /// device's chain at this point. Required: an unsigned event fails verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sig: Option<String>,
 }
@@ -44,14 +44,33 @@ pub enum EventPayload {
         /// Hex ed25519 public key of the device that signs this chain.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device_pubkey: Option<String>,
+        /// The project's git HEAD when the run started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_head: Option<String>,
+        /// Committer time of `start_head`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_head_committed_at: Option<DateTime<Utc>>,
+        /// sha256 (hex) of the canonical JSON of the category the run pinned.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ruleset_digest: Option<String>,
+        /// sha256 (hex) of the run's disclosure key, which stays on the device
+        /// until the run is revealed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disclosure_commitment: Option<String>,
     },
+    /// A prompt, without its text. The text is kept outside the chain, keyed
+    /// by `event_id`, so deleting it never breaks the log.
     PromptSubmitted {
         session_id: String,
         /// Which tool the prompt came from, e.g. `claude-code`, `opencode`.
         host: String,
         model: Option<String>,
-        content: String,
-        /// True when secret redaction changed `content`.
+        /// HMAC-SHA256 (hex) of the redacted text under the device's prompt
+        /// key, which never leaves the machine.
+        content_digest: String,
+        /// Length of the redacted text, in characters.
+        length: u64,
+        /// True when secret redaction changed the text.
         redacted: bool,
     },
     AgentTurnStarted {
@@ -104,6 +123,18 @@ pub enum EventPayload {
         outcome: RunOutcome,
         reason: Option<String>,
     },
+    /// The first event of a device's chain in a run it did not start: names
+    /// the key that signs that chain.
+    DeviceJoined {
+        device_pubkey: String,
+    },
+    /// The device's signing key changed. Signed by the new key; `certificate`
+    /// is the old key's signature over the new public key, so the chain
+    /// stays verifiable from public keys alone.
+    DeviceRotated {
+        new_pubkey: String,
+        certificate: String,
+    },
 }
 
 impl EventPayload {
@@ -123,6 +154,8 @@ impl EventPayload {
             Self::RunPaused { .. } => "run_paused",
             Self::RunResumed { .. } => "run_resumed",
             Self::RunFinished { .. } => "run_finished",
+            Self::DeviceJoined { .. } => "device_joined",
+            Self::DeviceRotated { .. } => "device_rotated",
         }
     }
 }

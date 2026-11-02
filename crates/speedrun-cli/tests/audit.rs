@@ -508,3 +508,52 @@ fn audit_w2_d_spooled_event_older_than_the_runs_last_event_is_delivered_by_flush
         machine.files_containing("spooled-turn-end")
     );
 }
+
+// --- Wave 2b: export and key rotation from the command line ------------------------------
+
+#[test]
+#[ignore = "audit C3"]
+fn audit_w9_d_speedrun_export_prints_commitments_and_no_prompt_text() {
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    let recorded = machine.prompt("add a login page with passkeys");
+    assert!(recorded.status.success());
+    let out = machine.speedrun(&["export", "--tier", "2"], b"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!stdout.contains("login page"), "{stdout}");
+    let export: serde_json::Value = serde_json::from_str(&stdout).expect("the export is JSON");
+    let commitment = export["prompts"][0]["commitment"].as_str().unwrap_or_default();
+    assert!(
+        commitment.len() == 64 && commitment.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{stdout}"
+    );
+}
+
+#[test]
+#[ignore = "audit D5"]
+fn audit_w9_c_speedrun_key_rotate_replaces_the_signing_key() {
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    assert!(machine.prompt("start").status.success());
+    let before = std::fs::read_to_string(machine.data_dir().join("device.key")).unwrap();
+    let out = machine.speedrun(&["key", "rotate"], b"");
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = std::fs::read_to_string(machine.data_dir().join("device.key")).unwrap();
+    assert_ne!(before.trim(), after.trim());
+    let verify = machine.speedrun(&["verify"], b"");
+    assert!(
+        machine.prompt("continue").status.success() && verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+}

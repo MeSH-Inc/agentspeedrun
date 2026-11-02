@@ -175,7 +175,10 @@ impl Service {
                     session_id: req.session_id.clone(),
                     host: req.host.clone(),
                     model: req.model.clone(),
-                    content,
+                    // Not yet: the digest under the device's prompt key, and
+                    // the text in the prompts table (W1.d).
+                    content_digest: String::new(),
+                    length: content.chars().count() as u64,
                     redacted,
                 },
             )?;
@@ -619,6 +622,10 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
             category_id: cat.id.clone(),
             category_version: cat.version,
             device_pubkey: Some(tx.device_pubkey()),
+            start_head: None,
+            start_head_committed_at: None,
+            ruleset_digest: None,
+            disclosure_commitment: None,
         },
     )?;
     for m in &cat.milestones {
@@ -694,13 +701,11 @@ mod tests {
         assert_eq!(run.prompt_count, 1);
         assert_eq!(run.milestones.len(), 2);
         assert!(run.milestones.iter().all(|m| m.state == MilestoneState::Accepted));
-        let EventPayload::PromptSubmitted {
-            content, redacted, ..
-        } = &r.event.payload
-        else {
+        let EventPayload::PromptSubmitted { redacted, .. } = &r.event.payload else {
             panic!()
         };
-        assert!(*redacted && !content.contains("sk-ant"));
+        assert!(*redacted);
+        assert!(!serde_json::to_string(&r.event).unwrap().contains("sk-ant"));
 
         let r2 = s.record_prompt(prompt("p2")).unwrap();
         assert!(!r2.run_started);

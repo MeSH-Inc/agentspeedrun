@@ -31,6 +31,12 @@
     "chain_report": {
       "$ref": "#/$defs/ChainReport"
     },
+    "export_response": {
+      "$ref": "#/$defs/ExportResponse"
+    },
+    "rotate_response": {
+      "$ref": "#/$defs/RotateResponse"
+    },
     "live_snapshot": {
       "$ref": "#/$defs/LiveSnapshot"
     },
@@ -48,6 +54,8 @@
     "active_run_response",
     "categories_response",
     "chain_report",
+    "export_response",
+    "rotate_response",
     "live_snapshot",
     "error_body"
   ],
@@ -101,7 +109,7 @@
           "type": "string"
         },
         "sig": {
-          "description": "Ed25519 signature over the `hash` (hex), from the device's key.\nAbsent in schema v1 events.",
+          "description": "Ed25519 signature over the `hash` (hex), from the key that signs this\ndevice's chain at this point. Required: an unsigned event fails verification.",
           "type": [
             "string",
             "null"
@@ -152,6 +160,35 @@
                 "string",
                 "null"
               ]
+            },
+            "start_head": {
+              "description": "The project's git HEAD when the run started.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "start_head_committed_at": {
+              "description": "Committer time of `start_head`.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "ruleset_digest": {
+              "description": "sha256 (hex) of the canonical JSON of the category the run pinned.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "disclosure_commitment": {
+              "description": "sha256 (hex) of the run's disclosure key, which stays on the device\nuntil the run is revealed.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -162,6 +199,7 @@
           ]
         },
         {
+          "description": "A prompt, without its text. The text is kept outside the chain, keyed\nby `event_id`, so deleting it never breaks the log.",
           "type": "object",
           "properties": {
             "type": {
@@ -181,11 +219,18 @@
                 "null"
               ]
             },
-            "content": {
+            "content_digest": {
+              "description": "HMAC-SHA256 (hex) of the redacted text under the device's prompt\nkey, which never leaves the machine.",
               "type": "string"
             },
+            "length": {
+              "description": "Length of the redacted text, in characters.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
             "redacted": {
-              "description": "True when secret redaction changed `content`.",
+              "description": "True when secret redaction changed the text.",
               "type": "boolean"
             }
           },
@@ -193,7 +238,8 @@
             "type",
             "session_id",
             "host",
-            "content",
+            "content_digest",
+            "length",
             "redacted"
           ]
         },
@@ -447,6 +493,44 @@
           "required": [
             "type",
             "outcome"
+          ]
+        },
+        {
+          "description": "The first event of a device's chain in a run it did not start: names\nthe key that signs that chain.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "device_joined"
+            },
+            "device_pubkey": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "device_pubkey"
+          ]
+        },
+        {
+          "description": "The device's signing key changed. Signed by the new key; `certificate`\nis the old key's signature over the new public key, so the chain\nstays verifiable from public keys alone.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "device_rotated"
+            },
+            "new_pubkey": {
+              "type": "string"
+            },
+            "certificate": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "new_pubkey",
+            "certificate"
           ]
         }
       ]
@@ -1166,6 +1250,83 @@
         "run_id",
         "events",
         "ok"
+      ]
+    },
+    "ExportResponse": {
+      "description": "`GET /v1/runs/{run_id}/export?tier=2`: what a tier 2 publication would\ncarry about the run's prompts. No prompt text.",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "disclosure_commitment": {
+          "description": "sha256 (hex) of the run's disclosure key, as in `RunStarted`.",
+          "type": "string"
+        },
+        "prompts": {
+          "description": "One entry per prompt, in log order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptCommitment"
+          }
+        }
+      },
+      "required": [
+        "run_id",
+        "tier",
+        "disclosure_commitment",
+        "prompts"
+      ]
+    },
+    "PromptCommitment": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "commitment": {
+          "description": "HMAC-SHA256 (hex) of the redacted prompt text under the run's\ndisclosure key.",
+          "type": "string"
+        },
+        "length": {
+          "description": "Length of the redacted text, in characters.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "redacted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "event_id",
+        "commitment",
+        "length",
+        "redacted"
+      ]
+    },
+    "RotateResponse": {
+      "description": "`POST /v1/device/rotate`: the device's signing key was replaced.",
+      "type": "object",
+      "properties": {
+        "device_pubkey": {
+          "description": "The key that signs from now on (hex).",
+          "type": "string"
+        },
+        "previous_pubkey": {
+          "description": "The key it replaced (hex).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_pubkey",
+        "previous_pubkey"
       ]
     },
     "LiveSnapshot": {

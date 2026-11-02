@@ -246,6 +246,10 @@ mod tests {
                 category_id: "any-percent".into(),
                 category_version: 1,
                 device_pubkey: None,
+                start_head: None,
+                start_head_committed_at: None,
+                ruleset_digest: None,
+                disclosure_commitment: None,
             },
         )];
         for (key, title, trust) in [
@@ -319,7 +323,8 @@ mod tests {
                 session_id: "s1".into(),
                 host: "claude-code".into(),
                 model: None,
-                content: String::new(),
+                content_digest: String::new(),
+                length: 0,
                 redacted: false,
             },
         )

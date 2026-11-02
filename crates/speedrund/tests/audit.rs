@@ -759,3 +759,293 @@ fn guard_w2_d_retry_of_a_recorded_event_is_answered_not_refused() {
         assert_eq!(status, 200, "retry on {path}: {body}");
     }
 }
+
+// --- Wave 2b: the v2 format (docs/V0.2.md W1, W9) --------------------------------------
+
+/// HMAC-SHA256 (RFC 2104), computed here rather than by the code under test.
+fn hmac_hex(key: &[u8], message: &[u8]) -> String {
+    use sha2::Digest;
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&sha2::Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let pad = |byte: u8| block.iter().map(|b| b ^ byte).collect::<Vec<u8>>();
+    let inner = sha2::Sha256::digest([pad(0x36), message.to_vec()].concat());
+    hex::encode(sha2::Sha256::digest([pad(0x5c), inner.to_vec()].concat()))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// A hex key file in the daemon's home, decoded.
+fn key_file(path: &Path) -> Vec<u8> {
+    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    hex::decode(text.trim()).expect("a hex key")
+}
+
+fn prompt_text(d: &Daemon, event_id: &str, project: &str, text: &str) -> String {
+    let (status, body) = d.post(
+        "/v1/prompts",
+        &json!({
+            "event_id": event_id, "project_id": project, "project_root": null,
+            "category_id": "any-percent", "session_id": "s1", "host": "test", "model": null,
+            "content": text, "occurred_at": null,
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    body["run_id"].as_str().unwrap().to_string()
+}
+
+fn run_events(d: &Daemon, run: &str) -> Vec<Value> {
+    let (status, body) = d.get(&format!("/v1/runs/{run}/events"), Some(&d.token));
+    assert_eq!(status, 200, "{body}");
+    body.as_array()
+        .cloned()
+        .or_else(|| body["events"].as_array().cloned())
+        .expect("a list of events")
+}
+
+fn payloads_of(events: &[Value], kind: &str) -> Vec<Value> {
+    events
+        .iter()
+        .map(|e| e["payload"].clone())
+        .filter(|p| p["type"] == kind)
+        .collect()
+}
+
+const PROMPT_TEXT: &str = "add a settings page with a dark mode toggle";
+
+#[test]
+#[ignore = "audit A6-7"]
+fn audit_w1_d_prompt_text_is_kept_outside_the_chain() {
+    let d = Daemon::start();
+    let _run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
+    let conn = rusqlite::Connection::open(d.home.path().join("speedrun.sqlite")).unwrap();
+    let in_chain: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE instr(body, ?1) > 0",
+            [PROMPT_TEXT],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_chain, 0, "the prompt text must not be in any event body");
+    let kept: String = conn
+        .query_row("SELECT content FROM prompts WHERE event_id = 'p1'", [], |r| {
+            r.get(0)
+        })
+        .expect("the prompts table holds the text, keyed by event_id");
+    assert_eq!(kept, PROMPT_TEXT);
+}
+
+#[test]
+#[ignore = "audit A6-7"]
+fn audit_w1_d_prompt_digest_is_an_hmac_under_the_device_prompt_key() {
+    let d = Daemon::start();
+    let run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
+    let key_path = d.home.path().join("prompt.key");
+    let key = key_file(&key_path);
+    assert_eq!(key.len(), 32, "a 32-byte prompt key");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the prompt key is private");
+    }
+    let prompts = payloads_of(&run_events(&d, &run), "prompt_submitted");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(
+        prompts[0]["content_digest"],
+        json!(hmac_hex(&key, PROMPT_TEXT.as_bytes()))
+    );
+    assert_eq!(prompts[0]["length"], json!(PROMPT_TEXT.chars().count()));
+}
+
+#[test]
+#[ignore = "audit A6-7"]
+fn audit_w1_d_run_whose_prompt_text_was_deleted_still_verifies() {
+    let d = Daemon::start();
+    let run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
+    prompt_text(&d, "p2", "proj", "and a logout button");
+    let conn = rusqlite::Connection::open(d.home.path().join("speedrun.sqlite")).unwrap();
+    conn.busy_timeout(Duration::from_secs(5)).unwrap();
+    let deleted = conn
+        .execute("DELETE FROM prompts", [])
+        .expect("prompt text can be deleted");
+    assert_eq!(deleted, 2);
+    let (_, report) = d.get(&format!("/v1/runs/{run}/verify"), Some(&d.token));
+    assert_eq!(report["ok"], true, "{report}");
+    let (status, view) = d.get(&format!("/v1/runs/{run}"), Some(&d.token));
+    assert_eq!(status, 200, "{view}");
+    assert_eq!(view["prompt_count"], 2, "{view}");
+}
+
+#[test]
+#[ignore = "audit A6-8"]
+fn audit_w1_f_predefined_milestone_ids_are_namespaced() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    let (_, view) = d.get(&format!("/v1/runs/{run}"), Some(&d.token));
+    let ids: Vec<&str> = view["milestones"]
+        .as_array()
+        .expect("milestones")
+        .iter()
+        .filter_map(|m| m["milestone_id"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["any-percent@1/scaffold-runs", "any-percent@1/happy-path-demo"],
+        "{view}"
+    );
+    // A category key still names the milestone on input; the log stores the full id.
+    let (status, body) = d.post(
+        "/v1/events",
+        &json!({
+            "event_id": "by-key", "run_id": run, "occurred_at": null,
+            "payload": claim("scaffold-runs", json!([])),
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["event"]["payload"]["milestone_id"], "any-percent@1/scaffold-runs",
+        "{body}"
+    );
+}
+
+#[test]
+#[ignore = "audit D5"]
+fn audit_w9_c_rotating_the_device_key_keeps_every_run_verifiable() {
+    let d = Daemon::start();
+    let runs = [d.prompt("pa", "proj-a"), d.prompt("pb", "proj-b")];
+    let old = run_events(&d, &runs[0])[0]["payload"]["device_pubkey"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, rotated) = d.post("/v1/device/rotate", &json!({}));
+    assert_eq!(status, 200, "{rotated}");
+    assert_eq!(rotated["previous_pubkey"], json!(old), "{rotated}");
+    let new = rotated["device_pubkey"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+    let seed = fs::read_to_string(d.home.path().join("device.key")).unwrap();
+    let key = speedrun_core::sign::parse_seed(&seed).unwrap();
+    assert_eq!(
+        speedrun_core::sign::pubkey_hex(&key),
+        new,
+        "device.key holds the new key"
+    );
+
+    for (i, (run, project)) in runs.iter().zip(["proj-a", "proj-b"]).enumerate() {
+        let (status, body) = d.post(
+            &format!("/v1/projects/{project}/events"),
+            &json!({"event_id": format!("after-{i}"), "occurred_at": null,
+                    "payload": claim("scaffold-runs", json!([]))}),
+        );
+        assert_eq!(status, 200, "{body}");
+        let events = run_events(&d, run);
+        let rotations = payloads_of(&events, "device_rotated");
+        assert_eq!(rotations.len(), 1, "{project}: one rotation in its chain");
+        assert_eq!(rotations[0]["new_pubkey"], json!(new));
+        let (_, report) = d.get(&format!("/v1/runs/{run}/verify"), Some(&d.token));
+        assert_eq!(report["ok"], true, "{project}: {report}");
+        assert_eq!(report["signed"], json!(events.len()), "{project}: {report}");
+    }
+}
+
+#[test]
+#[ignore = "audit C3"]
+fn audit_w9_d_tier_2_export_commits_to_prompts_without_text() {
+    let d = Daemon::start();
+    let run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
+    prompt_text(&d, "p2", "proj", "and a logout button");
+    let key = key_file(&d.home.path().join("disclosure").join(&run));
+    let (status, export) = d.get(&format!("/v1/runs/{run}/export?tier=2"), Some(&d.token));
+    assert_eq!(status, 200, "{export}");
+    let text = export.to_string();
+    assert!(
+        !text.contains("settings page") && !text.contains("logout"),
+        "{text}"
+    );
+    assert_eq!(export["tier"], 2);
+    assert_eq!(export["disclosure_commitment"], json!(sha256_hex(&key)));
+    let started = &run_events(&d, &run)[0]["payload"];
+    assert_eq!(
+        started["disclosure_commitment"],
+        json!(sha256_hex(&key)),
+        "{started}"
+    );
+    let prompts = export["prompts"].as_array().expect("prompts");
+    let expected = [("p1", PROMPT_TEXT), ("p2", "and a logout button")];
+    assert_eq!(prompts.len(), expected.len(), "{export}");
+    for (p, (id, original)) in prompts.iter().zip(expected) {
+        assert_eq!(p["event_id"], id);
+        assert_eq!(
+            p["commitment"],
+            json!(hmac_hex(&key, original.as_bytes())),
+            "{id}"
+        );
+        assert_eq!(p["length"], json!(original.chars().count()));
+    }
+}
+
+#[test]
+#[ignore = "audit A3-1"]
+fn audit_w9_e_run_started_names_its_head_and_rules() {
+    let d = Daemon::start();
+    let repo = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .env("GIT_COMMITTER_DATE", "2026-01-02T03:04:05Z")
+            .env("GIT_AUTHOR_DATE", "2026-01-02T03:04:05Z")
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t.dev",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "x",
+    ]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let (status, body) = d.post(
+        "/v1/prompts",
+        &json!({
+            "event_id": "p1", "project_id": "proj",
+            "project_root": repo.path().to_str().unwrap(),
+            "category_id": "any-percent", "session_id": "s1", "host": "test", "model": null,
+            "content": "go", "occurred_at": null,
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let run = body["run_id"].as_str().unwrap();
+    let started = &run_events(&d, run)[0]["payload"];
+    assert_eq!(started["start_head"], json!(head), "{started}");
+    let committed = started["start_head_committed_at"].as_str().unwrap_or_default();
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339(committed)
+            .map(|t| t.timestamp())
+            .ok(),
+        Some(1_767_323_045),
+        "{started}"
+    );
+    let (_, categories) = d.get("/v1/categories", Some(&d.token));
+    let category = categories["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "any-percent")
+        .unwrap();
+    let canonical = speedrun_core::hash::canonical_json(category);
+    assert_eq!(started["ruleset_digest"], json!(sha256_hex(canonical.as_bytes())));
+}

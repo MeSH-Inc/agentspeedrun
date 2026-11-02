@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod category;
+pub mod digest;
 pub mod event;
 pub mod hash;
 pub mod live;

@@ -27,6 +27,10 @@ fn log(items: Vec<(i64, EventPayload)>) -> Vec<Event> {
             category_id: "any-percent".into(),
             category_version: 1,
             device_pubkey: None,
+            start_head: None,
+            start_head_committed_at: None,
+            ruleset_digest: None,
+            disclosure_commitment: None,
         },
     )];
     all.extend(items);
@@ -83,7 +87,8 @@ fn prompted(min: i64) -> (i64, EventPayload) {
             session_id: "s".into(),
             host: "test".into(),
             model: None,
-            content: "continue".into(),
+            content_digest: String::new(),
+            length: 8,
             redacted: false,
         },
     )
@@ -419,6 +424,10 @@ fn signed_log(key: &ed25519_dalek::SigningKey) -> Vec<Event> {
                 category_id: "any-percent".into(),
                 category_version: 1,
                 device_pubkey: Some(pubkey_hex(key)),
+                start_head: None,
+                start_head_committed_at: None,
+                ruleset_digest: None,
+                disclosure_commitment: None,
             };
         }
         e.prev_hash = out.last().map(|p| p.hash.clone());
@@ -456,4 +465,234 @@ fn guard_w1_e_fully_signed_run_passes_the_signature_check() {
     let check = speedrun_core::sign::verify_event_signatures(&signed_log(&device_key()));
     assert!(check.ok(), "{check:?}");
     assert_eq!(check.signed, 3);
+}
+
+// --- W1.d, D7: HMAC-SHA256 for prompt digests and disclosure commitments -----------------
+
+#[test]
+#[ignore = "audit A6-7"]
+fn audit_w1_d_hmac_sha256_matches_rfc_4231() {
+    use speedrun_core::digest::hmac_sha256;
+    // RFC 4231 test cases 1, 2 and 6 (a key longer than the block size).
+    let cases: [(Vec<u8>, &[u8], &str); 3] = [
+        (
+            vec![0x0b; 20],
+            b"Hi There",
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+        ),
+        (
+            b"Jefe".to_vec(),
+            b"what do ya want for nothing?",
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+        ),
+        (
+            vec![0xaa; 131],
+            b"Test Using Larger Than Block-Size Key - Hash Key First",
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+        ),
+    ];
+    for (key, message, expected) in cases {
+        assert_eq!(hex::encode(hmac_sha256(&key, message)), expected);
+    }
+}
+
+// --- W9.c, P0.a: key rotation and several device chains in one run ----------------------
+
+fn key(seed: u8) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+}
+
+/// The certificate format, computed here: the old key signs the prefix and the new key.
+fn certificate(old: &ed25519_dalek::SigningKey, new: &ed25519_dalek::SigningKey) -> String {
+    use ed25519_dalek::Signer;
+    let message = format!(
+        "{}{}",
+        speedrun_core::sign::ROTATION_MESSAGE_PREFIX,
+        speedrun_core::sign::pubkey_hex(new)
+    );
+    hex::encode(old.sign(message.as_bytes()).to_bytes())
+}
+
+/// One device's chain: `(minute, payload, signing key)` in seq order, linked and signed.
+fn chain(device: &str, items: Vec<(i64, EventPayload, &ed25519_dalek::SigningKey)>) -> Vec<Event> {
+    let mut out: Vec<Event> = Vec::new();
+    for (i, (min, payload, signer)) in items.into_iter().enumerate() {
+        let mut e = Event {
+            event_id: format!("{device}-{i}"),
+            schema_version: SCHEMA_VERSION,
+            run_id: "r".into(),
+            seq: i as u64 + 1,
+            device_id: device.into(),
+            occurred_at: t(min),
+            recorded_at: t(min),
+            payload,
+            prev_hash: out.last().map(|p| p.hash.clone()),
+            hash: String::new(),
+            sig: None,
+        };
+        e.hash = compute_hash(&e);
+        e.sig = Some(speedrun_core::sign::sign_hash(signer, &e.hash));
+        out.push(e);
+    }
+    out
+}
+
+fn run_started(signer: &ed25519_dalek::SigningKey) -> EventPayload {
+    EventPayload::RunStarted {
+        project_id: "p".into(),
+        project_root: None,
+        category_id: "any-percent".into(),
+        category_version: 1,
+        device_pubkey: Some(speedrun_core::sign::pubkey_hex(signer)),
+        start_head: None,
+        start_head_committed_at: None,
+        ruleset_digest: None,
+        disclosure_commitment: None,
+    }
+}
+
+fn rotated(old: &ed25519_dalek::SigningKey, new: &ed25519_dalek::SigningKey) -> EventPayload {
+    EventPayload::DeviceRotated {
+        new_pubkey: speedrun_core::sign::pubkey_hex(new),
+        certificate: certificate(old, new),
+    }
+}
+
+fn turn(start: bool) -> EventPayload {
+    if start {
+        EventPayload::AgentTurnStarted {
+            session_id: "s".into(),
+        }
+    } else {
+        EventPayload::AgentTurnEnded {
+            session_id: "s".into(),
+        }
+    }
+}
+
+#[test]
+#[ignore = "audit D5"]
+fn audit_w9_c_rotation_certificate_is_the_old_keys_signature_over_the_new_key() {
+    use speedrun_core::sign::{pubkey_hex, rotation_certificate, verify_rotation};
+    let (old, new, other) = (key(1), key(2), key(3));
+    assert_eq!(
+        rotation_certificate(&old, &pubkey_hex(&new)),
+        certificate(&old, &new)
+    );
+    let cert = certificate(&old, &new);
+    assert!(verify_rotation(&pubkey_hex(&old), &pubkey_hex(&new), &cert));
+    assert!(!verify_rotation(&pubkey_hex(&other), &pubkey_hex(&new), &cert));
+    assert!(!verify_rotation(&pubkey_hex(&old), &pubkey_hex(&other), &cert));
+    assert!(!verify_rotation(&pubkey_hex(&old), &pubkey_hex(&new), "not hex"));
+}
+
+#[test]
+#[ignore = "audit D5"]
+fn audit_w9_c_rotated_chain_verifies_from_public_keys_alone() {
+    let (old, new) = (key(1), key(2));
+    let events = chain(
+        "d1",
+        vec![
+            (0, run_started(&old), &old),
+            (1, turn(true), &old),
+            (2, rotated(&old, &new), &new),
+            (3, turn(false), &new),
+        ],
+    );
+    assert_eq!(speedrun_core::hash::verify_chain(&events), Ok(()));
+    let check = speedrun_core::sign::verify_event_signatures(&events);
+    assert!(check.ok(), "{check:?}");
+    assert_eq!(check.signed, 4);
+}
+
+#[test]
+fn guard_w9_c_rotation_with_a_forged_certificate_fails() {
+    let (old, new, thief) = (key(1), key(2), key(3));
+    let mut forged = rotated(&old, &new);
+    if let EventPayload::DeviceRotated { certificate: c, .. } = &mut forged {
+        *c = certificate(&thief, &new);
+    }
+    let events = chain(
+        "d1",
+        vec![
+            (0, run_started(&old), &old),
+            (1, forged, &new),
+            (2, turn(true), &new),
+        ],
+    );
+    assert!(
+        speedrun_core::sign::verify_event_signatures(&events)
+            .error
+            .is_some()
+    );
+}
+
+#[test]
+fn guard_w9_c_old_key_after_rotation_fails() {
+    let (old, new) = (key(1), key(2));
+    let events = chain(
+        "d1",
+        vec![
+            (0, run_started(&old), &old),
+            (1, rotated(&old, &new), &new),
+            (2, turn(true), &old),
+        ],
+    );
+    assert!(
+        speedrun_core::sign::verify_event_signatures(&events)
+            .error
+            .is_some()
+    );
+}
+
+/// Device d1 starts the run and pauses it at minute 5; device d2 joins and runs an agent
+/// turn from minute 3 to 4. Chains are given d2's first, each in seq order.
+fn two_device_run() -> Vec<Event> {
+    let (a, b) = (key(1), key(2));
+    let joined = EventPayload::DeviceJoined {
+        device_pubkey: speedrun_core::sign::pubkey_hex(&b),
+    };
+    let mut events = chain(
+        "d2",
+        vec![(2, joined, &b), (3, turn(true), &b), (4, turn(false), &b)],
+    );
+    events.extend(chain(
+        "d1",
+        vec![
+            (0, run_started(&a), &a),
+            (5, EventPayload::RunPaused { reason: None }, &a),
+        ],
+    ));
+    events
+}
+
+#[test]
+#[ignore = "audit D5"]
+fn audit_w9_c_two_device_chains_in_one_run_verify() {
+    let events = two_device_run();
+    assert_eq!(speedrun_core::hash::verify_chain(&events), Ok(()));
+    let check = speedrun_core::sign::verify_event_signatures(&events);
+    assert!(check.ok(), "{check:?}");
+    assert_eq!(check.signed, 5);
+}
+
+#[test]
+fn guard_w9_c_tampering_in_a_second_chain_is_detected() {
+    let mut events = two_device_run();
+    events[1].payload = turn(false);
+    assert!(speedrun_core::hash::verify_chain(&events).is_err());
+    let mut events = two_device_run();
+    events.remove(1);
+    assert!(speedrun_core::hash::verify_chain(&events).is_err());
+}
+
+#[test]
+#[ignore = "audit D5"]
+fn audit_w9_c_fold_merges_device_chains_by_occurred_at() {
+    // In time order the turn (minutes 3-4) ends before the pause (minute 5), so the run
+    // ends paused with one minute of agent time. Read chain by chain, the turn would come
+    // after the pause and resume the run.
+    let v = RunView::fold(&two_device_run(), t(10)).expect("a run");
+    assert_eq!(v.status, RunStatus::Paused);
+    assert_eq!(v.timing.agent_ms, MINUTE_MS);
 }

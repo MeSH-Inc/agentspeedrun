@@ -32,9 +32,9 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W1.a | `speedrun verify` passes on an event carrying an optional field this build does not know; hashing covers the stored body | loop | | `audit_w1_a_*` |
 | W1.b | One corrupt row yields a 200 from `/v1/live` with an error entry | loop | | `audit_w1_b_*` |
 | W1.c | A binary opening a DB with a newer schema than its own exits non-zero with a clear log line | loop | | `audit_w1_c_*` |
-| W1.d | A v2 run whose prompt text was deleted still verifies | leader | D7 | |
+| W1.d | Prompt text is kept outside the chain, digested under the device's prompt key; a run whose prompt text was deleted still verifies | loop | D7 | `audit_w1_d_*` |
 | W1.e | An unsigned event, or a run naming no device key, fails `speedrun verify` | loop | D4 | `audit_w1_e_*` |
-| W1.f | Predefined milestone ids are namespaced `<category>@<version>/<key>`, and nothing reads bare ids | leader | D4 | |
+| W1.f | Predefined milestone ids are namespaced `<category>@<version>/<key>`; a category key still names one on input | loop | D4 | `audit_w1_f_*` |
 | W2.a | Mocked-verifier scenarios of A3-1/2/3/4 fail closed under the current category rules | loop | D4 | `audit_w2_a_*`, `audit_a3_1_*` |
 | W2.b | A verification job whose claim was invalidated and re-made does not verify | loop | | `audit_a2_2_*` |
 | W2.c | A backdated claim gets 400 | loop | | `audit_w2_c_*` |
@@ -53,9 +53,10 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W7.b | Upgrading the binary does not change a project's category version; the snapshot has a `protocol` field | leader | | |
 | W8 | Reproducible packaging, no publish on a failing test, release attestation | leader | D1 | |
 | W9.a | A log edited and re-hashed fails `speedrun verify` with a signature error | | | holds: `rewriting_and_rehashing_an_event_fails_the_signature_check` |
-| W9.c | Two device keys append to one run; key rotation keeps earlier events valid | leader | C1 | |
-| W9.d | `speedrun export --tier 2` yields a re-derivable commitment and no prompt text | leader | | |
-| P0.a | A run verifies with only public keys | leader | C1 | |
+| W9.c | Two device keys append to one run; key rotation keeps earlier events valid | loop | C1 | `audit_w9_c_*` |
+| W9.d | `speedrun export --tier 2` yields a re-derivable commitment and no prompt text | loop | C3 | `audit_w9_d_*` |
+| W9.e | `RunStarted` names the start HEAD, its committer time, and the digest of the rules it pinned | loop | | `audit_w9_e_*` |
+| P0.a | A run verifies with only public keys | loop | C1 | `audit_w9_c_rotated_chain_*`, `audit_w9_c_two_device_*` |
 | P0.b | Clients find the daemon through `$DATA_DIR/addr` and authenticate by HMAC over the data-dir token | leader | D3 | |
 
 ## P1, a public record
