@@ -591,8 +591,10 @@ without it `POST /v1/links` answers 503 and nothing else changes. `SPEEDRUN_GITH
 `https://github.com`) is the base of `/login/device/code` and `/login/oauth/access_token`;
 `SPEEDRUN_GITHUB_API` (default `https://api.github.com`) the base of `/user`. Every GitHub request
 sends `Accept: application/json` and `User-Agent: speedrun-commons`, and no email address anywhere.
-When `SPEEDRUN_COMMONS_ADDR` is unset and `PORT` is set, the commons listens on `0.0.0.0:$PORT`;
-with neither, on `127.0.0.1:7478`.
+When `SPEEDRUN_COMMONS_ADDR` is unset and `PORT` is set, the commons listens on `0.0.0.0:$PORT`
+(a `PORT` that is not a port number is an error); with neither, on `127.0.0.1:7478`.
+`SPEEDRUN_COMMONS_PUBLIC_URL` is the address the run page's `curl` commands name; without it they
+name the placeholder `$COMMONS`, never the request's `Host` header, which a cache need not key on.
 
 **Links (commons).** All bodies are JSON; types are in `speedrun_core::commons`.
 - `POST /v1/links` takes `LinkStart`. 400 unless `device_pubkey` is 64 lowercase hex. The commons
@@ -600,8 +602,9 @@ with neither, on `127.0.0.1:7478`.
   `LinkStarted`: a fresh `link_id` (a ULID), GitHub's `user_code` and `verification_uri`, its
   `interval` as `interval_seconds`, and `expires_at` = now + its `expires_in`. A GitHub failure is
   502. The pending link (device key, device code, expiry) is stored.
-- `POST /v1/links/{link_id}/poll`. 404 for an unknown link; 410 once it expired. If the link is
-  already authorized, 200 with the same `LinkState::Authorized`. Otherwise the commons makes one
+- `POST /v1/links/{link_id}/poll` (body `{}`). 404 for an unknown link; 410 once `expires_at`
+  has passed, authorized or not: the device has GitHub's whole expiry window to confirm. If the
+  link is already authorized, 200 with the same `LinkState::Authorized`. Otherwise the commons makes one
   request to `<github>/login/oauth/access_token` with `client_id`, the device code and
   `grant_type=urn:ietf:params:oauth:grant-type:device_code`: `authorization_pending` or
   `slow_down` is 202 `LinkState::Pending`; `expired_token` or `access_denied` is 410 and the link
@@ -614,8 +617,11 @@ with neither, on `127.0.0.1:7478`.
   are the authorized person's, `commons_pubkey` is this commons' key, and `device_signature`
   verifies over `link_claim_digest(claim)` with `claim.device_pubkey`. Then the commons signs that
   digest and stores and answers 200 with the `Link`. Confirming again answers the stored `Link`.
+- A login names at most one person: the one who most recently linked with it. When a link is
+  stored, any other person holding that login (compared without regard to case) loses it and is
+  shown by `github id <id>` from then on, keeping their links and publications.
 - `GET /v1/people/{login}` is `PersonRecord`, `login` matched without regard to case against the
-  latest login of each person: every link (oldest first) and every publication whose bundle's
+  current login of each person: every link (oldest first) and every publication whose bundle's
   `publisher_pubkey` is a linked device key (newest first). 404 when no link names that login.
 - A person's publications are those signed by any device key linked to them. A publication is
   shown as that person's on every page.
@@ -627,7 +633,9 @@ a `LinkClaim` and answers `DeviceSignature`: `sign::sign_hash(device key, link_c
 else.
 
 **CLI.** `speedrun link [--to <url>]` resolves the commons like `publish` (`--to`, else
-`SPEEDRUN_COMMONS_URL`, else exit 1 sending nothing). It reads the device key from the daemon
+`SPEEDRUN_COMMONS_URL`, else exit 1 sending nothing). Both commands refuse a commons address that
+is not `https://`, unless it is plain `http://` to `localhost`, an IPv4 loopback address or
+`[::1]`: the commons names the person a device links to, so no network path may answer for it. It reads the device key from the daemon
 (`GET /v1/device`), posts `LinkStart`, prints
 `open <verification_uri> and enter <user_code>`, then polls every `interval_seconds` until
 authorized (exit 1 on 410 or once `expires_at` passes). It asks `GET /v1/health` on the commons for
@@ -640,7 +648,8 @@ viewport meta tag, and lay out in one column that fits 320 px (wide tables scrol
 own box). Unknown runs and people are 404 pages in the same shape.
 - `/` lists the 50 newest publications, newest first: a link to `/runs/{run_id}`, the tier, the
   received time (UTC, RFC 3339 to the second), and the person's login linked to
-  `/people/{login}`, or `unlinked device` with the publisher key's fingerprint.
+  `/people/{login}`, `github id <id>` for a person who lost their login, or `unlinked device`
+  with the publisher key's fingerprint. A tier 0 publication has no category, as it has no events.
 - `/runs/{run_id}` shows the run's latest publication: run id, category `id@version`, the person
   as on `/`, tier and received time. At tiers 1 and 2: the clocks `wall`, `agent` and `human` from
   the published view, each as `H:MM:SS`; and one row per judged milestone with its title, required
@@ -654,9 +663,10 @@ own box). Unknown runs and people are 404 pages in the same shape.
 
 **Backup.** `speedrun-commons backup <file>` writes a consistent copy of the database at
 `$SPEEDRUN_COMMONS_HOME` to `<file>` (SQLite `VACUUM INTO`) while a server may be running, prints
-`backed up <tree size> leaves to <file>`, and exits 0; it refuses to overwrite an existing file
+`backed up <n> leaves to <file>` with `n` counted in the copy, and exits 0; it refuses to overwrite an existing file
 (exit 1). The commons key is not in the database: the operator copies `commons.key` once.
 
 **Deployment (leader).** `Dockerfile` builds `speedrun-commons` and runs it with
-`SPEEDRUN_COMMONS_HOME=/data`; `docs/DEPLOY.md` is the runbook: Railway service, volume, variables,
-health check on `/v1/health`, a backup before every deploy, and the smoke test afterwards.
+`SPEEDRUN_COMMONS_HOME=/data`; `railway.json` sets the health check on `/v1/health` and one
+replica; `docs/DEPLOY.md` is the runbook: service, volume, variables, a backup before every
+deploy, the smoke test afterwards, and restore.
