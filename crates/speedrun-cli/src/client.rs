@@ -731,11 +731,16 @@ const REJECTED_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// to it, and it enforces the cap, so callers cannot leave the file unbounded.
 struct RejectedLog {
     file: PathBuf,
+    max_bytes: u64,
 }
 
 impl RejectedLog {
     fn new(file: PathBuf) -> Self {
-        Self { file }
+        Self::with_cap(file, REJECTED_MAX_BYTES)
+    }
+
+    fn with_cap(file: PathBuf, max_bytes: u64) -> Self {
+        Self { file, max_bytes }
     }
 
     fn append(&self, line: &[u8]) {
@@ -744,20 +749,43 @@ impl RejectedLog {
         }
     }
 
+    /// Append and trim under one exclusive lock, so a trim never writes back
+    /// a copy that lacks a line another process appended after its read.
     fn try_append(&self, line: &[u8]) -> std::io::Result<()> {
+        let _lock = self.lock()?;
         let current = match fs::metadata(&self.file) {
             Ok(meta) => meta.len(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
             Err(e) => return Err(e),
         };
-        if current.saturating_add(line.len() as u64 + 1) > REJECTED_MAX_BYTES {
+        if current.saturating_add(line.len() as u64 + 1) > self.max_bytes {
             self.trim_to_newest()?;
         }
         append_line_result(&self.file, line)
     }
 
+    /// The lock file beside the log. Held until the returned file is dropped.
+    fn lock(&self) -> std::io::Result<fs::File> {
+        let mut path = self.file.clone().into_os_string();
+        path.push(".lock");
+        let path = PathBuf::from(path);
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&path)?;
+        lock.lock()?;
+        Ok(lock)
+    }
+
     /// Keep the newest entries that fit in half the cap; the rest of the
-    /// headroom amortizes trimming over several appends.
+    /// headroom amortizes trimming over several appends. The trimmed copy
+    /// replaces the log by rename, so a crash mid-trim leaves the old log.
+    /// Called with the lock held.
     fn trim_to_newest(&self) -> std::io::Result<()> {
         // Bytes, not text: a refused line need not be UTF-8.
         let text = match fs::read(&self.file) {
@@ -768,7 +796,7 @@ impl RejectedLog {
         if text.is_empty() {
             return Ok(());
         }
-        let keep = REJECTED_MAX_BYTES / 2;
+        let keep = self.max_bytes / 2;
         let mut total = 0u64;
         let mut kept: Vec<&[u8]> = Vec::new();
         for line in text.split(|&b| b == b'\n').rev() {
@@ -786,7 +814,16 @@ impl RejectedLog {
         kept.reverse();
         let mut out = kept.join(&b'\n');
         out.push(b'\n');
-        fs::write(&self.file, out)
+        let temp = self
+            .file
+            .with_file_name(format!(".rejected-{}.tmp", speedrun_core::new_id()));
+        let mut copy = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        copy.write_all(&out)?;
+        fs::rename(&temp, &self.file)
     }
 }
 
@@ -868,4 +905,68 @@ fn daemon_executable() -> PathBuf {
         Err(e) => report_io_error("locate", Path::new("speedrun"), &e),
     }
     PathBuf::from("speedrund")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M7.d: writers refused at the same moment, with the log trimming under
+    /// them. Trimming drops the oldest lines, so each writer's surviving lines
+    /// must be the newest of its own, with no gap: a gap, or a missing newest
+    /// line, is a line one trim wrote over after another writer appended it.
+    /// The race is narrow, so the scenario runs in many fresh logs.
+    #[test]
+    fn trimming_the_rejected_log_loses_no_line_under_concurrent_refusals() {
+        const ROUNDS: usize = 40;
+        const WRITERS: usize = 8;
+        const LINES: usize = 300;
+        for round in 0..ROUNDS {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("rejected.jsonl");
+            std::thread::scope(|scope| {
+                for writer in 0..WRITERS {
+                    let file = file.clone();
+                    scope.spawn(move || {
+                        let log = RejectedLog::with_cap(file, 4 * 1024);
+                        for n in 0..LINES {
+                            let line = format!("{writer:02}:{n:04}:{}", "x".repeat(40));
+                            log.try_append(line.as_bytes()).unwrap();
+                        }
+                    });
+                }
+            });
+            let text = fs::read_to_string(&file).unwrap();
+            let mut kept: Vec<Vec<usize>> = vec![Vec::new(); WRITERS];
+            for line in text.lines() {
+                let mut parts = line.split(':');
+                let writer: usize = parts.next().unwrap().parse().unwrap();
+                let n: usize = parts.next().unwrap().parse().unwrap();
+                kept[writer].push(n);
+            }
+            assert!(
+                kept.iter().any(|kept| !kept.is_empty()),
+                "round {round}: the log is empty"
+            );
+            for (writer, kept) in kept.iter().enumerate() {
+                // A writer that finished early may be trimmed away entirely.
+                if kept.is_empty() {
+                    continue;
+                }
+                assert_eq!(
+                    kept.last(),
+                    Some(&(LINES - 1)),
+                    "round {round}: writer {writer} lost its newest line"
+                );
+                for pair in kept.windows(2) {
+                    assert_eq!(
+                        pair[1],
+                        pair[0] + 1,
+                        "round {round}: writer {writer} lost a line after {}",
+                        pair[0]
+                    );
+                }
+            }
+        }
+    }
 }

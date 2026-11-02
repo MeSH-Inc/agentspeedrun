@@ -25,7 +25,7 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | M7.a | Redaction covers the shapes listed in M7 | loop | | `audit_a1_2_*` |
 | M7.b | The client redacts before sending or spooling; `rejected.jsonl` is capped | loop | | `audit_m7_b_*` |
 | M7.c | Spool and `rejected.jsonl` write failures are counted and `doctor` shows them | loop | | `audit_m7_c_*` |
-| M7.d | Trimming `rejected.jsonl` loses no line under concurrent refusals | leader | | |
+| M7.d | Trimming `rejected.jsonl` loses no line under concurrent refusals | leader | | `trimming_the_rejected_log_loses_no_line_under_concurrent_refusals` |
 | M8 | A hook records its own event first and flushes the spool within about 3 s | loop | | `audit_m8_*` |
 | M8.b | A timeout on a sent request is "delivered-unknown", not Unreachable; claim replays are idempotent by event id | leader | | |
 | M9.a | A user's claim satisfies `agent_claimed` on a non-predefined milestone | loop | | `audit_a6_5_*` |
