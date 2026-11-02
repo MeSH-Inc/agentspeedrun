@@ -22,6 +22,9 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub key: Arc<SigningKey>,
     pub verifier: Arc<Verifier>,
+    /// Held for the whole of one publication, so two concurrent requests
+    /// cannot both compute the same next leaf index.
+    pub publishing: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -84,6 +87,7 @@ async fn publish(
             format!("the request body is not UTF-8: {error}"),
         )
     })?;
+    let _publishing = s.publishing.lock().await;
     let receipt = record::publish(
         s.store.as_ref(),
         s.key.as_ref(),

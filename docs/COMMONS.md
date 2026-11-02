@@ -512,7 +512,8 @@ key). Tier 2's `prompts` are `speedrun export`'s commitments, one per `prompt_su
 
 **Daemon.** `GET /v1/runs/{run_id}/bundle?tier=<0|1|2>`, full token only (agent and display tokens
 401), returns the signed `Bundle` from the current device key. 409 when the run is not finished or
-its log holds a `project_root`; 400 for another tier.
+its log holds a `project_root`, and at tier 2 when its `RunStarted` names no disclosure commitment;
+400 for another tier.
 
 **CLI.** `speedrun publish --tier <0|1|2> --run <run_id> [--to <url>]` fetches the bundle from the
 daemon and posts it to the commons at `--to`, else `SPEEDRUN_COMMONS_URL`; with neither it exits 1
@@ -538,7 +539,10 @@ there are problems.
   `PublishReceipt` with the new signed tree head and the leaf's inclusion proof against it. A
   bundle whose digest is already stored is answered with its existing judgment and leaf, a current
   tree head and a proof against it, and adds no leaf. A tier 0 bundle has no events to fold, so
-  its judgment has no milestones and its published run has no `view`.
+  its judgment has no milestones and its published run has no `view`. The commons parses, folds
+  and judges a bundle's events in run order (`event::run_order`: each device's chain by `seq`,
+  merged by `recorded_at`, a tie going to the smaller device id), and judges with no secrets, so
+  only what the public network shows can be granted. One publication is appended at a time.
 - *Judging* (`judge::judge`). For each milestone of the folded run, in order: `claimed` is its
   trust. If its current claim (the last `milestone_reached` since the last invalidation) carries
   checkable evidence, the commons builds a `speedrun_verify::Job` from that claim (its event id,

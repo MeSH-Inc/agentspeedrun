@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use speedrun_commons::{http, keys, store};
+use speedrun_commons::{http, judge, keys, store};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:7478";
 
@@ -30,7 +30,8 @@ async fn main() -> Result<()> {
     let app = http::router(http::AppState {
         store: Arc::new(store),
         key: Arc::new(key),
-        verifier: Arc::new(speedrun_verify::Verifier::default()),
+        verifier: Arc::new(judge::verifier()),
+        publishing: Arc::new(tokio::sync::Mutex::new(())),
     });
     axum::serve(listener, app).await?;
     Ok(())

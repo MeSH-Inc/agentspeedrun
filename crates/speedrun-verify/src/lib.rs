@@ -137,6 +137,17 @@ impl Secrets for DiskSecrets {
     }
 }
 
+/// No secrets at all: GitHub is read anonymously and Stripe cannot be checked.
+/// A verifier that judges other people's claims (the commons) uses this, so
+/// its operator's own accounts never decide them.
+pub struct NoSecrets;
+
+impl Secrets for NoSecrets {
+    fn get(&self, _name: &str) -> Option<String> {
+        None
+    }
+}
+
 pub struct Verifier {
     pub fetch: Box<dyn Fetch>,
     pub secrets: Box<dyn Secrets>,

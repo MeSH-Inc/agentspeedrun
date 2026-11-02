@@ -5,7 +5,15 @@
 use chrono::{DateTime, Utc};
 use speedrun_core::commons::MilestoneJudgment;
 use speedrun_core::{Event, EventPayload, Evidence, RunView, Trust};
-use speedrun_verify::{Job, Verifier};
+use speedrun_verify::{Job, Net, NoSecrets, Verifier};
+
+/// The verifier the commons judges with: the network, and no secrets (§19).
+pub fn verifier() -> Verifier {
+    Verifier {
+        fetch: Box::new(Net::new()),
+        secrets: Box::new(NoSecrets),
+    }
+}
 
 /// Judge every milestone of `run`, the fold of `events`, in the run's
 /// milestone order.

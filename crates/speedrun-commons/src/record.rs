@@ -11,7 +11,7 @@ use chrono::{SecondsFormat, Utc};
 use ed25519_dalek::SigningKey;
 use speedrun_core::bundle::{self, BUNDLE_FORMAT, Bundle};
 use speedrun_core::commons::{Judgment, PublishReceipt, PublishedRun, TreeHead, judgment_digest};
-use speedrun_core::{Event, EventPayload, RunView, hash, merkle, sign};
+use speedrun_core::{Event, EventPayload, RunView, event, hash, merkle, sign};
 use speedrun_verify::Verifier;
 
 use crate::judge;
@@ -69,7 +69,8 @@ pub async fn publish(
     let validated = validate(&bundle)?;
     let issued_at = Utc::now();
     let milestones = match &validated.view {
-        Some(view) => judge::judge(view, &validated.events, verifier),
+        // The verifier fetches over blocking HTTP; keep it off the async workers.
+        Some(view) => tokio::task::block_in_place(|| judge::judge(view, &validated.events, verifier)),
         None => Vec::new(),
     };
     let mut judgment = Judgment {
@@ -268,12 +269,14 @@ fn validate_log(bundle: &Bundle) -> Result<Validated, PublishError> {
     })
 }
 
+/// The bundle's events in run order (`event::run_order`), which is the order
+/// every fold and judgment of a published run uses.
 fn parse_events(bundle: &Bundle) -> Result<Vec<Event>, serde_json::Error> {
     let mut events = Vec::with_capacity(bundle.events.len());
     for body in &bundle.events {
         events.push(serde_json::from_value(body.clone())?);
     }
-    Ok(events)
+    Ok(event::run_order(events))
 }
 
 fn fold(events: &[Event]) -> Option<RunView> {

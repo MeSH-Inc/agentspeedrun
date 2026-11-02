@@ -494,6 +494,37 @@ impl speedrun_verify::Secrets for NoSecrets {
     }
 }
 
+#[test]
+fn guard_p1_concurrent_publications_each_get_their_own_leaf() {
+    let commons = Commons::start();
+    let bundles: Vec<Bundle> = (0..8)
+        .map(|i| plain_run(&format!("01RUNCONCURRENT{i}")).bundle(1))
+        .collect();
+    let receipts: Vec<PublishReceipt> = std::thread::scope(|scope| {
+        let handles: Vec<_> = bundles
+            .iter()
+            .map(|bundle| scope.spawn(|| commons.publish(bundle)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut leaves: Vec<u64> = receipts.iter().map(|r| r.inclusion.leaf_index).collect();
+    leaves.sort();
+    assert_eq!(leaves, (0..8).collect::<Vec<u64>>());
+    assert_eq!(commons.health().tree_size, 8);
+}
+
+#[test]
+fn guard_p1_the_commons_judges_with_no_secrets() {
+    let verifier = speedrun_commons::judge::verifier();
+    for name in ["github", "stripe", "anything"] {
+        assert_eq!(
+            verifier.secrets.get(name),
+            None,
+            "the commons verifier holds a {name} secret"
+        );
+    }
+}
+
 fn judge_with(pages: Pages, log: &Log) -> Vec<speedrun_core::commons::MilestoneJudgment> {
     let verifier = speedrun_verify::Verifier {
         fetch: Box::new(pages),

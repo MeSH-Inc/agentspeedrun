@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
@@ -47,6 +47,78 @@ pub(crate) fn device_chains(events: &[Event]) -> Vec<Vec<&Event>> {
         chains.entry(event.device_id.as_str()).or_default().push(event);
     }
     chains.into_values().collect()
+}
+
+/// A run's events in the one order a published run is folded and judged in:
+/// each device's chain in `seq` order, the chains merged by `recorded_at`, a
+/// tie going to the smaller device id. A single-device run comes out in `seq`
+/// order. The events alone fix this order, so anyone holding a bundle folds the
+/// view the commons folded (COMMONS.md §19).
+pub fn run_order(mut events: Vec<Event>) -> Vec<Event> {
+    events.sort_by(|a, b| (a.device_id.as_str(), a.seq).cmp(&(b.device_id.as_str(), b.seq)));
+    let mut chains: BTreeMap<String, VecDeque<Event>> = BTreeMap::new();
+    let count = events.len();
+    for event in events {
+        chains
+            .entry(event.device_id.clone())
+            .or_default()
+            .push_back(event);
+    }
+    let mut ordered = Vec::with_capacity(count);
+    loop {
+        // BTreeMap iterates in device-id order, so the first minimum wins a tie.
+        let next = chains
+            .iter()
+            .filter_map(|(device, chain)| chain.front().map(|event| (event.recorded_at, device)))
+            .min()
+            .map(|(_, device)| device.clone());
+        let Some(device) = next else {
+            return ordered;
+        };
+        if let Some(event) = chains.get_mut(&device).and_then(VecDeque::pop_front) {
+            ordered.push(event);
+        }
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn event(device: &str, seq: u64, recorded_minute: u32) -> Event {
+        let at = Utc.with_ymd_and_hms(2026, 11, 2, 12, recorded_minute, 0).unwrap();
+        Event {
+            event_id: format!("{device}-{seq}"),
+            schema_version: SCHEMA_VERSION,
+            run_id: "r".into(),
+            seq,
+            device_id: device.into(),
+            occurred_at: at,
+            recorded_at: at,
+            payload: EventPayload::RunResumed {},
+            prev_hash: None,
+            hash: String::new(),
+            sig: None,
+        }
+    }
+
+    fn ids(events: &[Event]) -> Vec<&str> {
+        events.iter().map(|e| e.event_id.as_str()).collect()
+    }
+
+    #[test]
+    fn chains_merge_by_recorded_time_and_keep_their_own_order() {
+        // b's clock runs behind at seq 2, which must not lift it above b-1.
+        let shuffled = vec![
+            event("b", 2, 1),
+            event("a", 2, 4),
+            event("b", 1, 3),
+            event("a", 1, 0),
+            event("b", 3, 4),
+        ];
+        assert_eq!(ids(&run_order(shuffled)), ["a-1", "b-1", "b-2", "a-2", "b-3"]);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
