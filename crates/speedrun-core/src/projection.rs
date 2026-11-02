@@ -92,13 +92,20 @@ impl MilestoneView {
     }
 
     /// A fresh claim. A user's claim clears pending at once; an agent's claim
-    /// on a `self_declared` milestone holds it for confirmation and therefore
-    /// stops counting until then (D6).
+    /// on a `self_declared` milestone that does not count yet holds it for
+    /// confirmation (D6). An agent's claim on a milestone that already counts,
+    /// by the user's claim or confirmation, leaves it counting from its split.
     fn record_claim(&mut self, trust: Trust, evidence: &[Evidence], claimant: Claimant, at: DateTime<Utc>) {
+        let counted_before = self.counts();
         if self.state != MilestoneState::Verified {
             self.state = MilestoneState::Reached;
         }
-        self.pending_confirmation = claimant == Claimant::Agent && self.required_trust == Trust::SelfDeclared;
+        self.pending_confirmation = match claimant {
+            Claimant::User => false,
+            Claimant::Agent => {
+                self.pending_confirmation || (self.required_trust == Trust::SelfDeclared && !counted_before)
+            }
+        };
         self.reached_at.get_or_insert(at);
         self.trust = Some(self.trust.map_or(trust, |current| current.max(trust)));
         self.extends_evidence(evidence);
@@ -864,6 +871,61 @@ mod tests {
         assert_eq!(v.timing.timed_ms, 70 * 60_000);
         assert_eq!(v.timing.agent_ms, 25 * 60_000);
         assert_eq!(v.timing.human_ms, (15 + 5) * 60_000);
+    }
+
+    fn claim(min: i64, claimant: Claimant) -> (i64, EventPayload) {
+        (
+            min,
+            EventPayload::MilestoneReached {
+                milestone_id: "demo".into(),
+                trust: Trust::AgentClaimed,
+                evidence: vec![],
+                claimant,
+            },
+        )
+    }
+
+    fn confirm(min: i64) -> (i64, EventPayload) {
+        (
+            min,
+            EventPayload::MilestoneConfirmed {
+                milestone_id: "demo".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn an_agent_claim_on_a_counted_milestone_keeps_its_split() {
+        let mut items = propose("demo", Trust::SelfDeclared);
+        items.push(claim(10, Claimant::User));
+        items.push(claim(20, Claimant::Agent));
+        let v = RunView::fold(&log(items), t(30)).unwrap();
+        let m = v.milestone("demo").unwrap();
+        assert!(m.counts() && !m.pending_confirmation);
+        assert_eq!(m.counted_at, Some(t(10)));
+
+        let mut items = propose("demo", Trust::SelfDeclared);
+        items.push(claim(10, Claimant::Agent));
+        items.push(confirm(15));
+        items.push(claim(20, Claimant::Agent));
+        let v = RunView::fold(&log(items), t(30)).unwrap();
+        let m = v.milestone("demo").unwrap();
+        assert!(m.counts() && !m.pending_confirmation);
+        assert_eq!(m.counted_at, Some(t(15)));
+    }
+
+    #[test]
+    fn an_agent_claim_on_a_self_declared_milestone_waits_for_confirmation() {
+        let mut items = propose("demo", Trust::SelfDeclared);
+        items.push(claim(10, Claimant::Agent));
+        items.push(claim(12, Claimant::Agent));
+        let v = RunView::fold(&log(items.clone()), t(30)).unwrap();
+        let m = v.milestone("demo").unwrap();
+        assert!(m.pending_confirmation && !m.counts());
+
+        items.push(confirm(15));
+        let v = RunView::fold(&log(items), t(30)).unwrap();
+        assert_eq!(v.milestone("demo").unwrap().counted_at, Some(t(15)));
     }
 
     #[test]
