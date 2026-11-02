@@ -15,7 +15,9 @@ pub mod redact;
 pub mod sign;
 
 pub use category::{Category, MilestoneTemplate};
-pub use event::{Event, EventPayload, Evidence, MilestoneOrigin, RunOutcome, SCHEMA_VERSION, Trust};
+pub use event::{
+    Claimant, Event, EventPayload, Evidence, MilestoneOrigin, RunOutcome, SCHEMA_VERSION, Trust,
+};
 pub use projection::{MilestoneState, MilestoneView, RunStatus, RunView, Timing};
 
 /// Generate a new sortable, globally unique id.

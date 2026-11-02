@@ -13,7 +13,7 @@ use speedrun_core::{
     },
     category,
     hash::verify_stored_chain,
-    live::{LiveRun, LiveSnapshot, SnapshotError},
+    live::{LIVE_PROTOCOL_VERSION, LiveRun, LiveSnapshot, LiveSource, LiveSourceKind, SnapshotError},
     redact::redact,
 };
 
@@ -136,7 +136,8 @@ fn resolve_milestone_id(run: &RunView, payload: EventPayload) -> EventPayload {
         | EventPayload::MilestoneRejected { milestone_id, .. }
         | EventPayload::MilestoneReached { milestone_id, .. }
         | EventPayload::MilestoneVerified { milestone_id, .. }
-        | EventPayload::MilestoneInvalidated { milestone_id, .. } => milestone_id.clone(),
+        | EventPayload::MilestoneInvalidated { milestone_id, .. }
+        | EventPayload::MilestoneConfirmed { milestone_id } => milestone_id.clone(),
         _ => return payload,
     };
     let resolved = match run.milestone(&id) {
@@ -167,10 +168,19 @@ fn resolve_milestone_id(run: &RunView, payload: EventPayload) -> EventPayload {
             milestone_id: resolved,
             reason,
         },
-        EventPayload::MilestoneReached { trust, evidence, .. } => EventPayload::MilestoneReached {
+        EventPayload::MilestoneReached {
+            trust,
+            evidence,
+            claimant,
+            ..
+        } => EventPayload::MilestoneReached {
             milestone_id: resolved,
             trust,
             evidence,
+            claimant,
+        },
+        EventPayload::MilestoneConfirmed { .. } => EventPayload::MilestoneConfirmed {
+            milestone_id: resolved,
         },
         EventPayload::MilestoneVerified {
             trust,
@@ -605,7 +615,16 @@ impl Service {
             runs.push(run);
         }
         runs.sort_by_key(|r| (r.finished_at.is_some(), std::cmp::Reverse(r.last_event_at)));
-        Ok(LiveSnapshot { as_of, cursor, runs })
+        Ok(LiveSnapshot {
+            protocol: LIVE_PROTOCOL_VERSION,
+            source: LiveSource {
+                kind: LiveSourceKind::Local,
+                id: String::new(),
+            },
+            as_of,
+            cursor,
+            runs,
+        })
     }
 
     /// The fastest completed runs of `project_id` in `category_id`@`version`,
@@ -803,7 +822,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use speedrun_core::Evidence;
+    use speedrun_core::{Claimant, Evidence};
 
     fn svc() -> (Service, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -817,6 +836,7 @@ mod tests {
             project_id: "proj".into(),
             project_root: None,
             category_id: "any-percent".into(),
+            category_version: None,
             session_id: "s1".into(),
             host: "test".into(),
             model: None,
@@ -885,6 +905,7 @@ mod tests {
             milestone_id: "happy-path-demo".into(),
             trust: Trust::EvidenceVerified,
             evidence: vec![],
+            claimant: Claimant::User,
         };
         assert!(matches!(
             append(&mut s, &run, "x", forged),
@@ -939,6 +960,7 @@ mod tests {
             milestone_id: id.into(),
             trust: Trust::SelfDeclared,
             evidence: vec![Evidence::GitCommit { sha: sha.clone() }],
+            claimant: Claimant::User,
         };
         append(&mut s, &run, "a", reach("scaffold-runs")).unwrap();
         assert_eq!(s.run(&run).unwrap().status, RunStatus::Running);
@@ -981,6 +1003,7 @@ mod tests {
                         milestone_id: key.into(),
                         trust: Trust::SelfDeclared,
                         evidence: vec![],
+                        claimant: Claimant::User,
                     },
                 )
                 .unwrap();
@@ -1057,6 +1080,7 @@ mod tests {
                     evidence: vec![Evidence::Url {
                         url: "https://demo.acme.dev".into(),
                     }],
+                    claimant: Claimant::User,
                 },
             })
             .unwrap()
@@ -1100,6 +1124,7 @@ mod tests {
                     evidence: vec![Evidence::Url {
                         url: "https://demo.acme.dev".into(),
                     }],
+                    claimant: Claimant::User,
                 },
             })
             .unwrap()
@@ -1191,6 +1216,7 @@ mod tests {
             milestone_id: "happy-path-demo".into(),
             trust: Trust::SelfDeclared,
             evidence: vec![evidence],
+            claimant: Claimant::User,
         };
         let request = |id: &str, payload: EventPayload| AppendRequest {
             event_id: id.into(),
@@ -1247,6 +1273,7 @@ mod tests {
                 milestone_id: key.into(),
                 trust: Trust::SelfDeclared,
                 evidence: vec![],
+                claimant: Claimant::User,
             };
             append(s, &run, &format!("{name}-{key}"), claim).unwrap();
             // Inject the verification the way a verifier would.

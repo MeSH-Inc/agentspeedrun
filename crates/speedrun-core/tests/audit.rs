@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use speedrun_core::hash::compute_hash;
 use speedrun_core::redact::redact;
 use speedrun_core::{
-    Event, EventPayload, MilestoneOrigin, MilestoneState, RunStatus, RunView, SCHEMA_VERSION, Trust,
+    Claimant, Event, EventPayload, MilestoneOrigin, MilestoneState, RunStatus, RunView, SCHEMA_VERSION, Trust,
 };
 
 const MINUTE_MS: i64 = 60_000;
@@ -193,6 +193,7 @@ fn milestone(origin: MilestoneOrigin) -> Vec<(i64, EventPayload)> {
                 milestone_id: "m".into(),
                 trust: Trust::SelfDeclared,
                 evidence: Vec::new(),
+                claimant: Claimant::User,
             },
         ),
     ]

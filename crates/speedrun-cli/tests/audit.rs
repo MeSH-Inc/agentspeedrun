@@ -108,12 +108,13 @@ impl Machine {
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(
             config.join("project.json"),
-            r#"{"project_id":"01KAUDITPROJECT0000000000","category_id":"any-percent","created_at":"2026-11-01T00:00:00Z"}"#,
+            r#"{"project_id":"01KAUDITPROJECT0000000000","category_id":"any-percent","category_version":1,"created_at":"2026-11-01T00:00:00Z"}"#,
         )
         .unwrap();
         let data = root.path().join("data");
         std::fs::create_dir_all(&data).unwrap();
-        std::fs::write(data.join("token"), "audit-test-token").unwrap();
+        std::fs::write(data.join("token"), TOKEN).unwrap();
+        std::fs::write(data.join("agent-token"), AGENT_TOKEN).unwrap();
         let addr = TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -202,6 +203,9 @@ fn contains(bytes: &[u8], text: &str) -> bool {
 /// The token every machine's data directory holds.
 const TOKEN: &str = "audit-test-token";
 
+/// The agent token every machine's data directory holds (V0.2 W6 contract).
+const AGENT_TOKEN: &str = "audit-agent-token";
+
 /// How a stand-in daemon answers.
 #[derive(Clone, Copy)]
 struct Behaviour {
@@ -215,10 +219,12 @@ struct Behaviour {
     backlog_delay: Duration,
 }
 
-/// One request a stand-in daemon received: its request line and body.
+/// One request a stand-in daemon received: its request line, `Authorization` header
+/// and body.
 #[derive(Clone)]
 struct Received {
     line: String,
+    authorization: Option<String>,
     body: Vec<u8>,
 }
 
@@ -286,6 +292,7 @@ fn answer(
     reader.read_line(&mut request_line)?;
     let (mut length, mut chunked) = (0, false);
     let mut carries_token = request_line.contains(TOKEN);
+    let mut authorization = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
@@ -298,6 +305,7 @@ fn answer(
             match name.trim().to_ascii_lowercase().as_str() {
                 "content-length" => length = value.trim().parse().unwrap_or(0),
                 "transfer-encoding" => chunked = value.trim().eq_ignore_ascii_case("chunked"),
+                "authorization" => authorization = Some(value.trim().to_string()),
                 _ => {}
             }
         }
@@ -344,6 +352,7 @@ fn answer(
             "version": env!("CARGO_PKG_VERSION"),
             "protocol_version": speedrun_core::api::PROTOCOL_VERSION,
             "data_dir_id": "0".repeat(64),
+            "pid": std::process::id(),
         });
         if let Some(nonce) = nonce {
             health["proof"] = speedrun_core::digest::token_proof(token, nonce).into();
@@ -352,6 +361,7 @@ fn answer(
     } else {
         received.lock().unwrap().push(Received {
             line: request_line.trim_end().to_string(),
+            authorization,
             body,
         });
         if target.starts_with("/v1/projects/") {
@@ -1077,4 +1087,277 @@ fn guard_w6_b_a_project_at_the_git_toplevel_is_found() {
     std::fs::create_dir_all(&src).unwrap();
     let stderr = status_stderr(&machine, &src, machine.root.path());
     assert!(!stderr.contains("not in a speedrun project"), "{stderr}");
+}
+
+// --- Wave 3b: agent token and confirmation (W6.a), pinned categories (W7.b), and
+// --- `speedrun daemon stop|restart|status` (W4.b). The contracts are in docs/V0.2.md.
+
+fn text_of(out: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+fn is_agent(received: &Received) -> bool {
+    received.authorization.as_deref() == Some(format!("Bearer {AGENT_TOKEN}").as_str())
+}
+
+fn propose(machine: &Machine, title: &str) -> Output {
+    let args = serde_json::json!({ "milestones": [{ "title": title }] }).to_string();
+    machine.speedrun(&["tool", "speedrun_propose_milestones", "--args", &args], b"")
+}
+
+/// The milestone of `run` with category key `key`.
+fn milestone_of(run: &serde_json::Value, key: &str) -> serde_json::Value {
+    run["milestones"]
+        .as_array()
+        .expect("milestones")
+        .iter()
+        .find(|m| m["key"] == key)
+        .cloned()
+        .unwrap_or_else(|| panic!("no milestone {key}: {run}"))
+}
+
+#[test]
+#[ignore = "audit W6.a: tools send with the agent token"]
+fn audit_w6_a_tools_send_with_the_agent_token() {
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::ZERO));
+    let out = propose(&machine, "Recipes persist");
+    let received = daemon.received();
+    assert!(!received.is_empty(), "the tool sent nothing: {}", text_of(&out));
+    let wrong: Vec<_> = received
+        .iter()
+        .filter(|r| !is_agent(r))
+        .map(|r| r.line.clone())
+        .collect();
+    assert!(wrong.is_empty(), "sent without the agent token: {wrong:?}");
+}
+
+#[test]
+#[ignore = "audit W6.a: a spooled agent request keeps its credential"]
+fn audit_w6_a_a_spooled_tool_request_is_replayed_with_the_agent_token() {
+    let machine = Machine::new();
+    let out = propose(&machine, "Recipes persist");
+    assert!(
+        !machine.spooled_containing("Recipes persist").is_empty(),
+        "the proposal was not spooled during the outage: {}",
+        text_of(&out)
+    );
+    let daemon = RefusingDaemon::behaving(&machine, stand_in(true, "200 OK", Duration::ZERO));
+    machine.speedrun(&["flush"], b"");
+    let replayed: Vec<_> = daemon
+        .received()
+        .into_iter()
+        .filter(|r| contains(&r.body, "Recipes persist"))
+        .collect();
+    assert!(!replayed.is_empty(), "flush did not replay the proposal");
+    assert!(
+        replayed.iter().all(is_agent),
+        "replayed with {:?}",
+        replayed
+            .iter()
+            .map(|r| r.authorization.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+#[ignore = "audit W6.a: speedrun confirm"]
+fn audit_w6_a_speedrun_confirm_makes_an_agent_claim_count() {
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    assert!(machine.prompt("build a todo app").status.success());
+    let args = serde_json::json!({ "milestone": "scaffold-runs" }).to_string();
+    let claimed = machine.speedrun(&["tool", "speedrun_claim_milestone", "--args", &args], b"");
+    assert!(claimed.status.success(), "{}", text_of(&claimed));
+    let pending = milestone_of(&machine.active_run(), "scaffold-runs");
+    assert_eq!(pending["pending_confirmation"], true, "{pending}");
+    assert!(pending["counted_at"].is_null(), "{pending}");
+
+    let confirmed = machine.speedrun(&["confirm", "scaffold-runs"], b"");
+    assert!(confirmed.status.success(), "{}", text_of(&confirmed));
+    let counted = milestone_of(&machine.active_run(), "scaffold-runs");
+    assert_eq!(counted["pending_confirmation"], false, "{counted}");
+    assert!(!counted["counted_at"].is_null(), "{counted}");
+}
+
+fn latest_version(category_id: &str) -> u32 {
+    let all = speedrun_core::category::builtin();
+    speedrun_core::category::find(&all, category_id, None)
+        .expect("a built-in category")
+        .version
+}
+
+fn project_config(root: &Path) -> serde_json::Value {
+    let text = std::fs::read_to_string(root.join(".speedrun/project.json")).unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+#[ignore = "audit W7.b: init pins the category version"]
+fn audit_w7_b_init_pins_the_latest_category_version() {
+    let machine = Machine::new();
+    let _daemon = Daemon::start(&machine);
+    let fresh = machine.root.path().join("fresh");
+    std::fs::create_dir_all(&fresh).unwrap();
+    git_init(&fresh);
+    let out = machine.run_in(&fresh, &["init"], b"", true);
+    assert!(out.status.success(), "{}", text_of(&out));
+    let config = project_config(&fresh);
+    assert_eq!(
+        config["category_version"],
+        latest_version("any-percent"),
+        "{config}"
+    );
+}
+
+#[test]
+#[ignore = "audit W7.b: init --upgrade-category"]
+fn audit_w7_b_upgrade_category_pins_an_unpinned_project_and_keeps_its_id() {
+    let machine = Machine::new();
+    let created_at = "2026-11-01T00:00:00Z";
+    std::fs::write(
+        machine.project_root().join(".speedrun/project.json"),
+        serde_json::json!({
+            "project_id": PROJECT, "category_id": "any-percent", "created_at": created_at,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out = machine.speedrun(&["init", "--upgrade-category"], b"");
+    assert!(out.status.success(), "{}", text_of(&out));
+    let latest = latest_version("any-percent");
+    assert!(
+        has_line(
+            &String::from_utf8_lossy(&out.stdout),
+            &format!("any-percent unpinned -> {latest}")
+        ),
+        "{}",
+        text_of(&out)
+    );
+    let config = project_config(&machine.project_root());
+    assert_eq!(config["category_version"], latest, "{config}");
+    assert_eq!(config["project_id"], PROJECT, "{config}");
+    assert_eq!(config["created_at"], created_at, "{config}");
+}
+
+#[test]
+#[ignore = "audit W7.b: prompts carry the pinned version"]
+fn audit_w7_b_a_prompt_carries_the_pinned_category_version() {
+    let machine = Machine::new();
+    let daemon = RefusingDaemon::start(&machine);
+    machine.prompt("build it");
+    let prompts: Vec<serde_json::Value> = daemon
+        .received()
+        .iter()
+        .filter(|r| r.line.contains("/v1/prompts"))
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    assert!(!prompts.is_empty(), "no prompt was sent");
+    assert_eq!(prompts[0]["category_version"], 1, "{}", prompts[0]);
+}
+
+/// Whether `pid` names a process that has not exited (a zombie has).
+fn is_running(pid: u32) -> bool {
+    let out = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let stat = String::from_utf8_lossy(&out.stdout);
+    !stat.trim().is_empty() && !stat.trim().starts_with('Z')
+}
+
+/// Kills the daemons a test started through the CLI, so a failed test leaves none behind.
+struct Reaper(Vec<u32>);
+
+impl Drop for Reaper {
+    fn drop(&mut self) {
+        for pid in &self.0 {
+            let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+        }
+    }
+}
+
+impl Machine {
+    /// The pid in the health answer at this machine's address, if a daemon answers.
+    fn daemon_pid(&self) -> Option<u32> {
+        let body: serde_json::Value = ureq::get(&format!("http://{}/v1/health", self.addr))
+            .call()
+            .ok()?
+            .into_json()
+            .ok()?;
+        body["pid"].as_u64().and_then(|p| u32::try_from(p).ok())
+    }
+
+    /// Open the live stream with the display token and wait for its first snapshot.
+    fn open_live_stream(&self) -> TcpStream {
+        let token = std::fs::read_to_string(self.data_dir().join("display-token")).unwrap();
+        let mut stream = TcpStream::connect(&self.addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write!(
+            stream,
+            "GET /v1/live/stream?token={} HTTP/1.1\r\nHost: {}\r\nAccept: text/event-stream\r\n\r\n",
+            token.trim(),
+            self.addr
+        )
+        .unwrap();
+        let mut seen = Vec::new();
+        let mut buffer = [0u8; 4096];
+        while !contains(&seen, "snapshot") {
+            let n = stream.read(&mut buffer).expect("the live stream sent nothing");
+            assert!(n > 0, "the live stream closed");
+            seen.extend_from_slice(&buffer[..n]);
+        }
+        stream
+    }
+
+    /// `speedrun daemon restart`, asserting success; the new daemon's pid.
+    fn restart_daemon(&self, reaper: &mut Reaper) -> u32 {
+        let out = self.speedrun(&["daemon", "restart"], b"");
+        let pid = self.daemon_pid();
+        reaper.0.extend(pid);
+        assert!(out.status.success(), "{}", text_of(&out));
+        pid.expect("a daemon answers after `speedrun daemon restart`")
+    }
+}
+
+#[test]
+#[ignore = "audit W4.b: speedrun daemon restart"]
+fn audit_w4_b_daemon_restart_with_a_stream_open_leaves_one_daemon() {
+    let machine = Machine::new();
+    let mut reaper = Reaper(Vec::new());
+    let first = machine.restart_daemon(&mut reaper);
+    let stream = machine.open_live_stream();
+    let second = machine.restart_daemon(&mut reaper);
+    drop(stream);
+    assert_ne!(first, second, "the daemon was not restarted");
+    assert!(
+        !is_running(first),
+        "the old daemon {first} still runs beside {second}"
+    );
+}
+
+#[test]
+#[ignore = "audit W4.b: speedrun daemon stop and status"]
+fn audit_w4_b_daemon_stop_returns_after_the_daemon_has_exited() {
+    let machine = Machine::new();
+    let mut reaper = Reaper(Vec::new());
+    let pid = machine.restart_daemon(&mut reaper);
+    let status = machine.speedrun(&["daemon", "status"], b"");
+    assert!(
+        status.status.success() && text_of(&status).contains(&format!("pid {pid}")),
+        "{}",
+        text_of(&status)
+    );
+    let stopped = machine.speedrun(&["daemon", "stop"], b"");
+    assert!(stopped.status.success(), "{}", text_of(&stopped));
+    assert!(
+        !is_running(pid),
+        "`speedrun daemon stop` returned while {pid} ran"
+    );
+    let after = machine.speedrun(&["daemon", "status"], b"");
+    assert_eq!(after.status.code(), Some(1), "{}", text_of(&after));
 }

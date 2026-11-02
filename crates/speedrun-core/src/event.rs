@@ -119,6 +119,16 @@ pub enum EventPayload {
         trust: Trust,
         #[serde(default)]
         evidence: Vec<Evidence>,
+        /// Who made the claim. Set by the daemon from the token the request
+        /// carried; a value sent by the client is overwritten.
+        #[serde(default)]
+        claimant: Claimant,
+    },
+    /// The user confirms an agent's claim on a milestone whose rules require
+    /// the user's word (`required_trust` `self_declared`). Only the full
+    /// token may send it.
+    MilestoneConfirmed {
+        milestone_id: String,
     },
     MilestoneVerified {
         milestone_id: String,
@@ -165,6 +175,7 @@ impl EventPayload {
             Self::MilestoneAccepted { .. } => "milestone_accepted",
             Self::MilestoneRejected { .. } => "milestone_rejected",
             Self::MilestoneReached { .. } => "milestone_reached",
+            Self::MilestoneConfirmed { .. } => "milestone_confirmed",
             Self::MilestoneVerified { .. } => "milestone_verified",
             Self::MilestoneInvalidated { .. } => "milestone_invalidated",
             Self::RunPaused { .. } => "run_paused",
@@ -185,6 +196,17 @@ pub enum MilestoneOrigin {
     User,
     /// Proposed by an agent; must be accepted by the user before it counts.
     AgentGenerated,
+}
+
+/// Who claimed a milestone, by the token the claim arrived with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Claimant {
+    /// The full token: the user, or a command the user ran.
+    #[default]
+    User,
+    /// The agent token (`$DATA_DIR/agent-token`), held by agent tools.
+    Agent,
 }
 
 /// How much a milestone claim can be believed. Ordered weakest → strongest.

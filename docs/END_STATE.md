@@ -8,7 +8,7 @@ This is an index of the acceptance items in `V0.2.md` and `COMMONS.md` §14, whi
 them. **Who**: `loop` means a bounded change a test can judge, which an automated proposer
 can make once the test exists; `leader` means it needs design, a schema or category change,
 or code outside the Rust workspace. **Test**: the test that shows the item holds, or an ignored
-objective test that fails until it does. Every named `audit_` test passes as of 2026-11-01.
+objective test that fails until it does. Every named `audit_` test passes as of 2026-11-01 except the Wave 3b tests (`audit_w4_b_*`, `audit_w6_a_*`, `audit_w7_b_*`), which are ignored until their items hold.
 
 ## v0.2 (COMMONS P0)
 
@@ -46,14 +46,14 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W3.c | A paused run with agent work gives non-zero `agent_ms` | loop | | `audit_a6_1_agent_turn_while_paused_*` |
 | W4.a | Two daemons started concurrently 50 times give 0 token mismatches; a mismatched data dir spools and `doctor` says why | loop | D3 | `audit_m2_concurrent_*`, `audit_w4_a_*`, `audit_p0_b_client_*` |
 | W4.d | `speedrun doctor` shows versions, the data-dir match, spool, rejected and write-failure counts | loop | | `audit_w4_doctor_*`, `audit_m7_c_*` |
-| W4.b | An upgrade with an SSE client open leaves exactly one daemon | leader | | |
+| W4.b | `speedrun daemon restart` with an SSE client open leaves exactly one daemon; `stop` waits for the pid | loop | | `audit_w4_b_*` |
 | W4.c | `GET /v1/live?token=<full>` returns 401 | loop | | `audit_w4_c_*` |
 | W5.a | Adapter tool schemas come from `definitions()`, with a drift test; opencode or pi reach `evidence_verified` on tests-green | leader | | |
 | W5.b | A repeated propose during an outage gives no duplicate milestones | loop | | `audit_w5_b_*` |
-| W6.a | An agent-token claim on `tax-compliance` does not count until the user confirms | leader | D6 | |
+| W6.a | An agent-token claim on a `self_declared` milestone does not count until the user confirms; the claimant comes from the token | loop | D6 | `audit_w6_a_*` |
 | W6.b | A cloned repo with `project.json` records nothing until `speedrun init --trust`; the project search stops at the git toplevel and `$HOME` | loop | | `audit_w6_b_*` |
 | W7.a | The PB shown comes from the same project | loop | | `audit_w7_a_*` |
-| W7.b | Upgrading the binary does not change a project's category version; the snapshot has a `protocol` field | leader | | |
+| W7.b | Upgrading the binary does not change a project's category version; the snapshot has `protocol` and `source` | loop | | `audit_w7_b_*` |
 | W8 | Reproducible packaging, no publish on a failing test, release attestation | leader | D1 | |
 | W9.a | A log edited and re-hashed fails `speedrun verify` with a signature error | | | holds: `rewriting_and_rehashing_an_event_fails_the_signature_check` |
 | W9.c | Two device keys append to one run; key rotation keeps earlier events valid | loop | C1 | `audit_w9_c_*` |

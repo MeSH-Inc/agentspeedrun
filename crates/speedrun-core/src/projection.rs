@@ -63,6 +63,10 @@ pub struct MilestoneView {
     /// When the milestone first met its required trust. This is the split.
     pub counted_at: Option<DateTime<Utc>>,
     pub split: Option<Timing>,
+    /// An agent's claim holds this milestone and awaits the user's
+    /// `milestone_confirmed`; until then the milestone does not count.
+    #[serde(default)]
+    pub pending_confirmation: bool,
 }
 
 impl MilestoneView {
@@ -409,6 +413,7 @@ impl RunView {
                         reached_at: None,
                         counted_at: None,
                         split: None,
+                        pending_confirmation: false,
                     });
                 }
                 EventPayload::MilestoneAccepted {
@@ -431,6 +436,7 @@ impl RunView {
                     milestone_id,
                     trust,
                     evidence,
+                    ..
                 }
                 | EventPayload::MilestoneVerified {
                     milestone_id,
@@ -468,6 +474,8 @@ impl RunView {
                         m.counted_at = None;
                     }
                 }
+                // Not yet folded: see W6.a in docs/V0.2.md.
+                EventPayload::MilestoneConfirmed { .. } => {}
                 EventPayload::RunPaused { .. } => {
                     if pause_open.is_none() {
                         pause_open = Some(t);
@@ -616,6 +624,7 @@ impl RunView {
                 | P::MilestoneReached { .. }
                 | P::MilestoneVerified { .. }
                 | P::MilestoneInvalidated { .. }
+                | P::MilestoneConfirmed { .. }
         );
         let closing_completed = self.status == RunStatus::Completed
             && !self.closed
@@ -679,6 +688,7 @@ impl RunView {
                 S::Reached | S::Verified => Ok(()),
                 s => Err(format!("cannot invalidate a milestone that is {s:?}").to_lowercase()),
             },
+            P::MilestoneConfirmed { .. } => Err("milestone confirmation is not implemented".into()),
             P::RunPaused { .. } if self.open_turns > 0 => {
                 Err("cannot pause while an agent turn is open".into())
             }
@@ -692,7 +702,7 @@ impl RunView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SCHEMA_VERSION, hash::compute_hash};
+    use crate::{Claimant, SCHEMA_VERSION, hash::compute_hash};
 
     fn t(min: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_800_000_000, 0).unwrap() + Duration::minutes(min)
@@ -804,6 +814,7 @@ mod tests {
                 milestone_id: "demo".into(),
                 trust: Trust::AgentClaimed,
                 evidence: vec![],
+                claimant: Claimant::User,
             },
         ));
         let v = RunView::fold(&log(items.clone()), t(30)).unwrap();
@@ -845,6 +856,7 @@ mod tests {
             milestone_id: id.into(),
             trust: Trust::AgentClaimed,
             evidence: vec![],
+            claimant: Claimant::User,
         };
         assert!(v.check(&reach("demo")).is_ok());
         assert!(

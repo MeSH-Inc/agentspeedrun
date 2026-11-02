@@ -39,6 +39,7 @@ impl Health {
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol_version: PROTOCOL_VERSION,
             data_dir_id: self.data_dir_id.clone(),
+            pid: std::process::id(),
             proof: nonce.map(|n| digest::token_proof(token, n)),
         }
     }

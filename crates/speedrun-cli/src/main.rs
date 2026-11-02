@@ -19,7 +19,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use speedrun_core::{
-    EventPayload, MilestoneOrigin, RunOutcome, Trust,
+    Claimant, EventPayload, MilestoneOrigin, RunOutcome, Trust,
     api::{CategoriesResponse, ChainReport, RotateResponse},
     category::DEFAULT_CATEGORY,
 };
@@ -411,6 +411,7 @@ fn run(cmd: Cmd) -> Result<()> {
                     milestone_id,
                     trust: Trust::SelfDeclared,
                     evidence,
+                    claimant: Claimant::User,
                 },
             )?;
             if let Some(v) = &resp.verification {

@@ -33,6 +33,11 @@ pub struct PromptRequest {
     pub project_root: Option<String>,
     /// Category for a run started by this prompt.
     pub category_id: String,
+    /// The category version the project pinned (`category_version` in
+    /// `.speedrun/project.json`). `None` takes the daemon's latest; a version
+    /// the daemon does not know is a 400 and starts no run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_version: Option<u32>,
     pub session_id: String,
     pub host: String,
     pub model: Option<String>,
@@ -124,6 +129,8 @@ pub struct HealthResponse {
     pub protocol_version: u32,
     /// Hex SHA-256 of the canonical path of the data dir the daemon serves.
     pub data_dir_id: String,
+    /// The daemon's process id, so `speedrun daemon stop` can wait for its exit.
+    pub pid: u32,
     /// Present exactly when the request carried a nonce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof: Option<String>,

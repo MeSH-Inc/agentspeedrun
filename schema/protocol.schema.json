@@ -388,12 +388,34 @@
                 "$ref": "#/$defs/Evidence"
               },
               "default": []
+            },
+            "claimant": {
+              "description": "Who made the claim. Set by the daemon from the token the request\ncarried; a value sent by the client is overwritten.",
+              "$ref": "#/$defs/Claimant",
+              "default": "user"
             }
           },
           "required": [
             "type",
             "milestone_id",
             "trust"
+          ]
+        },
+        {
+          "description": "The user confirms an agent's claim on a milestone whose rules require\nthe user's word (`required_trust` `self_declared`). Only the full\ntoken may send it.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "milestone_confirmed"
+            },
+            "milestone_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "milestone_id"
           ]
         },
         {
@@ -651,6 +673,21 @@
         }
       ]
     },
+    "Claimant": {
+      "description": "Who claimed a milestone, by the token the claim arrived with.",
+      "oneOf": [
+        {
+          "description": "The full token: the user, or a command the user ran.",
+          "type": "string",
+          "const": "user"
+        },
+        {
+          "description": "The agent token (`$DATA_DIR/agent-token`), held by agent tools.",
+          "type": "string",
+          "const": "agent"
+        }
+      ]
+    },
     "RunOutcome": {
       "oneOf": [
         {
@@ -797,6 +834,15 @@
         "category_id": {
           "description": "Category for a run started by this prompt.",
           "type": "string"
+        },
+        "category_version": {
+          "description": "The category version the project pinned (`category_version` in\n`.speedrun/project.json`). `None` takes the daemon's latest; a version\nthe daemon does not know is a 400 and starts no run.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         },
         "session_id": {
           "type": "string"
@@ -1077,6 +1123,11 @@
               "type": "null"
             }
           ]
+        },
+        "pending_confirmation": {
+          "description": "An agent's claim holds this milestone and awaits the user's\n`milestone_confirmed`; until then the milestone does not count.",
+          "type": "boolean",
+          "default": false
         }
       },
       "required": [
@@ -1354,6 +1405,12 @@
           "description": "Hex SHA-256 of the canonical path of the data dir the daemon serves.",
           "type": "string"
         },
+        "pid": {
+          "description": "The daemon's process id, so `speedrun daemon stop` can wait for its exit.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "proof": {
           "description": "Present exactly when the request carried a nonce.",
           "type": [
@@ -1366,13 +1423,24 @@
         "ok",
         "version",
         "protocol_version",
-        "data_dir_id"
+        "data_dir_id",
+        "pid"
       ]
     },
     "LiveSnapshot": {
       "description": "Every live run worth showing, as of one instant.",
       "type": "object",
       "properties": {
+        "protocol": {
+          "description": "[`LIVE_PROTOCOL_VERSION`]: displays refuse a snapshot whose protocol\nthey do not know rather than misrender it.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "source": {
+          "description": "Where the snapshot comes from.",
+          "$ref": "#/$defs/LiveSource"
+        },
         "as_of": {
           "description": "The instant all `timing` values were computed at.",
           "type": "string",
@@ -1393,9 +1461,37 @@
         }
       },
       "required": [
+        "protocol",
+        "source",
         "as_of",
         "cursor",
         "runs"
+      ]
+    },
+    "LiveSource": {
+      "description": "The origin of a snapshot, so a display showing several can tell them apart.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/LiveSourceKind"
+        },
+        "id": {
+          "description": "For `local`, the daemon's `data_dir_id` (as in `/v1/health`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    },
+    "LiveSourceKind": {
+      "oneOf": [
+        {
+          "description": "A daemon on this machine.",
+          "type": "string",
+          "const": "local"
+        }
       ]
     },
     "LiveRun": {

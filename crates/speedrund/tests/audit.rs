@@ -1262,3 +1262,281 @@ fn audit_m2_concurrent_starts_on_one_data_dir_give_no_token_mismatch() {
         assert_eq!(alive, 1, "start {start}: {alive} daemons serve one data dir");
     }
 }
+
+// --- Wave 3b: provenance and confirmation (W6.a), pinned categories and the snapshot (W7.b),
+// --- and stopping the daemon (W4.b). The contracts are in docs/V0.2.md.
+
+impl Daemon {
+    /// The agent token the daemon creates at start beside `token` (V0.2 W6 contract).
+    fn agent_token(&self) -> String {
+        fs::read_to_string(self.home.path().join("agent-token"))
+            .expect("the daemon writes agent-token at start")
+            .trim()
+            .to_string()
+    }
+
+    fn post_as(&self, bearer: &str, path: &str, body: &Value) -> (u16, Value) {
+        request("POST", &format!("{}{path}", self.base), Some(bearer), Some(body))
+    }
+
+    /// The run's view of the milestone with category key or title `name`.
+    fn milestone(&self, run: &str, name: &str) -> Value {
+        let (status, view) = self.get(&format!("/v1/runs/{run}"), Some(&self.token));
+        assert_eq!(status, 200, "{view}");
+        view["milestones"]
+            .as_array()
+            .expect("milestones")
+            .iter()
+            .find(|m| m["key"] == name || m["title"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no milestone {name}: {view}"))
+    }
+}
+
+/// An append request for `run` dated now.
+fn event(run: &str, event_id: &str, payload: Value) -> Value {
+    json!({"event_id": event_id, "run_id": run, "occurred_at": null, "payload": payload})
+}
+
+fn confirmation(milestone_id: &str) -> Value {
+    json!({"type": "milestone_confirmed", "milestone_id": milestone_id})
+}
+
+fn counts(milestone: &Value) -> bool {
+    !milestone["counted_at"].is_null() && milestone["pending_confirmation"] != true
+}
+
+#[test]
+#[ignore = "audit W6.a: provenance and confirmation"]
+fn audit_w6_a_agent_claim_on_a_self_declared_milestone_counts_only_after_confirmation() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    let (status, body) = d.post_as(
+        &d.agent_token(),
+        "/v1/events",
+        &event(&run, "agent-claim", claim("scaffold-runs", json!([]))),
+    );
+    assert_eq!(status, 200, "{body}");
+    let pending = d.milestone(&run, "scaffold-runs");
+    assert_eq!(pending["pending_confirmation"], true, "{pending}");
+    assert!(
+        pending["counted_at"].is_null(),
+        "counted before the user confirmed: {pending}"
+    );
+
+    let (status, body) = d.post(
+        "/v1/events",
+        &event(&run, "confirm", confirmation("scaffold-runs")),
+    );
+    assert_eq!(status, 200, "{body}");
+    let confirmed = d.milestone(&run, "scaffold-runs");
+    assert!(counts(&confirmed), "{confirmed}");
+    let counted_at: chrono::DateTime<Utc> = serde_json::from_value(confirmed["counted_at"].clone()).unwrap();
+    let confirmed_at: chrono::DateTime<Utc> =
+        serde_json::from_value(body["event"]["occurred_at"].clone()).unwrap();
+    assert_eq!(
+        counted_at, confirmed_at,
+        "counts from the confirmation: {confirmed} / {body}"
+    );
+}
+
+#[test]
+#[ignore = "audit W6.a: provenance and confirmation"]
+fn audit_w6_a_the_claimant_and_trust_come_from_the_token_not_the_body() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    let mut spoofed = claim("scaffold-runs", json!([]));
+    spoofed["claimant"] = json!("user");
+    let (status, body) = d.post_as(&d.agent_token(), "/v1/events", &event(&run, "agent", spoofed));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["event"]["payload"]["claimant"], "agent", "{body}");
+    assert_eq!(body["event"]["payload"]["trust"], "agent_claimed", "{body}");
+
+    let mut spoofed = claim("happy-path-demo", json!([]));
+    spoofed["claimant"] = json!("agent");
+    spoofed["trust"] = json!("agent_claimed");
+    let (status, body) = d.post("/v1/events", &event(&run, "user", spoofed));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["event"]["payload"]["claimant"], "user", "{body}");
+    assert_eq!(body["event"]["payload"]["trust"], "self_declared", "{body}");
+}
+
+#[test]
+#[ignore = "audit W6.a: provenance and confirmation"]
+fn audit_w6_a_the_agent_token_cannot_confirm_accept_or_reach_full_routes() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    let agent = d.agent_token();
+    let (status, body) = d.post_as(
+        &agent,
+        "/v1/events",
+        &event(&run, "agent-claim", claim("scaffold-runs", json!([]))),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = d.post_as(
+        &agent,
+        "/v1/events",
+        &event(&run, "self-confirm", confirmation("scaffold-runs")),
+    );
+    assert_eq!(status, 403, "an agent confirmed its own claim: {body}");
+    assert_eq!(d.milestone(&run, "scaffold-runs")["pending_confirmation"], true);
+
+    let proposal = json!({
+        "type": "milestone_proposed", "milestone_id": "01AGENTPROPOSAL", "origin": "agent_generated",
+        "key": null, "title": "Recipes persist", "description": null, "required_trust": "agent_claimed",
+    });
+    let (status, body) = d.post_as(&agent, "/v1/events", &event(&run, "propose", proposal));
+    assert_eq!(status, 200, "{body}");
+    let accept = json!({"type": "milestone_accepted", "milestone_id": "01AGENTPROPOSAL"});
+    let (status, body) = d.post_as(&agent, "/v1/events", &event(&run, "self-accept", accept));
+    assert_eq!(status, 403, "an agent accepted its own proposal: {body}");
+
+    let (rotate, _) = d.post_as(&agent, "/v1/device/rotate", &json!({}));
+    let prompt = json!({
+        "event_id": "agent-prompt", "project_id": "proj", "project_root": null,
+        "category_id": "any-percent", "session_id": "s1", "host": "test", "model": null,
+        "content": "x", "occurred_at": null,
+    });
+    let (prompted, _) = d.post_as(&agent, "/v1/prompts", &prompt);
+    let (live, _) = d.get("/v1/live", Some(&agent));
+    assert_eq!((rotate, prompted, live), (401, 401, 401));
+}
+
+#[test]
+#[ignore = "audit W6.a: provenance and confirmation"]
+fn audit_w6_a_an_agent_claim_on_an_agent_claimed_milestone_counts_at_once() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    let agent = d.agent_token();
+    let proposal = json!({
+        "type": "milestone_proposed", "milestone_id": "01AGENTPROPOSAL", "origin": "agent_generated",
+        "key": null, "title": "Recipes persist", "description": null, "required_trust": "agent_claimed",
+    });
+    let (status, body) = d.post_as(&agent, "/v1/events", &event(&run, "propose", proposal));
+    assert_eq!(status, 200, "{body}");
+    let accept = json!({"type": "milestone_accepted", "milestone_id": "01AGENTPROPOSAL"});
+    let (status, body) = d.post("/v1/events", &event(&run, "accept", accept));
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = d.post_as(
+        &agent,
+        "/v1/events",
+        &event(&run, "agent-claim", claim("01AGENTPROPOSAL", json!([]))),
+    );
+    assert_eq!(status, 200, "{body}");
+    let m = d.milestone(&run, "Recipes persist");
+    assert!(counts(&m), "only self_declared milestones wait for the user: {m}");
+}
+
+#[test]
+fn guard_w6_a_a_users_claim_on_a_self_declared_milestone_counts_at_once() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    let (status, body) = d.post(
+        "/v1/events",
+        &event(&run, "user-claim", claim("scaffold-runs", json!([]))),
+    );
+    assert_eq!(status, 200, "{body}");
+    let m = d.milestone(&run, "scaffold-runs");
+    assert!(counts(&m), "{m}");
+}
+
+#[test]
+fn guard_w6_a_confirming_a_milestone_that_is_not_pending_is_refused() {
+    let d = Daemon::start();
+    let run = d.prompt("p1", "proj");
+    let (status, body) = d.post(
+        "/v1/events",
+        &event(&run, "user-claim", claim("scaffold-runs", json!([]))),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = d.post(
+        "/v1/events",
+        &event(&run, "confirm", confirmation("scaffold-runs")),
+    );
+    assert_eq!(status, 409, "{body}");
+}
+
+fn prompt_with_version(event_id: &str, version: Value) -> Value {
+    json!({
+        "event_id": event_id, "project_id": "proj", "project_root": null,
+        "category_id": "any-percent", "category_version": version, "session_id": "s1",
+        "host": "test", "model": null, "content": "build it", "occurred_at": null,
+    })
+}
+
+#[test]
+#[ignore = "audit W7.b: pinned category versions"]
+fn audit_w7_b_an_unknown_category_version_is_refused_and_starts_no_run() {
+    let d = Daemon::start();
+    let (status, body) = d.post("/v1/prompts", &prompt_with_version("p1", json!(99)));
+    assert_eq!(status, 400, "{body}");
+    let (status, body) = d.get("/v1/projects/proj/active-run", Some(&d.token));
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body["run"].is_null(),
+        "a run started under an unknown version: {body}"
+    );
+}
+
+#[test]
+fn guard_w7_b_a_known_category_version_starts_a_run_with_that_version() {
+    let d = Daemon::start();
+    let (status, body) = d.post("/v1/prompts", &prompt_with_version("p1", json!(1)));
+    assert_eq!(status, 200, "{body}");
+    let (_, run) = d.get("/v1/projects/proj/active-run", Some(&d.token));
+    assert_eq!(run["run"]["category_version"], 1, "{run}");
+}
+
+#[test]
+#[ignore = "audit W7.b: the live snapshot names its protocol and source"]
+fn audit_w7_b_the_live_snapshot_names_its_protocol_and_source() {
+    let d = Daemon::start();
+    d.prompt("p1", "proj");
+    let (_, health) = d.get("/v1/health", None);
+    let (status, snapshot) = d.get("/v1/live", Some(&d.display_token));
+    assert_eq!(status, 200, "{snapshot}");
+    assert_eq!(
+        snapshot["protocol"],
+        json!(speedrun_core::live::LIVE_PROTOCOL_VERSION)
+    );
+    assert_eq!(snapshot["source"]["kind"], "local", "{snapshot}");
+    assert_eq!(snapshot["source"]["id"], health["data_dir_id"], "{snapshot}");
+}
+
+#[test]
+#[ignore = "audit W4.b: POST /v1/shutdown"]
+fn audit_w4_b_shutdown_stops_the_daemon_with_a_stream_open() {
+    let mut d = Daemon::start();
+    let stream = open_live_stream(&d);
+    let (status, body) = d.post("/v1/shutdown", &json!({}));
+    assert_eq!(status, 202, "{body}");
+    let exited = exit_within(&mut d.child, Duration::from_secs(3));
+    drop(stream);
+    assert!(
+        exited.is_some(),
+        "speedrund was still running 3 s after /v1/shutdown"
+    );
+}
+
+#[test]
+#[ignore = "audit W4.b: POST /v1/shutdown"]
+fn audit_w4_b_shutdown_takes_only_the_full_token() {
+    let mut d = Daemon::start();
+    let (as_agent, _) = d.post_as(&d.agent_token(), "/v1/shutdown", &json!({}));
+    let (as_display, _) = d.post_as(&d.display_token.clone(), "/v1/shutdown", &json!({}));
+    let (anonymous, _) = request("POST", &format!("{}/v1/shutdown", d.base), None, Some(&json!({})));
+    assert_eq!((as_agent, as_display, anonymous), (401, 401, 401));
+    assert!(
+        exit_within(&mut d.child, Duration::from_millis(500)).is_none(),
+        "a refused shutdown stopped the daemon"
+    );
+    assert_eq!(d.get("/v1/health", None).0, 200);
+}
+
+#[test]
+fn guard_w4_b_health_names_the_daemons_pid() {
+    let d = Daemon::start();
+    let (status, body) = d.get("/v1/health", None);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["pid"], json!(d.child.id()), "{body}");
+}

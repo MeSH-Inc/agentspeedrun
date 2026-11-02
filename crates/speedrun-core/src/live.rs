@@ -14,6 +14,11 @@ use crate::{MilestoneOrigin, MilestoneState, RunStatus, RunView, Timing, Trust};
 /// Every live run worth showing, as of one instant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LiveSnapshot {
+    /// [`LIVE_PROTOCOL_VERSION`]: displays refuse a snapshot whose protocol
+    /// they do not know rather than misrender it.
+    pub protocol: u32,
+    /// Where the snapshot comes from.
+    pub source: LiveSource,
     /// The instant all `timing` values were computed at.
     pub as_of: DateTime<Utc>,
     /// Monotonic position in the daemon's whole log. Larger means newer;
@@ -21,6 +26,24 @@ pub struct LiveSnapshot {
     pub cursor: u64,
     /// Unfinished runs first, then most recently active.
     pub runs: Vec<LiveRun>,
+}
+
+/// Version of the live-display contract in this module.
+pub const LIVE_PROTOCOL_VERSION: u32 = 1;
+
+/// The origin of a snapshot, so a display showing several can tell them apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LiveSource {
+    pub kind: LiveSourceKind,
+    /// For `local`, the daemon's `data_dir_id` (as in `/v1/health`).
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveSourceKind {
+    /// A daemon on this machine.
+    Local,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -229,7 +252,7 @@ impl LiveRun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Event, EventPayload, Evidence, RunOutcome, SCHEMA_VERSION, hash::compute_hash};
+    use crate::{Claimant, Event, EventPayload, Evidence, RunOutcome, SCHEMA_VERSION, hash::compute_hash};
     use chrono::Duration;
 
     fn t(min: i64) -> DateTime<Utc> {
@@ -312,6 +335,7 @@ mod tests {
                 evidence: vec![Evidence::GitCommit {
                     sha: "4f2a9c1".into(),
                 }],
+                claimant: Claimant::User,
             },
         )
     }
@@ -367,6 +391,11 @@ mod tests {
         ));
         let live = RunView::fold(&log("01LIVE", "recipe-box", items), as_of).unwrap();
         LiveSnapshot {
+            protocol: LIVE_PROTOCOL_VERSION,
+            source: LiveSource {
+                kind: LiveSourceKind::Local,
+                id: "5f1c0de0".repeat(8),
+            },
             as_of,
             cursor: 42,
             runs: vec![LiveRun::from_view(&live, "Any%", as_of, Some(&pb))],

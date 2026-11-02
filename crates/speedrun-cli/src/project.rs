@@ -13,6 +13,11 @@ use speedrun_core::paths::PROJECT_FILE;
 pub struct ProjectConfig {
     pub project_id: String,
     pub category_id: String,
+    /// The category version this project's runs use. Pinned by `speedrun
+    /// init` so that a newer binary does not change the rules under a
+    /// project; `speedrun init --upgrade-category` moves it to the latest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_version: Option<u32>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -104,6 +109,7 @@ impl Project {
         let config = ProjectConfig {
             project_id: speedrun_core::new_id(),
             category_id: category_id.to_string(),
+            category_version: None,
             created_at: Utc::now(),
         };
         std::fs::create_dir_all(file.parent().expect("has parent"))?;

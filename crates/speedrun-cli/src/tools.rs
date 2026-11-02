@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use speedrun_core::{EventPayload, MilestoneOrigin, Trust};
+use speedrun_core::{Claimant, EventPayload, MilestoneOrigin, Trust};
 
 use crate::client::Client;
 use crate::ops;
@@ -156,6 +156,7 @@ pub fn call(name: &str, args: &Value, dir: &Path) -> Result<String> {
                     milestone_id,
                     trust: Trust::AgentClaimed,
                     evidence,
+                    claimant: Claimant::Agent,
                 },
             )?;
             let after = ops::require_run(&client, &project)?;
