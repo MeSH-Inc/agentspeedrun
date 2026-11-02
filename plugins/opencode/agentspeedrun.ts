@@ -9,7 +9,8 @@
 // plugins/opencode/agentspeedrun.ts in mesh-inc/agentspeedrun.
 
 import { spawn } from "node:child_process";
-import { type Plugin, tool } from "@opencode-ai/plugin";
+import { type Plugin, type ToolDefinition, tool } from "@opencode-ai/plugin";
+import type { ZodType } from "zod";
 
 /** Read per call so tests and users can point at a specific binary. */
 const bin = () => process.env.SPEEDRUN_BIN ?? "speedrun";
@@ -64,6 +65,78 @@ async function callTool(name: string, args: unknown, cwd: string): Promise<strin
   if (code === -1) return "agentspeedrun: the `speedrun` CLI is not installed or not on PATH.";
   if (code !== 0) throw new Error(stdout.trim() || `speedrun tool ${name} failed`);
   return stdout.trim();
+}
+
+/** The subset of JSON Schema `speedrun tool --list` uses. */
+type JsonSchema = {
+  type?: string;
+  description?: string;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema;
+  minItems?: number;
+  maxItems?: number;
+};
+
+type ToolSpec = { name: string; description: string; inputSchema: JsonSchema };
+
+type Schema = ZodType;
+
+/** A zod schema for one JSON Schema node. A type this does not know throws,
+ * so a new kind of field in the CLI's definitions fails the drift test
+ * instead of reaching the agent as something else. */
+function zodOf(s: JsonSchema): Schema {
+  let z: Schema;
+  if (s.type === "string") {
+    z = tool.schema.string();
+  } else if (s.type === "array") {
+    let a = tool.schema.array(zodOf(s.items ?? {}));
+    if (s.minItems !== undefined) a = a.min(s.minItems);
+    if (s.maxItems !== undefined) a = a.max(s.maxItems);
+    z = a;
+  } else if (s.type === "object") {
+    z = tool.schema.object(shapeOf(s));
+  } else {
+    throw new Error(`unsupported schema type ${s.type}`);
+  }
+  return s.description ? z.describe(s.description) : z;
+}
+
+/** The properties of an object schema, those not required made optional. */
+function shapeOf(s: JsonSchema) {
+  const required = new Set(s.required ?? []);
+  return Object.fromEntries(
+    Object.entries(s.properties ?? {}).map(([key, value]) => {
+      const z = zodOf(value);
+      return [key, required.has(key) ? z : z.optional()];
+    }),
+  );
+}
+
+/** The milestone tools, as `speedrun tool --list` defines them; none when the
+ * CLI cannot say, since a tool could only report that it is missing. */
+async function toolSpecs(cwd: string): Promise<ToolSpec[]> {
+  const { code, stdout } = await speedrun(["tool", "--list"], cwd);
+  if (code !== 0) return [];
+  try {
+    return JSON.parse(stdout);
+  } catch (e) {
+    debug("unreadable tool list", e);
+    return [];
+  }
+}
+
+/** One opencode tool per CLI definition, each calling `speedrun tool`. */
+export async function milestoneTools(cwd: string): Promise<Record<string, ToolDefinition>> {
+  const tools: Record<string, ToolDefinition> = {};
+  for (const spec of await toolSpecs(cwd)) {
+    tools[spec.name] = tool({
+      description: spec.description,
+      args: shapeOf(spec.inputSchema),
+      execute: async (args, ctx) => callTool(spec.name, args, ctx.directory),
+    });
+  }
+  return tools;
 }
 
 export const AgentSpeedrun: Plugin = async ({ client, directory }) => {
@@ -140,40 +213,6 @@ export const AgentSpeedrun: Plugin = async ({ client, directory }) => {
       }
     },
 
-    tool: {
-      speedrun_status: tool({
-        description:
-          "Show the current timed run for this project: category, elapsed times and every milestone with its state and trust.",
-        args: {},
-        execute: async (_args, ctx) => callTool("speedrun_status", {}, ctx.directory),
-      }),
-      speedrun_propose_milestones: tool({
-        description:
-          "Propose project-specific milestones derived from the user's goal. They stay 'proposed' until the user accepts them. Make each one concrete and checkable.",
-        args: {
-          milestones: tool.schema
-            .array(
-              tool.schema.object({
-                title: tool.schema.string(),
-                description: tool.schema.string().optional(),
-              }),
-            )
-            .min(1)
-            .max(12),
-        },
-        execute: async (args, ctx) => callTool("speedrun_propose_milestones", args, ctx.directory),
-      }),
-      speedrun_claim_milestone: tool({
-        description:
-          "Claim that an accepted milestone has been reached, with evidence the daemon checks: the commit that achieves it (commit first), public HTTPS URLs (the deployment; terms and privacy pages), a GitHub Actions run URL, or a Stripe payment id. Verified evidence upgrades the claim to evidence_verified; the result says what failed otherwise.",
-        args: {
-          milestone: tool.schema.string().describe("Milestone id or category key, as shown by speedrun_status."),
-          commit: tool.schema.string().optional().describe("Commit SHA or ref, e.g. HEAD."),
-          urls: tool.schema.array(tool.schema.string()).optional(),
-          note: tool.schema.string().optional(),
-        },
-        execute: async (args, ctx) => callTool("speedrun_claim_milestone", args, ctx.directory),
-      }),
-    },
+    tool: await milestoneTools(directory),
   };
 };

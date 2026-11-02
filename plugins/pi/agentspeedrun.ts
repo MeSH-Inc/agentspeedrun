@@ -8,9 +8,9 @@
 // Installed by `speedrun setup pi` / `speedrun setup omp`, or `pi install` of
 // the repository. Source: plugins/pi/agentspeedrun.ts in mesh-inc/agentspeedrun.
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Type } from "typebox";
+import { type TSchema, Type } from "typebox";
 
 /** Read per call so tests and users can point at a specific binary. */
 const bin = () => process.env.SPEEDRUN_BIN ?? "speedrun";
@@ -89,6 +89,64 @@ function sessionId(ctx: ExtensionContext): string {
   }
 }
 
+/** The subset of JSON Schema `speedrun tool --list` uses. */
+type JsonSchema = {
+  type?: string;
+  description?: string;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema;
+  minItems?: number;
+  maxItems?: number;
+};
+
+type ToolSpec = { name: string; description: string; inputSchema: JsonSchema };
+
+/** A TypeBox schema for one JSON Schema node. A type this does not know
+ * throws, so a new kind of field in the CLI's definitions fails the drift
+ * test instead of reaching the agent as something else. */
+function typeboxOf(s: JsonSchema): TSchema {
+  const options = s.description ? { description: s.description } : {};
+  if (s.type === "string") return Type.String(options);
+  if (s.type === "array") {
+    const bounds = {
+      ...(s.minItems !== undefined ? { minItems: s.minItems } : {}),
+      ...(s.maxItems !== undefined ? { maxItems: s.maxItems } : {}),
+    };
+    return Type.Array(typeboxOf(s.items ?? {}), { ...options, ...bounds });
+  }
+  if (s.type === "object") {
+    const required = new Set(s.required ?? []);
+    const properties = Object.fromEntries(
+      Object.entries(s.properties ?? {}).map(([key, value]) => {
+        const t = typeboxOf(value);
+        return [key, required.has(key) ? t : Type.Optional(t)];
+      }),
+    );
+    return Type.Object(properties, options);
+  }
+  throw new Error(`unsupported schema type ${s.type}`);
+}
+
+/** The milestone tools, as `speedrun tool --list` defines them; none when the
+ * CLI cannot say, since a tool could only report that it is missing. pi
+ * registers tools while the extension loads, so this one call is synchronous. */
+function toolSpecs(): ToolSpec[] {
+  try {
+    return JSON.parse(execFileSync(bin(), ["tool", "--list"], { encoding: "utf8", timeout: TIMEOUT_MS }));
+  } catch (e) {
+    debug("no tool list from speedrun", e);
+    return [];
+  }
+}
+
+/** Labels pi shows for the tools; a tool without one shows its name. */
+const LABELS: Record<string, string> = {
+  speedrun_status: "Speedrun status",
+  speedrun_propose_milestones: "Propose milestones",
+  speedrun_claim_milestone: "Claim milestone",
+};
+
 export default function agentspeedrun(pi: ExtensionAPI) {
   // Sessions with an agent turn in progress, to send exactly one turn-end per turn.
   const busy = new Set<string>();
@@ -150,45 +208,18 @@ export default function agentspeedrun(pi: ExtensionAPI) {
     }
   });
 
-  pi.registerTool({
-    name: "speedrun_status",
-    label: "Speedrun status",
-    description:
-      "Show the current timed run for this project: category, elapsed times and every milestone with its state and trust.",
-    parameters: Type.Object({}),
-    execute: async (_id, _params, _signal, _onUpdate, ctx) => callTool("speedrun_status", {}, ctx.cwd),
-  });
-
-  pi.registerTool({
-    name: "speedrun_propose_milestones",
-    label: "Propose milestones",
-    description:
-      "Propose project-specific milestones derived from the user's goal. They stay 'proposed' until the user accepts them. Make each one concrete and checkable.",
-    parameters: Type.Object({
-      milestones: Type.Array(
-        Type.Object({ title: Type.String(), description: Type.Optional(Type.String()) }),
-        { minItems: 1, maxItems: 12 },
-      ),
-    }),
-    execute: async (_id, params, _signal, _onUpdate, ctx) =>
-      callTool("speedrun_propose_milestones", params, ctx.cwd),
-  });
-
-  pi.registerTool({
-    name: "speedrun_claim_milestone",
-    label: "Claim milestone",
-    description:
-      "Claim that an accepted milestone has been reached, with evidence the daemon checks: the commit that achieves it (commit first), public HTTPS URLs (the deployment; terms and privacy pages), a GitHub Actions run URL, or a Stripe payment id. Verified evidence upgrades the claim to evidence_verified; the result says what failed otherwise.",
-    parameters: Type.Object({
-      milestone: Type.String({ description: "Milestone id or category key, as shown by speedrun_status." }),
-      commit: Type.Optional(Type.String({ description: "Commit SHA or ref, e.g. HEAD." })),
-      urls: Type.Optional(Type.Array(Type.String())),
-      note: Type.Optional(Type.String()),
-    }),
-    execute: async (_id, params, _signal, _onUpdate, ctx) => {
-      const result = await callTool("speedrun_claim_milestone", params, ctx.cwd);
-      await refreshStatus(ctx);
-      return result;
-    },
-  });
+  for (const spec of toolSpecs()) {
+    pi.registerTool({
+      name: spec.name,
+      label: LABELS[spec.name] ?? spec.name,
+      description: spec.description,
+      parameters: typeboxOf(spec.inputSchema),
+      execute: async (_id, params, _signal, _onUpdate, ctx) => {
+        const result = await callTool(spec.name, params, ctx.cwd);
+        // A claim changes the run's progress, which the status line shows.
+        if (spec.name === "speedrun_claim_milestone") await refreshStatus(ctx);
+        return result;
+      },
+    });
+  }
 }

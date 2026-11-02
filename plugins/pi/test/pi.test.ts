@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { ofType, sandbox, type Sandbox } from "../../testkit";
+import { execFileSync } from "node:child_process";
+import { ofType, sandbox, SPEEDRUN, type Sandbox } from "../../testkit";
 
 let sb: Sandbox;
 const handlers = new Map<string, Function>();
@@ -33,6 +34,34 @@ afterAll(() => sb?.close());
 
 test("registers the three milestone tools", () => {
   expect([...tools.keys()]).toEqual(["speedrun_status", "speedrun_propose_milestones", "speedrun_claim_milestone"]);
+});
+
+/** What an agent sees of a JSON Schema: types, fields, which are required,
+ * descriptions and array bounds. */
+function visible(s: any): any {
+  if (!s || typeof s !== "object") return s;
+  return {
+    type: s.type,
+    description: s.description,
+    properties: s.properties
+      ? Object.fromEntries(Object.entries(s.properties).map(([k, v]) => [k, visible(v)]))
+      : undefined,
+    required: s.type === "object" ? [...(s.required ?? [])].sort() : undefined,
+    items: visible(s.items),
+    minItems: s.minItems,
+    maxItems: s.maxItems,
+  };
+}
+
+test("every tool and field the CLI defines reaches the agent", () => {
+  const defs = JSON.parse(execFileSync(SPEEDRUN, ["tool", "--list"], { encoding: "utf8" }));
+  expect([...tools.keys()]).toEqual(defs.map((d: any) => d.name));
+  for (const d of defs) {
+    const registered = tools.get(d.name);
+    expect(registered.description).toBe(d.description);
+    // TypeBox schemas are JSON Schema; JSON drops TypeBox's own markers.
+    expect(visible(JSON.parse(JSON.stringify(registered.parameters)))).toEqual(visible(d.inputSchema));
+  }
 });
 
 test("first prompt starts a run and injects context", async () => {

@@ -48,7 +48,7 @@ objective test that fails until it does. Every named `audit_` test passes as of 
 | W4.d | `speedrun doctor` shows versions, the data-dir match, spool, rejected and write-failure counts | loop | | `audit_w4_doctor_*`, `audit_m7_c_*` |
 | W4.b | `speedrun daemon restart` with an SSE client open leaves exactly one daemon; `stop` waits for the pid | loop | | `audit_w4_b_*` |
 | W4.c | `GET /v1/live?token=<full>` returns 401 | loop | | `audit_w4_c_*` |
-| W5.a | Adapter tool schemas come from `definitions()`, with a drift test; opencode or pi reach `evidence_verified` on tests-green | leader | | |
+| W5.a | Adapter tool schemas come from `definitions()`, with a drift test; opencode or pi reach `evidence_verified` on tests-green | leader | | `every tool and field the CLI defines reaches the agent` (opencode, pi), `a passing CI run verifies tests-green` (pi) |
 | W5.b | A repeated propose during an outage gives no duplicate milestones | loop | | `audit_w5_b_*` |
 | W6.a | An agent-token claim on a `self_declared` milestone does not count until the user confirms; the claimant comes from the token | loop | D6 | `audit_w6_a_*` |
 | W6.b | A cloned repo with `project.json` records nothing until `speedrun init --trust`; the project search stops at the git toplevel and `$HOME` | loop | | `audit_w6_b_*` |

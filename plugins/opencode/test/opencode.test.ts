@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { ofType, sandbox, type Sandbox } from "../../testkit";
+import { execFileSync } from "node:child_process";
+import { tool } from "@opencode-ai/plugin";
+import { ofType, sandbox, SPEEDRUN, type Sandbox } from "../../testkit";
 
 let sb: Sandbox;
 let hooks: any;
@@ -42,6 +44,34 @@ beforeAll(async () => {
 });
 
 afterAll(() => sb?.close());
+
+/** What an agent sees of a JSON Schema: types, fields, which are required,
+ * descriptions and array bounds. */
+function visible(s: any): any {
+  if (!s || typeof s !== "object") return s;
+  return {
+    type: s.type,
+    description: s.description,
+    properties: s.properties
+      ? Object.fromEntries(Object.entries(s.properties).map(([k, v]) => [k, visible(v)]))
+      : undefined,
+    required: s.type === "object" ? [...(s.required ?? [])].sort() : undefined,
+    items: visible(s.items),
+    minItems: s.minItems,
+    maxItems: s.maxItems,
+  };
+}
+
+test("every tool and field the CLI defines reaches the agent", () => {
+  const defs = JSON.parse(execFileSync(SPEEDRUN, ["tool", "--list"], { encoding: "utf8" }));
+  expect(Object.keys(hooks.tool)).toEqual(defs.map((d: any) => d.name));
+  for (const d of defs) {
+    const registered = hooks.tool[d.name];
+    expect(registered.description).toBe(d.description);
+    const schema = tool.schema.toJSONSchema(tool.schema.object(registered.args));
+    expect(visible(schema)).toEqual(visible(d.inputSchema));
+  }
+});
 
 test("first prompt starts a run and tells the agent about it", async () => {
   await hooks["chat.message"](...message("ses_main", "build a recipe box"));
