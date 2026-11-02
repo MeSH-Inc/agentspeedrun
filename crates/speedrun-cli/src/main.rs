@@ -125,6 +125,12 @@ enum Cmd {
     Log,
     /// Check the run's hash chain.
     Verify,
+    /// Print a run's tier 2 disclosure export: per-prompt commitments, no prompt text.
+    Export {
+        /// Disclosure tier to export (only 2 is defined).
+        #[arg(long, default_value_t = 2)]
+        tier: u8,
+    },
     /// List available categories.
     Categories,
     /// Deliver events spooled while the daemon was unreachable.
@@ -468,6 +474,13 @@ fn run(cmd: Cmd) -> Result<()> {
                 r.unsigned,
                 r.head_hash.unwrap_or_default()
             );
+        }
+        Cmd::Export { tier } => {
+            let p = Project::require(&cwd)?;
+            let run = ops::require_run(&c, &p)?;
+            let export: speedrun_core::api::ExportResponse =
+                c.get(&format!("/v1/runs/{}/export?tier={tier}", run.run_id))?;
+            println!("{}", serde_json::to_string_pretty(&export)?);
         }
         Cmd::Categories => {
             let r: CategoriesResponse = c.get("/v1/categories")?;

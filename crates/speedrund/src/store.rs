@@ -13,6 +13,8 @@ use speedrun_core::{
     sign::{SEED_LEN, fingerprint, pubkey_hex, sign_hash},
 };
 
+use crate::disclosure::Disclosure;
+
 const MIGRATIONS: &[&str] = &[
     r#"
 CREATE TABLE events (
@@ -68,6 +70,7 @@ pub struct Store {
     device_id: String,
     key: SigningKey,
     prompt_key: [u8; SEED_LEN],
+    disclosure: Disclosure,
 }
 
 impl Store {
@@ -106,6 +109,7 @@ impl Store {
             device_id,
             key,
             prompt_key,
+            disclosure: Disclosure::beside(path),
         })
     }
 
@@ -122,6 +126,7 @@ impl Store {
             device_id: &self.device_id,
             key: &self.key,
             prompt_key: &self.prompt_key,
+            disclosure: &self.disclosure,
         };
         let out = f(&mut w)?;
         w.tx.commit()?;
@@ -130,6 +135,11 @@ impl Store {
 
     pub fn reader(&self) -> Reader<'_> {
         Reader(&self.conn)
+    }
+
+    /// Read the disclosure key a run started with, for a tier 2 export.
+    pub fn disclosure_key(&self, run_id: &str) -> Result<[u8; SEED_LEN]> {
+        self.disclosure.load(run_id)
     }
 }
 
@@ -212,6 +222,18 @@ impl Reader<'_> {
             .optional()?
             .map(|b| parse(&b))
             .transpose()
+    }
+
+    /// The redacted prompt text stored for `event_id`, if it has not been
+    /// deleted. The text lives outside the chain, so a missing row is normal.
+    pub fn prompt_text(&self, event_id: &str) -> rusqlite::Result<Option<String>> {
+        self.0
+            .query_row(
+                "SELECT content FROM prompts WHERE event_id = ?1",
+                [event_id],
+                |r| r.get(0),
+            )
+            .optional()
     }
 
     pub fn run_events(&self, run_id: &str) -> rusqlite::Result<Vec<Event>> {
@@ -351,6 +373,7 @@ pub struct Tx<'c> {
     device_id: &'c str,
     key: &'c SigningKey,
     prompt_key: &'c [u8; SEED_LEN],
+    disclosure: &'c Disclosure,
 }
 
 impl Tx<'_> {
@@ -361,6 +384,12 @@ impl Tx<'_> {
     /// Hex public key of the device writing this transaction.
     pub fn device_pubkey(&self) -> String {
         pubkey_hex(self.key)
+    }
+
+    /// Create this run's disclosure key and return the commitment to record
+    /// in `RunStarted`. The key itself never enters the log.
+    pub fn disclose(&self, run_id: &str) -> anyhow::Result<String> {
+        self.disclosure.create(run_id)
     }
 
     /// Append to the end of a run's chain. The caller validates first.

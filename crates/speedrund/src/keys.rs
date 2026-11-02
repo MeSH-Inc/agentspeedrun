@@ -30,6 +30,20 @@ pub fn load_or_create_secret(path: &Path) -> Result<[u8; SEED_LEN]> {
     Ok(key.to_bytes())
 }
 
+/// Create a fresh 32-byte secret at `path`: hex in a new 0600 file.
+pub fn create_secret(path: &Path) -> Result<[u8; SEED_LEN]> {
+    Ok(create(path)?.to_bytes())
+}
+
+/// Read a 32-byte secret stored as hex. Unlike [`load_or_create_secret`], a
+/// missing file is an error: a run's disclosure key must never be regenerated.
+pub fn read_secret(path: &Path) -> Result<[u8; SEED_LEN]> {
+    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    parse_seed(&text)
+        .map(|key| key.to_bytes())
+        .map_err(|e| anyhow!("{e}; expected a disclosure key at {}", path.display()))
+}
+
 /// The one definition of how a key is kept at rest: hex in a 0600 file,
 /// created once and never silently replaced.
 fn load_or_create_seed(path: &Path, advice: &str) -> Result<SigningKey> {

@@ -64,3 +64,9 @@ fn masked(block: &[u8; BLOCK_LEN], pad: u8) -> [u8; BLOCK_LEN] {
 pub fn text_digest(key: &[u8], text: &str) -> String {
     hex::encode(hmac_sha256(key, text.as_bytes()))
 }
+
+/// Hex SHA-256 of a disclosure key's bytes: what a run records at start so
+/// the key can be revealed later without being stored in the log.
+pub fn key_commitment(key: &[u8]) -> String {
+    hex::encode(Sha256::digest(key))
+}

@@ -7,7 +7,10 @@ use chrono::{DateTime, Duration, Utc};
 use speedrun_core::{
     Category, Event, EventPayload, Evidence, MilestoneOrigin, MilestoneState, RunOutcome, RunStatus, RunView,
     Trust,
-    api::{AppendRequest, AppendResponse, ChainReport, ProjectAppendRequest, PromptRequest, PromptResponse},
+    api::{
+        AppendRequest, AppendResponse, ChainReport, ExportResponse, ProjectAppendRequest, PromptCommitment,
+        PromptRequest, PromptResponse,
+    },
     category,
     hash::verify_stored_chain,
     live::{LiveRun, LiveSnapshot, SnapshotError},
@@ -672,6 +675,51 @@ impl Service {
             unsigned: signatures.unsigned,
         })
     }
+
+    /// A tier 2 publication of a run: one commitment per prompt and no
+    /// prompt text. The disclosure key stays on this machine.
+    pub fn export(&self, run_id: &str, tier: u8) -> Result<ExportResponse> {
+        if tier != 2 {
+            return Err(Error::BadRequest(format!(
+                "tier {tier} is not supported; only tier 2 is defined"
+            )));
+        }
+        let events = self.store.reader().run_events(run_id)?;
+        if events.is_empty() {
+            return Err(Error::NotFound(format!("run {run_id}")));
+        }
+        let disclosure_commitment = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::RunStarted {
+                    disclosure_commitment,
+                    ..
+                } => disclosure_commitment.clone(),
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound(format!("run {run_id} has no disclosure commitment")))?;
+        let key = self.store.disclosure_key(run_id).map_err(Error::Internal)?;
+        let reader = self.store.reader();
+        let mut prompts = Vec::new();
+        for event in &events {
+            if let EventPayload::PromptSubmitted { length, redacted, .. } = &event.payload
+                && let Some(text) = reader.prompt_text(&event.event_id)?
+            {
+                prompts.push(PromptCommitment {
+                    event_id: event.event_id.clone(),
+                    commitment: speedrun_core::digest::text_digest(&key, &text),
+                    length: *length,
+                    redacted: *redacted,
+                });
+            }
+        }
+        Ok(ExportResponse {
+            run_id: run_id.to_string(),
+            tier,
+            disclosure_commitment,
+            prompts,
+        })
+    }
 }
 
 /// The URL the run's `deployed` milestone was verified with, if it was.
@@ -698,6 +746,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
         None => (None, None),
     };
     let ruleset_digest = category::digest(cat).map_err(|e| Error::Internal(e.into()))?;
+    let disclosure_commitment = tx.disclose(&run_id).map_err(Error::Internal)?;
     tx.insert(
         &run_id,
         &format!("{base}:run"),
@@ -711,7 +760,7 @@ fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<
             start_head,
             start_head_committed_at,
             ruleset_digest: Some(ruleset_digest),
-            disclosure_commitment: None,
+            disclosure_commitment: Some(disclosure_commitment),
         },
     )?;
     for m in &cat.milestones {

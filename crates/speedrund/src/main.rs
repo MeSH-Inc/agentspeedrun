@@ -2,6 +2,7 @@
 //! editor and agent plugin talks to it over loopback HTTP.
 
 mod clock;
+mod disclosure;
 mod git;
 mod http;
 mod keys;

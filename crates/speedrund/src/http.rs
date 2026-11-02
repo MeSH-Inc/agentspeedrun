@@ -112,6 +112,7 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .route("/v1/runs/{run_id}", get(run))
         .route("/v1/runs/{run_id}/events", get(events))
         .route("/v1/runs/{run_id}/verify", get(verify))
+        .route("/v1/runs/{run_id}/export", get(export))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
         .route(
@@ -370,6 +371,20 @@ async fn events(State(s): State<AppState>, Path(run_id): Path<String>) -> impl I
 
 async fn verify(State(s): State<AppState>, Path(run_id): Path<String>) -> impl IntoResponse {
     call(&s, move |svc| svc.verify_chain(&run_id)).await
+}
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    /// Only tier 2 is defined; anything else is refused, not defaulted.
+    tier: u8,
+}
+
+async fn export(
+    State(s): State<AppState>,
+    Path(run_id): Path<String>,
+    Query(q): Query<ExportQuery>,
+) -> impl IntoResponse {
+    call(&s, move |svc| svc.export(&run_id, q.tier)).await
 }
 
 async fn categories(State(s): State<AppState>) -> impl IntoResponse {
