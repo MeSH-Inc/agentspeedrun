@@ -63,6 +63,7 @@ impl Request {
 pub struct FakeGitHub {
     pub base: String,
     requests: Arc<Mutex<Vec<Request>>>,
+    behaviour: Arc<Mutex<Behaviour>>,
 }
 
 impl FakeGitHub {
@@ -72,15 +73,29 @@ impl FakeGitHub {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&requests);
         let token_requests = Arc::new(Mutex::new(0usize));
+        let behaviour = Arc::new(Mutex::new(behaviour));
+        let current = Arc::clone(&behaviour);
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let (record, token_requests) = (Arc::clone(&record), Arc::clone(&token_requests));
+                let behaviour = *current.lock().unwrap();
                 std::thread::spawn(move || {
                     let _ = answer(stream, &record, &token_requests, behaviour);
                 });
             }
         });
-        Self { base, requests }
+        Self {
+            base,
+            requests,
+            behaviour,
+        }
+    }
+
+    /// From now on, GitHub names this account as the one that authorized.
+    pub fn set_user(&self, user_id: u64, login: &'static str) {
+        let mut behaviour = self.behaviour.lock().unwrap();
+        behaviour.user_id = user_id;
+        behaviour.login = login;
     }
 
     /// The environment that points a commons at this stand-in with a client id.

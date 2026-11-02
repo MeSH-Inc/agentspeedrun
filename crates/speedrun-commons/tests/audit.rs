@@ -373,6 +373,7 @@ impl Commons {
             .env("SPEEDRUN_COMMONS_HOME", home.path().join("data"))
             .env("SPEEDRUN_COMMONS_ADDR", format!("127.0.0.1:{port}"))
             .env_remove("SPEEDRUN_GITHUB_CLIENT_ID")
+            .env_remove("SPEEDRUN_COMMONS_PUBLIC_URL")
             .env_remove("PORT");
         for (name, value) in env {
             command.env(name, value);
@@ -1187,6 +1188,39 @@ fn audit_p1_f_a_persons_publications_are_those_their_devices_signed() {
     assert!(record.publications.iter().all(|p| p.run_id == "01RUNMINE"));
 }
 
+#[test]
+fn guard_p1_f_a_login_names_the_person_who_last_authorized_with_it() {
+    let github = FakeGitHub::start(fake_github::Behaviour {
+        user_id: 1,
+        login: "alice",
+        ..Default::default()
+    });
+    let commons = commons_with_github(&github);
+    let before = plain_run("01RUNFORMERALICE");
+    link(&commons, &before.key);
+    commons.publish(&before.bundle(1));
+
+    // The first alice renamed; a second account took the name and linked.
+    github.set_user(2, "Alice");
+    let after = plain_run("01RUNNEWALICE");
+    link(&commons, &after.key);
+    commons.publish(&after.bundle(1));
+
+    let record = person_record(&commons, "alice");
+    assert_eq!(record.person.github_id, 2);
+    let runs: Vec<&str> = record.publications.iter().map(|p| p.run_id.as_str()).collect();
+    assert_eq!(runs, ["01RUNNEWALICE"]);
+
+    let former = commons.page("/runs/01RUNFORMERALICE");
+    assert!(former.body.contains("github id 1"), "{}", former.body);
+    assert!(
+        !former.body.contains("href=\"/people/"),
+        "the former alice links to a person page"
+    );
+    let front = commons.page("/");
+    assert!(front.body.contains("github id 1"), "{}", front.body);
+}
+
 // --- P1.g: the public pages (COMMONS.md §20) -------------------------------------------------
 
 fn hms(ms: i64) -> String {
@@ -1354,6 +1388,40 @@ fn audit_p1_g_a_tier_0_page_shows_chain_heads_only() {
         !page.body.contains("happy-path-demo"),
         "a tier 0 page showed milestones"
     );
+}
+
+#[test]
+fn guard_p1_g_curl_commands_name_the_configured_address_never_the_host_header() {
+    let fetch = |commons: &Commons| {
+        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(10)).build();
+        agent
+            .get(&format!("{}/runs/01RUNCURL", commons.base))
+            .set("Host", "evil.example")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    };
+    let plain = Commons::start();
+    let digest = plain.publish(&plain_run("01RUNCURL").bundle(1)).bundle_digest;
+    let body = fetch(&plain);
+    assert!(
+        body.contains(&format!("curl $COMMONS/v1/bundles/{digest}")),
+        "{body}"
+    );
+    assert!(!body.contains("evil.example"));
+
+    let named = Commons::start_with(&[(
+        "SPEEDRUN_COMMONS_PUBLIC_URL",
+        "https://commons.example/".to_string(),
+    )]);
+    let digest = named.publish(&plain_run("01RUNCURL").bundle(1)).bundle_digest;
+    let body = fetch(&named);
+    assert!(
+        body.contains(&format!("curl https://commons.example/v1/bundles/{digest}")),
+        "{body}"
+    );
+    assert!(!body.contains("evil.example"));
 }
 
 // --- P1.h: running the commons on a host (COMMONS.md §20) ------------------------------------

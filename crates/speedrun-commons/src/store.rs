@@ -30,7 +30,14 @@ pub struct StoredPublication {
 pub struct ListedPublication {
     pub summary: PublicationSummary,
     pub publisher_pubkey: Option<String>,
-    pub person: Option<Person>,
+    pub person: Option<Holder>,
+}
+
+/// The person a device key is linked to, as pages name them: by login, or by
+/// GitHub id once someone else has taken their login.
+pub struct Holder {
+    pub github_id: u64,
+    pub login: Option<String>,
 }
 
 /// One device linked to a person, with when the link was made.
@@ -309,6 +316,12 @@ impl Store {
     pub async fn insert_link(&self, link: &Link, body: &str, at: DateTime<Utc>) -> Result<()> {
         let github_id = i64::try_from(link.claim.github_id)?;
         let mut transaction = self.pool.begin().await?;
+        // A login names one person: whoever held it before loses it.
+        sqlx::query("UPDATE people SET login = NULL WHERE lower(login) = lower(?) AND github_id != ?")
+            .bind(&link.claim.login)
+            .bind(github_id)
+            .execute(&mut *transaction)
+            .await?;
         sqlx::query(
             "INSERT INTO people (github_id, login) VALUES (?, ?) ON CONFLICT(github_id) DO UPDATE SET login = excluded.login",
         )
@@ -403,12 +416,12 @@ impl Store {
             let github_id = row.6;
             let login = row.7;
             let person = match (github_id, login) {
-                (Some(github_id), Some(login)) => Some(Person {
+                (Some(github_id), login) => Some(Holder {
                     github_id: u64::try_from(github_id)?,
                     login,
                 }),
                 (None, None) => None,
-                _ => return Err(anyhow::anyhow!("a publication's link names half a person")),
+                (None, Some(_)) => return Err(anyhow::anyhow!("a publication's link names half a person")),
             };
             listed.push(ListedPublication {
                 summary: PublicationSummary {
@@ -426,15 +439,15 @@ impl Store {
     }
 
     /// The person whose latest link names `device_pubkey`, if any.
-    pub async fn person_for_device(&self, device_pubkey: &str) -> Result<Option<Person>> {
-        let row = sqlx::query_as::<_, (i64, String)>(
+    pub async fn person_for_device(&self, device_pubkey: &str) -> Result<Option<Holder>> {
+        let row = sqlx::query_as::<_, (i64, Option<String>)>(
             "SELECT p.github_id, p.login FROM links lk JOIN people p ON p.github_id = lk.github_id WHERE lk.device_pubkey = ? ORDER BY lk.rowid DESC LIMIT 1",
         )
         .bind(device_pubkey)
         .fetch_optional(&self.pool)
         .await?;
         match row {
-            Some((github_id, login)) => Ok(Some(Person {
+            Some((github_id, login)) => Ok(Some(Holder {
                 github_id: u64::try_from(github_id)?,
                 login,
             })),

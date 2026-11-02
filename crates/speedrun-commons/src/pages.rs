@@ -9,12 +9,12 @@ use axum::http::StatusCode;
 use chrono::{DateTime, SecondsFormat, Utc};
 use ed25519_dalek::SigningKey;
 use maud::{DOCTYPE, Markup, html};
-use speedrun_core::commons::{Judgment, Person, TreeHead};
+use speedrun_core::commons::{Judgment, TreeHead};
 use speedrun_core::{RunView, Trust, sign};
 
 use crate::log;
 use crate::record;
-use crate::store::{ListedPublication, Store};
+use crate::store::{Holder, ListedPublication, Store};
 
 /// The security policy every page carries (§20).
 pub const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'";
@@ -44,6 +44,8 @@ impl Page {
 /// How a publication names the person it is shown as.
 enum PersonCell {
     Linked(String),
+    /// Linked to a person whose login someone else has since taken.
+    FormerLogin(u64),
     Unlinked(Option<String>),
 }
 
@@ -262,9 +264,15 @@ fn listed_views(listed: &[ListedPublication]) -> anyhow::Result<Vec<ListedView>>
     Ok(views)
 }
 
-fn person_cell(person: Option<&Person>, publisher: Option<&str>) -> anyhow::Result<PersonCell> {
+fn person_cell(person: Option<&Holder>, publisher: Option<&str>) -> anyhow::Result<PersonCell> {
     match person {
-        Some(person) => Ok(PersonCell::Linked(person.login.clone())),
+        Some(Holder {
+            login: Some(login), ..
+        }) => Ok(PersonCell::Linked(login.clone())),
+        Some(Holder {
+            github_id,
+            login: None,
+        }) => Ok(PersonCell::FormerLogin(*github_id)),
         None => match publisher {
             Some(pubkey) => {
                 let fingerprint = sign::fingerprint(pubkey)
@@ -280,6 +288,9 @@ fn person_markup(cell: &PersonCell) -> Markup {
     match cell {
         PersonCell::Linked(login) => html! {
             a href=(format!("/people/{login}")) { (login) }
+        },
+        PersonCell::FormerLogin(github_id) => html! {
+            "github id " (github_id)
         },
         PersonCell::Unlinked(Some(fingerprint)) => html! {
             "unlinked device " code { (fingerprint) }

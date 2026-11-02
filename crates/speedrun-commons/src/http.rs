@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -32,6 +32,10 @@ pub struct AppState {
     /// cannot both compute the same next leaf index.
     pub publishing: Arc<tokio::sync::Mutex<()>>,
     pub github: Arc<crate::github::GitHubConfig>,
+    /// The address the run page's `curl` commands name:
+    /// `SPEEDRUN_COMMONS_PUBLIC_URL`, else the placeholder `$COMMONS`. Never
+    /// the request's Host header, which a cache need not key on.
+    pub public_url: Arc<String>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -124,10 +128,8 @@ async fn front_page(State(s): State<AppState>) -> Result<Response, (StatusCode, 
 async fn run_page(
     State(s): State<AppState>,
     Path(run_id): Path<String>,
-    headers: HeaderMap,
 ) -> Result<Response, (StatusCode, String)> {
-    let base = page_origin(&headers)?;
-    page_response(pages::run(s.store.as_ref(), s.key.as_ref(), &base, &run_id).await)
+    page_response(pages::run(s.store.as_ref(), s.key.as_ref(), &s.public_url, &run_id).await)
 }
 
 async fn person_page(
@@ -135,22 +137,6 @@ async fn person_page(
     Path(login): Path<String>,
 ) -> Result<Response, (StatusCode, String)> {
     page_response(pages::person(s.store.as_ref(), &login).await)
-}
-
-/// The base the run page's `curl` commands name, from the request's Host.
-fn page_origin(headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
-    match headers.get(header::HOST) {
-        Some(value) => {
-            let host = value.to_str().map_err(|error| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("the Host header is not text: {error}"),
-                )
-            })?;
-            Ok(format!("http://{host}"))
-        }
-        None => Ok(String::new()),
-    }
 }
 
 fn page_response(result: anyhow::Result<pages::Page>) -> Result<Response, (StatusCode, String)> {

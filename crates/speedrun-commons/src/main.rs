@@ -45,7 +45,10 @@ fn listen_addr() -> Result<String> {
     match std::env::var("SPEEDRUN_COMMONS_ADDR") {
         Ok(addr) => Ok(addr),
         Err(std::env::VarError::NotPresent) => match std::env::var("PORT") {
-            Ok(port) => Ok(format!("0.0.0.0:{port}")),
+            Ok(port) => match port.trim().parse::<u16>() {
+                Ok(port) => Ok(format!("0.0.0.0:{port}")),
+                Err(error) => Err(anyhow::anyhow!("PORT {port:?} is not a port number: {error}")),
+            },
             Err(std::env::VarError::NotPresent) => Ok(DEFAULT_ADDR.to_string()),
             Err(error) => Err(anyhow::anyhow!("PORT is not text: {error}")),
         },
@@ -69,6 +72,7 @@ async fn serve(home: PathBuf) -> Result<()> {
         verifier: Arc::new(judge::verifier()),
         publishing: Arc::new(tokio::sync::Mutex::new(())),
         github: Arc::new(github::GitHubConfig::from_env()),
+        public_url: Arc::new(public_url()),
     });
     axum::serve(listener, app).await?;
     Ok(())
@@ -92,13 +96,35 @@ async fn backup(home: &Path, file: &Path) -> Result<()> {
     }
     let target = file.to_str().context("the backup path is not valid UTF-8")?;
     let database = store::Store::open(&database_path).await?;
-    let leaves = database.tree_size().await?;
     sqlx::query("VACUUM INTO ?")
         .bind(target)
         .execute(&database.pool)
         .await
         .with_context(|| format!("backing up into {}", file.display()))?;
+    // Count the copy, not the source: a publication may land in between.
+    let copy = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(file)
+                .read_only(true),
+        )
+        .await
+        .with_context(|| format!("opening the backup {}", file.display()))?;
+    let leaves: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM log_leaves")
+        .fetch_one(&copy)
+        .await
+        .with_context(|| format!("counting the leaves in {}", file.display()))?;
+    copy.close().await;
     let mut out = std::io::stdout().lock();
     writeln!(out, "backed up {leaves} leaves to {}", file.display()).context("writing the backup receipt")?;
     Ok(())
+}
+
+/// `SPEEDRUN_COMMONS_PUBLIC_URL` without a trailing slash, else `$COMMONS`.
+fn public_url() -> String {
+    match std::env::var("SPEEDRUN_COMMONS_PUBLIC_URL") {
+        Ok(url) if !url.trim().is_empty() => url.trim().trim_end_matches('/').to_string(),
+        _ => "$COMMONS".to_string(),
+    }
 }
