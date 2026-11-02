@@ -773,7 +773,11 @@ struct Stripe<'a> {
 }
 
 /// The Stripe API version every request pins, so a response's shape cannot
-/// change under a verifier that has already been reviewed.
+/// change under a verifier that has already been reviewed. At this version an
+/// invoice still names its `charge` and `payment_intent`; the
+/// `payments.data[].payment` fallback only matters if the pin moves to
+/// 2025-03-31.basil or later, which drops those fields. Moving the pin is a
+/// review of every Stripe path, not a constant edit.
 const STRIPE_API_VERSION: &str = "2024-06-20";
 
 /// A refund above this percentage of the captured amount counts as refunded;

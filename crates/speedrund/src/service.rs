@@ -315,7 +315,7 @@ impl Service {
                 ))
             })?,
         };
-        self.check_occurred_at(&run_id, req.occurred_at, from_spool)?;
+        self.check_occurred_at(&req.event_id, &run_id, req.occurred_at, from_spool)?;
         self.append(AppendRequest {
             event_id: req.event_id,
             run_id,
@@ -326,15 +326,21 @@ impl Service {
 
     /// Refuse a write dated outside the run's clock window: before the run
     /// started, or (unless it is a spool replay) too far behind the log.
+    /// A retry of an event already recorded is not judged again: the write
+    /// answers it with the original, as it did before the bound existed.
     ///
     /// The HTTP layer calls this before the write, inside the same service
     /// lock, so the check and the append cannot interleave with another write.
     pub fn check_occurred_at(
         &self,
+        event_id: &str,
         run_id: &str,
         occurred_at: Option<DateTime<Utc>>,
         from_spool: bool,
     ) -> Result<()> {
+        if self.store.reader().event(event_id)?.is_some() {
+            return Ok(());
+        }
         match self.store.reader().run_bounds(run_id)? {
             Some((start, last)) => CLOCK
                 .admit(occurred_at, start, last, Utc::now(), from_spool)
@@ -347,12 +353,13 @@ impl Service {
     /// prompt that starts a fresh run has no earlier events to be behind.
     pub fn check_prompt_occurred_at(
         &self,
+        event_id: &str,
         project_id: &str,
         occurred_at: Option<DateTime<Utc>>,
         from_spool: bool,
     ) -> Result<()> {
         match open_run_id(&self.store.reader(), project_id)? {
-            Some(run_id) => self.check_occurred_at(&run_id, occurred_at, from_spool),
+            Some(run_id) => self.check_occurred_at(event_id, &run_id, occurred_at, from_spool),
             None => Ok(()),
         }
     }

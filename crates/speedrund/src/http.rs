@@ -238,7 +238,7 @@ async fn record_prompt(
 ) -> impl IntoResponse {
     let from_spool = is_replay(&headers);
     let res = call(&s, move |svc| {
-        svc.check_prompt_occurred_at(&req.project_id, req.occurred_at, from_spool)?;
+        svc.check_prompt_occurred_at(&req.event_id, &req.project_id, req.occurred_at, from_spool)?;
         svc.record_prompt(req)
     })
     .await;
@@ -253,7 +253,7 @@ async fn append(
 ) -> impl IntoResponse {
     let from_spool = is_replay(&headers);
     let res = blocking(&s, move |svc| {
-        svc.check_occurred_at(&req.run_id, req.occurred_at, from_spool)?;
+        svc.check_occurred_at(&req.event_id, &req.run_id, req.occurred_at, from_spool)?;
         svc.append(req)
     })
     .await;

@@ -714,3 +714,48 @@ fn guard_w2_d_marked_prompt_replay_is_accepted() {
     );
     assert_eq!(status, 200, "{body}");
 }
+
+/// W2.d guard: a retry of an event already recorded gets its original answer, even once the
+/// run has moved more than the skew allowance past it. Idempotency comes before the bound.
+#[test]
+fn guard_w2_d_retry_of_a_recorded_event_is_answered_not_refused() {
+    let d = Daemon::start();
+    let forty_ago = (Utc::now() - chrono::Duration::minutes(40)).to_rfc3339();
+    let thirty_ago = (Utc::now() - chrono::Duration::minutes(30)).to_rfc3339();
+    let prompt = json!({
+        "event_id": "p1", "project_id": "proj", "project_root": null,
+        "category_id": "any-percent", "session_id": "s1", "host": "test", "model": null,
+        "content": "build it", "occurred_at": forty_ago,
+    });
+    let (status, body) = d.post("/v1/prompts", &prompt);
+    assert_eq!(status, 200, "{body}");
+    let run = body["run_id"].as_str().unwrap().to_string();
+    let by_run = json!({
+        "event_id": "early-by-run", "run_id": run, "occurred_at": thirty_ago,
+        "payload": claim("scaffold-runs", json!([])),
+    });
+    let by_project = json!({
+        "event_id": "early-by-project", "occurred_at": thirty_ago,
+        "payload": {"type": "agent_turn_ended", "session_id": "s1"},
+    });
+    assert_eq!(d.post("/v1/events", &by_run).0, 200);
+    assert_eq!(d.post("/v1/projects/proj/events", &by_project).0, 200);
+    let (status, body) = d.post(
+        "/v1/events",
+        &json!({
+            "event_id": "now", "run_id": run, "occurred_at": Utc::now().to_rfc3339(),
+            "payload": claim("happy-path-demo", json!([])),
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let retries = [
+        ("/v1/prompts", &prompt),
+        ("/v1/events", &by_run),
+        ("/v1/projects/proj/events", &by_project),
+    ];
+    for (path, request) in retries {
+        let (status, body) = d.post(path, request);
+        assert_eq!(status, 200, "retry on {path}: {body}");
+    }
+}
