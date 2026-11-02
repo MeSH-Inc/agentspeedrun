@@ -773,7 +773,7 @@ fn audit_p1_c_roots_and_inclusion_proofs_match_rfc_9162() {
             .collect();
         let leaves = hex_all(&raw);
         let root = hex::encode(rfc_9162::root(&raw));
-        assert_eq!(merkle::root(&leaves), root, "root of {n} leaves");
+        assert_eq!(merkle::root(&leaves), Some(root.clone()), "root of {n} leaves");
         assert_eq!(
             merkle::inclusion_proof(n as u64, &leaves),
             None,
@@ -787,13 +787,26 @@ fn audit_p1_c_roots_and_inclusion_proofs_match_rfc_9162() {
             assert!(merkle::verify_inclusion(
                 &leaves[m], m as u64, size, &expected, &root
             ));
+            // A proof for a tree of `n` can also verify at size `n + 1` (RFC
+            // 9162 cannot tell a node hash from a leaf hash), so the negatives
+            // here are the ones every correct verifier refuses.
             assert!(!merkle::verify_inclusion(
                 &leaves[m],
-                m as u64,
-                size + 1,
+                m as u64 + size,
+                size,
                 &expected,
                 &root
             ));
+            let mut longer = expected.clone();
+            longer.push(hex::encode(rfc_9162::hash(b"one hash too many")));
+            assert!(!merkle::verify_inclusion(
+                &leaves[m], m as u64, size, &longer, &root
+            ));
+            if let Some((_, shorter)) = expected.split_last() {
+                assert!(!merkle::verify_inclusion(
+                    &leaves[m], m as u64, size, shorter, &root
+                ));
+            }
             if n > 1 {
                 let other = (m + 1) % n;
                 assert!(!merkle::verify_inclusion(

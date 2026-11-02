@@ -23,11 +23,10 @@ pub fn leaf_hash(bundle_digest: &str, judgment_digest: &str) -> String {
 }
 
 /// The root of the tree whose leaves (hex leaf hashes) are `leaves`, in order.
-pub fn root(leaves: &[String]) -> String {
-    match parse_leaves(leaves) {
-        Some(hashes) => hex::encode(root_hashes(&hashes)),
-        None => String::new(),
-    }
+/// `None` when a leaf is not a 32-byte hex hash.
+pub fn root(leaves: &[String]) -> Option<String> {
+    let hashes = parse_leaves(leaves)?;
+    Some(hex::encode(root_hashes(&hashes)))
 }
 
 /// The audit path (RFC 9162 §2.1.3.1) proving leaf `index` in the tree of
