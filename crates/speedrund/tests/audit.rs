@@ -820,7 +820,6 @@ fn payloads_of(events: &[Value], kind: &str) -> Vec<Value> {
 const PROMPT_TEXT: &str = "add a settings page with a dark mode toggle";
 
 #[test]
-#[ignore = "audit A6-7"]
 fn audit_w1_d_prompt_text_is_kept_outside_the_chain() {
     let d = Daemon::start();
     let _run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
@@ -842,7 +841,6 @@ fn audit_w1_d_prompt_text_is_kept_outside_the_chain() {
 }
 
 #[test]
-#[ignore = "audit A6-7"]
 fn audit_w1_d_prompt_digest_is_an_hmac_under_the_device_prompt_key() {
     let d = Daemon::start();
     let run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
@@ -864,7 +862,6 @@ fn audit_w1_d_prompt_digest_is_an_hmac_under_the_device_prompt_key() {
 }
 
 #[test]
-#[ignore = "audit A6-7"]
 fn audit_w1_d_run_whose_prompt_text_was_deleted_still_verifies() {
     let d = Daemon::start();
     let run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
@@ -883,7 +880,6 @@ fn audit_w1_d_run_whose_prompt_text_was_deleted_still_verifies() {
 }
 
 #[test]
-#[ignore = "audit A6-8"]
 fn audit_w1_f_predefined_milestone_ids_are_namespaced() {
     let d = Daemon::start();
     let run = d.prompt("p1", "proj");
@@ -990,7 +986,6 @@ fn audit_w9_d_tier_2_export_commits_to_prompts_without_text() {
 }
 
 #[test]
-#[ignore = "audit A3-1"]
 fn audit_w9_e_run_started_names_its_head_and_rules() {
     let d = Daemon::start();
     let repo = tempfile::tempdir().unwrap();

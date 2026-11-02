@@ -470,7 +470,6 @@ fn guard_w1_e_fully_signed_run_passes_the_signature_check() {
 // --- W1.d, D7: HMAC-SHA256 for prompt digests and disclosure commitments -----------------
 
 #[test]
-#[ignore = "audit A6-7"]
 fn audit_w1_d_hmac_sha256_matches_rfc_4231() {
     use speedrun_core::digest::hmac_sha256;
     // RFC 4231 test cases 1, 2 and 6 (a key longer than the block size).
@@ -571,7 +570,6 @@ fn turn(start: bool) -> EventPayload {
 }
 
 #[test]
-#[ignore = "audit D5"]
 fn audit_w9_c_rotation_certificate_is_the_old_keys_signature_over_the_new_key() {
     use speedrun_core::sign::{pubkey_hex, rotation_certificate, verify_rotation};
     let (old, new, other) = (key(1), key(2), key(3));
@@ -587,7 +585,6 @@ fn audit_w9_c_rotation_certificate_is_the_old_keys_signature_over_the_new_key() 
 }
 
 #[test]
-#[ignore = "audit D5"]
 fn audit_w9_c_rotated_chain_verifies_from_public_keys_alone() {
     let (old, new) = (key(1), key(2));
     let events = chain(
@@ -667,7 +664,6 @@ fn two_device_run() -> Vec<Event> {
 }
 
 #[test]
-#[ignore = "audit D5"]
 fn audit_w9_c_two_device_chains_in_one_run_verify() {
     let events = two_device_run();
     assert_eq!(speedrun_core::hash::verify_chain(&events), Ok(()));
@@ -687,7 +683,6 @@ fn guard_w9_c_tampering_in_a_second_chain_is_detected() {
 }
 
 #[test]
-#[ignore = "audit D5"]
 fn audit_w9_c_fold_merges_device_chains_by_occurred_at() {
     // In time order the turn (minutes 3-4) ends before the pause (minute 5), so the run
     // ends paused with one minute of agent time. Read chain by chain, the turn would come
