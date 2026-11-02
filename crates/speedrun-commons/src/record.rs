@@ -105,6 +105,7 @@ pub async fn publish(
             run_id: &bundle.run_id,
             tier: bundle.tier,
             body: &body,
+            publisher_pubkey: &bundle.publisher_pubkey,
             received_at: &received_at,
             judgment: &judgment_body,
             leaf_index,
@@ -313,7 +314,7 @@ fn check_prompts(events: &[Event], bundle: &Bundle) -> Result<(), PublishError> 
     Ok(())
 }
 
-fn is_lower_hex_64(text: &str) -> bool {
+pub(crate) fn is_lower_hex_64(text: &str) -> bool {
     text.len() == 64
         && text
             .bytes()

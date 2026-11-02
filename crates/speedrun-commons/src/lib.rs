@@ -9,6 +9,7 @@ pub mod github;
 pub mod http;
 pub mod judge;
 pub mod keys;
+pub mod link;
 pub mod log;
 pub mod record;
 pub mod store;

@@ -10,9 +10,13 @@ use axum::{Json, Router};
 use ed25519_dalek::SigningKey;
 use serde::Deserialize;
 use speedrun_core::bundle::Bundle;
-use speedrun_core::commons::{CommonsHealth, InclusionProof, PublishReceipt, PublishedRun, TreeHead};
+use speedrun_core::commons::{
+    CommonsHealth, InclusionProof, Link, LinkConfirm, LinkStart, LinkStarted, LinkState, PersonRecord,
+    PublishReceipt, PublishedRun, TreeHead,
+};
 use speedrun_verify::Verifier;
 
+use crate::link::{self, LinkError};
 use crate::log::{self, LogError};
 use crate::record::{self, PublishError};
 use crate::store::Store;
@@ -36,6 +40,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/runs/{run_id}", get(published_run))
         .route("/v1/log/head", get(log_head))
         .route("/v1/log/proof/{leaf_index}", get(log_proof))
+        .route("/v1/links", post(start_link))
+        .route("/v1/links/{link_id}/poll", post(poll_link))
+        .route("/v1/links/{link_id}/confirm", post(confirm_link))
+        .route("/v1/people/{login}", get(person_record))
         .with_state(state)
 }
 
@@ -47,6 +55,61 @@ async fn health(State(s): State<AppState>) -> Result<Json<CommonsHealth>, (Statu
         commons_pubkey: speedrun_core::sign::pubkey_hex(s.key.as_ref()),
         tree_size,
     }))
+}
+
+async fn start_link(
+    State(s): State<AppState>,
+    body: Bytes,
+) -> Result<Json<LinkStarted>, (StatusCode, String)> {
+    let start: LinkStart = serde_json::from_slice(&body).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("the request body is not a LinkStart: {error}"),
+        )
+    })?;
+    let started = link::start(s.store.as_ref(), s.github.as_ref(), start)
+        .await
+        .map_err(link_error)?;
+    Ok(Json(started))
+}
+
+async fn poll_link(
+    State(s): State<AppState>,
+    Path(link_id): Path<String>,
+) -> Result<(StatusCode, Json<LinkState>), (StatusCode, String)> {
+    let state = link::poll(s.store.as_ref(), s.github.as_ref(), &link_id)
+        .await
+        .map_err(link_error)?;
+    let status = match &state {
+        LinkState::Pending => StatusCode::ACCEPTED,
+        LinkState::Authorized { .. } => StatusCode::OK,
+    };
+    Ok((status, Json(state)))
+}
+
+async fn confirm_link(
+    State(s): State<AppState>,
+    Path(link_id): Path<String>,
+    body: Bytes,
+) -> Result<Json<Link>, (StatusCode, String)> {
+    let confirm: LinkConfirm = serde_json::from_slice(&body).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("the request body is not a LinkConfirm: {error}"),
+        )
+    })?;
+    let linked = link::confirm(s.store.as_ref(), s.key.as_ref(), &link_id, confirm)
+        .await
+        .map_err(link_error)?;
+    Ok(Json(linked))
+}
+
+async fn person_record(
+    State(s): State<AppState>,
+    Path(login): Path<String>,
+) -> Result<Json<PersonRecord>, (StatusCode, String)> {
+    let record = link::person(s.store.as_ref(), &login).await.map_err(link_error)?;
+    Ok(Json(record))
 }
 
 async fn log_head(State(s): State<AppState>) -> Result<Json<TreeHead>, (StatusCode, String)> {
@@ -131,6 +194,21 @@ fn publish_error(error: PublishError) -> (StatusCode, String) {
     match error {
         PublishError::Refused(message) => (StatusCode::BAD_REQUEST, message),
         PublishError::Internal(error) => internal(error),
+    }
+}
+
+fn link_error(error: LinkError) -> (StatusCode, String) {
+    match error {
+        LinkError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+        LinkError::NotFound => (StatusCode::NOT_FOUND, "no such link".into()),
+        LinkError::Conflict => (StatusCode::CONFLICT, "not authorized yet".into()),
+        LinkError::Gone => (StatusCode::GONE, "the link can no longer complete".into()),
+        LinkError::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "linking is not configured".into(),
+        ),
+        LinkError::GitHub(error) => (StatusCode::BAD_GATEWAY, format!("GitHub: {error}")),
+        LinkError::Internal(error) => internal(error),
     }
 }
 

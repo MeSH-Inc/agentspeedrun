@@ -3,6 +3,8 @@
 use std::path::Path;
 
 use anyhow::Result;
+use chrono::{DateTime, SecondsFormat, Utc};
+use speedrun_core::commons::{Link, Person, PersonRecord, PublicationSummary};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
@@ -25,6 +27,9 @@ pub struct Publication<'a> {
     pub run_id: &'a str,
     pub tier: u8,
     pub body: &'a str,
+    /// Hex public key that signed the bundle, so a person's publications can be
+    /// found from the links without parsing every body.
+    pub publisher_pubkey: &'a str,
     pub received_at: &'a str,
     pub judgment: &'a str,
     pub leaf_index: u64,
@@ -32,6 +37,36 @@ pub struct Publication<'a> {
     pub tree_size: u64,
     pub tree_head: &'a str,
 }
+
+/// The state of a pending GitHub link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingState {
+    Pending,
+    Authorized,
+    Refused,
+}
+
+/// A pending link as stored: the device flow's code and the person GitHub
+/// named, once it has.
+pub struct PendingLink {
+    pub link_id: String,
+    pub device_pubkey: String,
+    pub device_code: String,
+    pub expires_at: DateTime<Utc>,
+    pub state: PendingState,
+    pub person: Option<Person>,
+}
+
+/// The fields a new pending link is written with.
+pub struct NewPendingLink<'a> {
+    pub link_id: &'a str,
+    pub device_pubkey: &'a str,
+    pub device_code: &'a str,
+    pub expires_at: DateTime<Utc>,
+}
+
+type PendingRow = (String, String, String, String, Option<i64>, Option<String>);
+type PublicationRow = (String, String, i64, String, i64);
 
 impl Store {
     /// Open (creating if absent) and migrate the database at `path`.
@@ -114,14 +149,17 @@ impl Store {
     /// Write one publication and its log entry in one transaction.
     pub async fn append(&self, publication: &Publication<'_>) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
-        sqlx::query("INSERT INTO bundles (digest, run_id, tier, body, received_at) VALUES (?, ?, ?, ?, ?)")
-            .bind(publication.bundle_digest)
-            .bind(publication.run_id)
-            .bind(i64::from(publication.tier))
-            .bind(publication.body)
-            .bind(publication.received_at)
-            .execute(&mut *transaction)
-            .await?;
+        sqlx::query(
+            "INSERT INTO bundles (digest, run_id, tier, body, received_at, publisher_pubkey) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(publication.bundle_digest)
+        .bind(publication.run_id)
+        .bind(i64::from(publication.tier))
+        .bind(publication.body)
+        .bind(publication.received_at)
+        .bind(publication.publisher_pubkey)
+        .execute(&mut *transaction)
+        .await?;
         sqlx::query("INSERT INTO judgments (bundle_digest, body) VALUES (?, ?)")
             .bind(publication.bundle_digest)
             .bind(publication.judgment)
@@ -141,4 +179,188 @@ impl Store {
         transaction.commit().await?;
         Ok(())
     }
+
+    /// Store a pending link before the person has authorized it.
+    pub async fn insert_pending_link(&self, pending: &NewPendingLink<'_>) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO pending_links (link_id, device_pubkey, device_code, expires_at, state) VALUES (?, ?, ?, ?, 'pending')",
+        )
+        .bind(pending.link_id)
+        .bind(pending.device_pubkey)
+        .bind(pending.device_code)
+        .bind(stamp(pending.expires_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// A pending link by id, including the person GitHub named if it did.
+    pub async fn pending_link(&self, link_id: &str) -> Result<Option<PendingLink>> {
+        let row = sqlx::query_as::<_, PendingRow>(
+            "SELECT device_pubkey, device_code, expires_at, state, github_id, login FROM pending_links WHERE link_id = ?",
+        )
+        .bind(link_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let (device_pubkey, device_code, expires_at, state, github_id, login) = match row {
+            Some(row) => row,
+            None => return Ok(None),
+        };
+        let state = match state.as_str() {
+            "pending" => PendingState::Pending,
+            "authorized" => PendingState::Authorized,
+            "refused" => PendingState::Refused,
+            other => return Err(anyhow::anyhow!("a pending link's state {other} is unknown")),
+        };
+        let person = match (github_id, login) {
+            (Some(github_id), Some(login)) => Some(Person {
+                github_id: u64::try_from(github_id)?,
+                login,
+            }),
+            (None, None) => None,
+            _ => return Err(anyhow::anyhow!("a pending link names half a person")),
+        };
+        if state == PendingState::Authorized && person.is_none() {
+            return Err(anyhow::anyhow!("an authorized pending link names no person"));
+        }
+        Ok(Some(PendingLink {
+            link_id: link_id.to_string(),
+            device_pubkey,
+            device_code,
+            expires_at: time(&expires_at, "a pending link's expiry")?,
+            state,
+            person,
+        }))
+    }
+
+    /// Record that GitHub named `person` for this link.
+    pub async fn authorize_pending_link(
+        &self,
+        link_id: &str,
+        person: &Person,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE pending_links SET state = 'authorized', github_id = ?, login = ?, authorized_at = ? WHERE link_id = ?",
+        )
+        .bind(i64::try_from(person.github_id)?)
+        .bind(&person.login)
+        .bind(stamp(at))
+        .bind(link_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record that the link can never complete.
+    pub async fn refuse_pending_link(&self, link_id: &str) -> Result<()> {
+        sqlx::query("UPDATE pending_links SET state = 'refused' WHERE link_id = ?")
+            .bind(link_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The link already confirmed for this pending link, if any.
+    pub async fn stored_link(&self, link_id: &str) -> Result<Option<Link>> {
+        let body: Option<String> = sqlx::query_scalar("SELECT body FROM links WHERE link_id = ?")
+            .bind(link_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        match body {
+            Some(body) => {
+                let link = serde_json::from_str(&body)
+                    .map_err(|error| anyhow::anyhow!("a stored link is not JSON: {error}"))?;
+                Ok(Some(link))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Store a confirmed link and make its person's login current.
+    pub async fn insert_link(&self, link: &Link, body: &str, at: DateTime<Utc>) -> Result<()> {
+        let github_id = i64::try_from(link.claim.github_id)?;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO people (github_id, login) VALUES (?, ?) ON CONFLICT(github_id) DO UPDATE SET login = excluded.login",
+        )
+        .bind(github_id)
+        .bind(&link.claim.login)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO links (link_id, github_id, login, device_pubkey, body, linked_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&link.claim.link_id)
+        .bind(github_id)
+        .bind(&link.claim.login)
+        .bind(&link.claim.device_pubkey)
+        .bind(body)
+        .bind(stamp(at))
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// A person by their current login, with every link and every publication
+    /// signed by one of their linked device keys.
+    pub async fn person_record(&self, login: &str) -> Result<Option<PersonRecord>> {
+        let person = sqlx::query_as::<_, (i64, String)>(
+            "SELECT github_id, login FROM people WHERE lower(login) = lower(?) LIMIT 1",
+        )
+        .bind(login)
+        .fetch_optional(&self.pool)
+        .await?;
+        let (github_id, stored_login) = match person {
+            Some(person) => person,
+            None => return Ok(None),
+        };
+        let link_bodies: Vec<String> =
+            sqlx::query_scalar("SELECT body FROM links WHERE github_id = ? ORDER BY rowid")
+                .bind(github_id)
+                .fetch_all(&self.pool)
+                .await?;
+        let mut links: Vec<Link> = Vec::with_capacity(link_bodies.len());
+        for body in link_bodies {
+            links.push(
+                serde_json::from_str(&body)
+                    .map_err(|error| anyhow::anyhow!("a stored link is not JSON: {error}"))?,
+            );
+        }
+        let rows = sqlx::query_as::<_, PublicationRow>(
+            "SELECT bundles.run_id, bundles.digest, bundles.tier, bundles.received_at, log_leaves.leaf_index FROM bundles JOIN log_leaves ON log_leaves.bundle_digest = bundles.digest WHERE bundles.publisher_pubkey IN (SELECT device_pubkey FROM links WHERE github_id = ?) ORDER BY bundles.received_at DESC, bundles.rowid DESC",
+        )
+        .bind(github_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut publications: Vec<PublicationSummary> = Vec::with_capacity(rows.len());
+        for (run_id, bundle_digest, tier, received_at, leaf_index) in rows {
+            publications.push(PublicationSummary {
+                run_id,
+                bundle_digest,
+                tier: u8::try_from(tier)?,
+                received_at: time(&received_at, "a stored publication's time")?,
+                leaf_index: u64::try_from(leaf_index)?,
+            });
+        }
+        Ok(Some(PersonRecord {
+            person: Person {
+                github_id: u64::try_from(github_id)?,
+                login: stored_login,
+            },
+            links,
+            publications,
+        }))
+    }
+}
+
+fn stamp(at: DateTime<Utc>) -> String {
+    at.to_rfc3339_opts(SecondsFormat::Nanos, true)
+}
+
+fn time(text: &str, what: &str) -> Result<DateTime<Utc>> {
+    let parsed = DateTime::parse_from_rfc3339(text)
+        .map_err(|error| anyhow::anyhow!("{what} is not RFC 3339: {error}"))?;
+    Ok(parsed.with_timezone(&Utc))
 }
