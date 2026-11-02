@@ -9,38 +9,14 @@ mod keys;
 mod logging;
 mod service;
 mod shutdown;
+mod startup;
 mod store;
 mod verify;
 
-use std::fs;
-use std::io::Write;
-use std::net::SocketAddr;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use speedrun_core::{category, paths};
-
-fn ensure_token(path: &Path) -> Result<String> {
-    if let Ok(t) = fs::read_to_string(path) {
-        let t = t.trim().to_string();
-        if !t.is_empty() {
-            return Ok(t);
-        }
-    }
-    // Two ULIDs = 160 bits of randomness; good enough for a loopback secret.
-    let token = format!("{}{}", speedrun_core::new_id(), speedrun_core::new_id());
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("writing {}", path.display()))?;
-    f.write_all(token.as_bytes())?;
-    Ok(token)
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -50,23 +26,18 @@ async fn main() -> Result<()> {
     let shutdown = shutdown::Shutdown::install()?;
 
     let dir = paths::data_dir();
-    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
-    let token = ensure_token(&paths::token_path())?;
-    let display_token = ensure_token(&paths::display_token_path())?;
+    startup::prepare_dir(&dir)?;
+    // The lock is held for the whole process life, so a second daemon on this
+    // data directory exits before it can write anything. The operating system
+    // releases it however the process ends.
+    let _lock = startup::DataDirLock::acquire(&dir)?;
+    let (listener, addr) = startup::listen().await?;
+    let token = startup::ensure_token(&paths::token_path())?;
+    let display_token = startup::ensure_token(&paths::display_token_path())?;
     let store = store::Store::open(&dir.join("speedrun.sqlite"), &paths::device_key_path())?;
     let device_pubkey = store.device_pubkey();
+    startup::write_addr(&dir, addr)?;
     let service = service::Service::new(store, category::builtin());
-
-    let addr: SocketAddr = paths::daemon_addr()
-        .parse()
-        .context("SPEEDRUN_ADDR must be host:port")?;
-    if !addr.ip().is_loopback() && std::env::var_os("SPEEDRUN_ALLOW_NON_LOOPBACK").is_none() {
-        bail!("refusing to listen on non-loopback {addr}; set SPEEDRUN_ALLOW_NON_LOOPBACK=1 to override");
-    }
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("binding {addr} (is another speedrund running?)"))?;
     logging::startup(addr, &dir, &device_pubkey);
 
     let cors_origins: Vec<String> = std::env::var("SPEEDRUN_CORS_ORIGINS")
