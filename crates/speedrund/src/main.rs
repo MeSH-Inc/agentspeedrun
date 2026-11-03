@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
         health: Arc::new(health),
         verifier: Arc::new(speedrun_verify::Verifier::default()),
         changes: Arc::new(tokio::sync::watch::channel(0).0),
+        live_hub: Arc::default(),
         shutdown: shutdown.clone(),
     };
     let retention_service = state.service.clone();

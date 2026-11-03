@@ -484,8 +484,8 @@ impl Service {
             check_id("milestone_id", milestone_id)?;
         }
 
-        let (event, inserted) = self.store.transaction(|tx| {
-            let events = tx.reader().run_events(&req.run_id)?;
+        let (event, inserted, events) = self.store.transaction(|tx| {
+            let mut events = tx.reader().run_events(&req.run_id)?;
             let run = RunView::fold(&events, Utc::now());
             // A client may name a predefined milestone by its category key. The
             // namespaced id is `start_run`'s rule; resolving through the folded
@@ -504,7 +504,7 @@ impl Service {
                         req.event_id
                     )));
                 }
-                return Ok((existing, false));
+                return Ok((existing, false, events));
             }
             if let EventPayload::MilestoneProposed { milestone_id, .. } = &payload
                 && let Some(existing) = proposal_event(&events, milestone_id)
@@ -512,7 +512,8 @@ impl Service {
                 // A retained proposal is a retry, not a conflict: it may have
                 // been spooled while the daemon was unreachable, and flush
                 // must deliver it as a no-op instead of rejecting it.
-                return Ok((existing.clone(), false));
+                let existing = existing.clone();
+                return Ok((existing, false, events));
             }
             let run = run.ok_or_else(|| Error::NotFound(format!("run {}", req.run_id)))?;
             run.check(&payload).map_err(Error::Conflict)?;
@@ -523,7 +524,8 @@ impl Service {
             {
                 tx.enqueue_verification(&e.event_id)?;
             }
-            Ok((e, true))
+            events.push(e.clone());
+            Ok((e, true, events))
         })?;
 
         // A retry is answered from the log (V0.2 M8): a claim's evidence is
@@ -537,7 +539,10 @@ impl Service {
         } else {
             None
         };
-        let derived: Vec<Event> = self.complete_if_done(&event.run_id)?.into_iter().collect();
+        let derived: Vec<Event> = self
+            .complete_from_events(&event.run_id, &events)?
+            .into_iter()
+            .collect();
         if std::iter::once(&event)
             .chain(&derived)
             .any(|e| matches!(e.payload, EventPayload::RunFinished { .. }))
@@ -837,7 +842,7 @@ impl Service {
         }
         // A job is only good while its cause is still the milestone's current
         // claim; invalidation or a newer claim makes the evidence stale.
-        let events = self.store.reader().run_events(&job.run_id)?;
+        let mut events = self.store.reader().run_events(&job.run_id)?;
         if !RunView::claim_is_current(&events, &job.milestone_id, &job.cause_event_id) {
             return Ok(Vec::new());
         }
@@ -862,7 +867,8 @@ impl Service {
             )?
             .into_iter()
             .collect();
-        out.extend(self.complete_if_done(&job.run_id)?);
+        events.extend(out.iter().cloned());
+        out.extend(self.complete_from_events(&job.run_id, &events)?);
         if out
             .iter()
             .any(|e| matches!(e.payload, EventPayload::RunFinished { .. }))
@@ -872,9 +878,14 @@ impl Service {
         Ok(out)
     }
 
+    #[cfg(test)]
     fn complete_if_done(&mut self, run_id: &str) -> Result<Option<Event>> {
         let events = self.store.reader().run_events(run_id)?;
-        let Some(run) = RunView::fold(&events, Utc::now()) else {
+        self.complete_from_events(run_id, &events)
+    }
+
+    fn complete_from_events(&mut self, run_id: &str, events: &[Event]) -> Result<Option<Event>> {
+        let Some(run) = RunView::fold(events, Utc::now()) else {
             return Ok(None);
         };
         let Some(at) = run.completion_time().filter(|_| !run.is_finished()) else {
@@ -884,7 +895,16 @@ impl Service {
             outcome: RunOutcome::Completed,
             reason: Some(format!("all {} milestones count", run.category_id)),
         };
-        self.insert_derived(run_id, &format!("{run_id}:completed"), at, payload)
+        if run.check(&payload).is_err() {
+            return Ok(None);
+        }
+        self.store.transaction(|tx| {
+            let event_id = format!("{run_id}:completed");
+            if tx.reader().event(&event_id)?.is_some() {
+                return Ok(None);
+            }
+            Ok(Some(tx.insert(run_id, &event_id, at, payload)?))
+        })
     }
 
     /// Insert a daemon-derived event if it is not already present and still valid.
@@ -911,6 +931,14 @@ impl Service {
     /// Snapshot for live displays: the newest open run of every project
     /// active within `window`.
     pub fn live(&mut self, window: Duration) -> Result<LiveSnapshot> {
+        self.live_with_window(Some(window))
+    }
+
+    pub fn live_all(&mut self) -> Result<LiveSnapshot> {
+        self.live_with_window(None)
+    }
+
+    fn live_with_window(&mut self, window: Option<Duration>) -> Result<LiveSnapshot> {
         let as_of = Utc::now();
         let reader = self.store.reader();
         let cursor = reader.cursor()?;
@@ -920,7 +948,13 @@ impl Service {
             let Some(view) = self.rooted_view(&log.events, as_of)? else {
                 continue;
             };
-            if !view.closed && view.last_event_at >= as_of - window {
+            if !view.closed
+                && window.is_none_or(|window| {
+                    as_of
+                        .checked_sub_signed(window)
+                        .is_none_or(|cutoff| view.last_event_at >= cutoff)
+                })
+            {
                 let mut jobs = HashMap::new();
                 for milestone in &view.milestones {
                     if let Some(event) = log.events.iter().rev().find(|event| matches!(&event.payload,
@@ -1678,6 +1712,55 @@ mod tests {
         let view = s.run(&run).unwrap();
         assert_eq!(view.status, RunStatus::Completed);
         assert!(s.verify_chain(&run).unwrap().ok);
+    }
+
+    #[test]
+    fn retry_heals_completion_after_rotation_and_interrupted_append() {
+        let (mut s, _dir) = svc();
+        let mut p = prompt("rotation-retry-prompt");
+        p.category_version = Some(1);
+        let run = s.record_prompt(p).unwrap().run_id;
+        for key in ["scaffold-runs", "happy-path-demo"] {
+            let claim = EventPayload::MilestoneReached {
+                milestone_id: key.into(),
+                trust: Trust::SelfDeclared,
+                evidence: vec![],
+                claimant: Claimant::User,
+            };
+            append(&mut s, &run, &format!("claim-{key}"), claim).unwrap();
+        }
+        for key in ["scaffold-runs", "happy-path-demo"] {
+            let verified = EventPayload::MilestoneVerified {
+                milestone_id: key.into(),
+                trust: Trust::EvidenceVerified,
+                verifier: "test".into(),
+                evidence: vec![],
+            };
+            s.insert_derived(&run, &format!("verify-{key}"), Utc::now(), verified)
+                .unwrap();
+        }
+        s.rotate_device().unwrap();
+        let payload = EventPayload::AgentTurnEnded {
+            session_id: "s".into(),
+        };
+        // Simulate the crash window after the original event commits, before completion.
+        s.store
+            .transaction::<_, Error>(|tx| {
+                tx.insert(&run, "interrupted", Utc::now(), payload.clone())?;
+                Ok(())
+            })
+            .unwrap();
+        let result = append(&mut s, &run, "interrupted", payload.clone()).unwrap();
+        assert!(!result.inserted);
+        assert_eq!(result.derived.len(), 1);
+        assert_eq!(s.run(&run).unwrap().status, RunStatus::Completed);
+        assert!(s.verify_chain(&run).unwrap().ok);
+        assert!(
+            append(&mut s, &run, "interrupted", payload)
+                .unwrap()
+                .derived
+                .is_empty()
+        );
     }
 
     #[test]

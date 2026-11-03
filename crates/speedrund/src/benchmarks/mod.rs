@@ -139,6 +139,7 @@ async fn history_pressure() {
         verifier: Arc::new(speedrun_verify::Verifier::default()),
         changes: Arc::new(watch::channel(0).0),
         shutdown: Shutdown::install().unwrap(),
+        live_hub: Arc::default(),
     };
     // Warm the personal-best cache before recording steady-state HTTP calls.
     state.service.lock().unwrap().live(Duration::hours(24)).unwrap();

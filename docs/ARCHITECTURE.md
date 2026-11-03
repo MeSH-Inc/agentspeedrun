@@ -133,16 +133,27 @@ Shared rules:
 - **Adapters never throw into the host.**
 - **Install from the binary.** `speedrun setup <host>` installs the copy of the adapter embedded in the binary (`include_str!`), so adapter and CLI versions cannot drift.
 
-Tests run each adapter against the real CLI and daemon: opencode and pi with fake hosts, VS Code inside a real VS Code under Xvfb. The Zed extension's command building is unit-tested, and CI builds it to WASM.
+Tests run each adapter against the real CLI and daemon: opencode and pi with fake hosts, VS Code inside a real VS Code under Xvfb. The Zed extension's command building is unit-tested, and local verification builds it to WASM.
 
 ## Live displays
 
 `LiveSnapshot` (`speedrun-core/src/live.rs`) is the only shape displays
 consume. It is built from `RunView` plus the personal best: the fastest
-earlier completed run of the same `category@version` by `timed_ms`. The
-daemon caches completed runs per category and clears the cache whenever a
-run finishes. Every successful write bumps a `watch` channel, and stream
-subscribers then recompute and send a full snapshot. Details:
+earlier completed run of the same project and `category@version` by `timed_ms`.
+The daemon caches completed comparisons by project and category version, and
+clears that cache whenever a run finishes. While streams are connected, one
+producer computes the newest open runs for all subscribers. Each subscriber
+filters that shared snapshot by its requested window. Slow readers coalesce
+updates; a new subscriber requests a fresh computation. The producer exits
+when its last subscriber disconnects or the daemon shuts down.
+
+Mutations and verification-state changes wake the producer through a `watch`
+channel. Write notifications run with the mutation even if the HTTP request is
+cancelled. Periodic refresh advances time-dependent state without an event;
+an unchanged cursor does not imply unchanged snapshot contents. GET requests
+still compute a fresh snapshot. No incremental or persistent projection cache
+is used; append completion reuses the event log loaded for that operation.
+Details:
 [LIVE_DISPLAY.md](LIVE_DISPLAY.md).
 
 ## Privacy

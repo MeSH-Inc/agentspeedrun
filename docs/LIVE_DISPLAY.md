@@ -66,11 +66,16 @@ when a snapshot arrives and adjust.
 | Route | Use |
 |---|---|
 | `GET /v1/live?since_hours=168` | One snapshot. |
-| `GET /v1/live/stream?since_hours=168` | Server-sent events. Each `snapshot` event is a complete `LiveSnapshot` (`id` = cursor), sent on connect, after every change, and at least every 60 s. Keep-alive comments in between. |
+| `GET /v1/live/stream?since_hours=168` | Server-sent events. Each `snapshot` event is a complete `LiveSnapshot` (`id` = cursor), computed on connect, after changes, and on a 60 s refresh interval. Slow readers may skip intermediate snapshots. Keep-alive comments in between. |
 
-- **Replace, don't merge.** Every message is complete. Drop any snapshot whose `cursor` is lower than the one you are showing.
+- **Replace, don't merge.** Every message is complete. Compare cursors only within the same source identity and generation; reset on a new generation. Within that scope, drop lower cursors but accept equal cursors because verification status and clocks can change without a new event.
 - **Reconnect freely.** There is no resume protocol; the first message after reconnecting is a full snapshot.
 - **Window.** Runs appear if they are the newest, unclosed run of their project with activity within `since_hours`. Unfinished runs sort first.
+
+Connected streams share one producer, including streams with different windows.
+Each connection filters the shared snapshot for its own window. The producer
+retires after its last subscriber disconnects; there is no idle snapshot cache.
+GET requests remain independent fresh reads.
 
 Address: `http://127.0.0.1:7477` (`SPEEDRUN_ADDR`).
 
