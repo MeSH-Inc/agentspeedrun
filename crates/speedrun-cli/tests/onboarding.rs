@@ -108,8 +108,9 @@ fn copilot_and_vscode_setup_explain_the_verified_harness() {
             String::from_utf8_lossy(&result.stderr)
         );
         let output = String::from_utf8_lossy(&result.stdout);
-        assert!(output.contains("select Local in the agent harness picker"));
-        assert!(output.contains("Copilot SDK harness did not record a prompt"));
+        assert!(output.contains("let MCP server startup finish"));
+        assert!(output.contains("check the MCP server status"));
+        assert!(output.contains("After an agent turn completes"));
     }
 }
 

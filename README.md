@@ -104,14 +104,14 @@ prompts. Zed's extension provides tools but does not capture its own agent promp
 | OpenCode v2 | `speedrun setup opencode` ([details](plugins/opencode)) |
 | pi | `speedrun setup pi` ([details](plugins/pi)) |
 | oh-my-pi | `speedrun setup omp` ([details](plugins/pi)) |
-| Copilot agent (VS Code Local harness, Copilot CLI) | `speedrun setup copilot --project` ([details](plugins/copilot)) |
+| Copilot agent (VS Code, Copilot CLI) | `speedrun setup copilot --project` ([details](plugins/copilot)) |
 | VS Code (timer, splits view, MCP tools) | Build and install the matching source VSIX as described below ([details](plugins/vscode)) |
 | Zed (MCP tools) | dev extension in [plugins/zed](plugins/zed) |
 
-In VS Code 1.144, select **Local** in the agent harness picker before sending
-a prompt. A test prompt in the newer Copilot SDK harness was not recorded;
-its milestone-tool behavior remains unverified. Check `speedrun readiness`
-after your first prompt.
+In VS Code 1.144, both **Local** and **Copilot** harnesses were verified
+with prompt capture and milestone tools. Let MCP server startup finish before
+using the tools; if they are unavailable, check the MCP server status. Check
+`speedrun readiness` after your first completed agent turn.
 
 When using the source checkout, build its matching VS Code extension (the
 published v0.2.0 VSIX may not match the source CLI):

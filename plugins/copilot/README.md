@@ -25,10 +25,10 @@ speedrun setup copilot            # ~/.copilot/hooks/ ($COPILOT_HOME/hooks/)
 For the milestone tools, the VS Code extension registers the MCP server
 automatically. For the Copilot CLI, add `speedrun mcp` as an MCP server.
 
-In VS Code 1.144, choose **Local** in the agent harness picker before sending
-a prompt. Local prompt capture and milestone tools were verified in a real
-agent turn. The newer **Copilot** SDK harness did not record a test prompt;
-its tool behavior remains unverified. See [live verification](../../docs/VS_CODE_LIVE_VERIFICATION.md).
+In VS Code 1.144, both **Local** and **Copilot** harnesses were verified
+with prompt capture and extension-provided milestone tools. Let MCP server
+startup finish before using the tools; if they are unavailable, check the MCP
+server status. See [live verification](../../docs/VS_CODE_LIVE_VERIFICATION.md).
 
 Copilot CLI runs project hooks only in a trusted workspace. Admit the project
 through Copilot’s workspace trust flow before testing capture; permitting tool

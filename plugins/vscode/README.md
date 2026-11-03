@@ -20,11 +20,10 @@ speedrun setup copilot --project   # writes .github/hooks/agentspeedrun.json; co
 The same hooks time the Copilot CLI. For user-wide hooks, drop `--project`
 (`~/.copilot/hooks/`). Claude Code inside VS Code is timed by its own plugin.
 
-In VS Code 1.144, select **Local** in the agent harness picker for prompt
-recording. A real Local agent turn was verified with these hooks and milestone
-tools. The newer **Copilot** SDK agent harness did not record a test prompt in
-the same project; its prompt recording and milestone-tool behavior are not yet
-verified. Check **Speedrun: Check Prompt Capture** after sending a prompt.
+In VS Code 1.144, both **Local** and **Copilot** harnesses were verified
+with prompt capture and milestone tools. Let MCP server startup finish before
+using the tools; if they are unavailable, check the MCP server status. Check
+**Speedrun: Check Prompt Capture** after your first completed agent turn.
 
 ## Install
 

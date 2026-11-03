@@ -298,7 +298,7 @@ pub fn run(cwd: &Path, options: Options) -> Result<()> {
     }
     if matches!(host, Host::Copilot | Host::Vscode) {
         println!(
-            "In VS Code 1.144, select Local in the agent harness picker before sending a prompt. The newer Copilot SDK harness did not record a prompt in our test; check `speedrun readiness` after sending one."
+            "In VS Code, let MCP server startup finish before using milestone tools. If tools are unavailable, check the MCP server status. After an agent turn completes, check `speedrun readiness`."
         );
     }
     if !setup::on_path() {
