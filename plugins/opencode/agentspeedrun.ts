@@ -8,9 +8,7 @@
 // Installed by `speedrun setup opencode`. Generated from
 // plugins/opencode/agentspeedrun.ts in mesh-inc/agentspeedrun.
 
-import { spawn } from "node:child_process";
-import { type Plugin, type ToolDefinition, tool } from "@opencode-ai/plugin";
-import type { ZodType } from "zod";
+import { spawn, spawnSync } from "node:child_process";
 
 /** Read per call so tests and users can point at a specific binary. */
 const bin = () => process.env.SPEEDRUN_BIN ?? "speedrun";
@@ -67,152 +65,90 @@ async function callTool(name: string, args: unknown, cwd: string): Promise<strin
   return stdout.trim();
 }
 
-/** The subset of JSON Schema `speedrun tool --list` uses. */
-type JsonSchema = {
-  type?: string;
-  description?: string;
-  properties?: Record<string, JsonSchema>;
-  required?: string[];
-  items?: JsonSchema;
-  minItems?: number;
-  maxItems?: number;
-};
+type ToolSpec = { name: string; description: string; inputSchema: object };
 
-type ToolSpec = { name: string; description: string; inputSchema: JsonSchema };
-
-type Schema = ZodType;
-
-/** A zod schema for one JSON Schema node. A type this does not know throws,
- * so a new kind of field in the CLI's definitions fails the drift test
- * instead of reaching the agent as something else. */
-function zodOf(s: JsonSchema): Schema {
-  let z: Schema;
-  if (s.type === "string") {
-    z = tool.schema.string();
-  } else if (s.type === "array") {
-    let a = tool.schema.array(zodOf(s.items ?? {}));
-    if (s.minItems !== undefined) a = a.min(s.minItems);
-    if (s.maxItems !== undefined) a = a.max(s.maxItems);
-    z = a;
-  } else if (s.type === "object") {
-    z = tool.schema.object(shapeOf(s));
-  } else {
-    throw new Error(`unsupported schema type ${s.type}`);
-  }
-  return s.description ? z.describe(s.description) : z;
-}
-
-/** The properties of an object schema, those not required made optional. */
-function shapeOf(s: JsonSchema) {
-  const required = new Set(s.required ?? []);
-  return Object.fromEntries(
-    Object.entries(s.properties ?? {}).map(([key, value]) => {
-      const z = zodOf(value);
-      return [key, required.has(key) ? z : z.optional()];
-    }),
-  );
-}
-
-/** The milestone tools, as `speedrun tool --list` defines them; none when the
- * CLI cannot say, since a tool could only report that it is missing. */
 async function toolSpecs(cwd: string): Promise<ToolSpec[]> {
   const { code, stdout } = await speedrun(["tool", "--list"], cwd);
   if (code !== 0) return [];
-  try {
-    return JSON.parse(stdout);
-  } catch (e) {
-    debug("unreadable tool list", e);
-    return [];
-  }
+  try { return JSON.parse(stdout); } catch { return []; }
 }
 
-/** One opencode tool per CLI definition, each calling `speedrun tool`. */
-export async function milestoneTools(cwd: string): Promise<Record<string, ToolDefinition>> {
-  const tools: Record<string, ToolDefinition> = {};
-  for (const spec of await toolSpecs(cwd)) {
-    tools[spec.name] = tool({
-      description: spec.description,
-      args: shapeOf(spec.inputSchema),
-      execute: async (args, ctx) => callTool(spec.name, args, ctx.directory),
-    });
-  }
-  return tools;
-}
-
-export const AgentSpeedrun: Plugin = async ({ client, directory }) => {
-  // Sessions with an agent turn in progress, to send exactly one turn-end per turn.
-  const busy = new Set<string>();
-  // Run-start context to show the agent, per session, until it proposes milestones.
-  const pendingContext = new Map<string, string>();
-  // Subagent (child) sessions: their prompts come from the agent, not the human.
-  const isChild = new Map<string, boolean>();
-
-  async function childSession(sessionID: string): Promise<boolean> {
-    const known = isChild.get(sessionID);
-    if (known !== undefined) return known;
-    try {
-      const res = await client.session.get({ path: { id: sessionID } });
-      const child = Boolean(res.data?.parentID);
-      isChild.set(sessionID, child);
-      return child;
-    } catch (e) {
-      debug("session lookup failed", e);
-      return false;
-    }
-  }
-
-  async function endTurn(sessionID: string) {
-    if (!busy.delete(sessionID)) return;
-    await ingest(["turn-end", "--host", HOST, "--session", sessionID], directory);
-  }
-
-  return {
-    "chat.message": async (input, output) => {
-      try {
-        if (await childSession(input.sessionID)) return;
-        const text = output.parts
-          .filter((p) => p.type === "text" && !p.synthetic && !p.ignored)
-          .map((p) => (p as { text: string }).text)
-          .join("\n\n");
-        if (!text.trim()) return;
-        const model = input.model ? `${input.model.providerID}/${input.model.modelID}` : undefined;
-        const args = ["prompt", "--host", HOST, "--session", input.sessionID];
-        if (model) args.push("--model", model);
-        const res = await ingest(args, directory, text);
-        if (res.recorded) busy.add(input.sessionID);
-        if (res.run_started && res.context) pendingContext.set(input.sessionID, res.context);
-      } catch (e) {
-        debug("chat.message", e);
-      }
-    },
-
-    "experimental.chat.system.transform": async (input, output) => {
-      const context = input.sessionID ? pendingContext.get(input.sessionID) : undefined;
-      if (context) output.system.push(context);
-    },
-
-    "tool.execute.after": async (input) => {
-      if (input.tool === "speedrun_propose_milestones") pendingContext.delete(input.sessionID);
-    },
-
-    event: async ({ event }) => {
-      try {
-        if (event.type === "session.created") {
-          isChild.set(event.properties.info.id, Boolean(event.properties.info.parentID));
-        } else if (event.type === "session.idle") {
-          await endTurn(event.properties.sessionID);
-        } else if (event.type === "session.status" && event.properties.status.type === "idle") {
-          await endTurn(event.properties.sessionID);
-        } else if (event.type === "session.deleted") {
-          await endTurn(event.properties.info.id);
-          pendingContext.delete(event.properties.info.id);
-          isChild.delete(event.properties.info.id);
-        }
-      } catch (e) {
-        debug("event", e);
-      }
-    },
-
-    tool: await milestoneTools(directory),
+// OpenCode v2 supplies these APIs at runtime. There are no SDK imports, so a
+// fresh project plugin can load without a package manager or network access.
+type SessionPrompt = { sessionID: string; prompt: { text?: string } };
+type SessionContext = { sessionID: string; system: { type: string; text: string }[] };
+type HostEvent = { type: string; data?: { sessionID?: string } };
+type ToolDefinition = { name: string; description: string; input: object; execute: (args: unknown, context: { sessionID: string }) => Promise<{ content: string }> };
+type HostContext = {
+  location: { directory: string };
+  session: {
+    get: (input: { sessionID: string }) => Promise<{ parentID?: string; data?: { parentID?: string } }>;
+    hook: {
+      (name: "prompt", callback: (event: SessionPrompt) => void | Promise<void>): Promise<unknown>;
+      (name: "context", callback: (event: SessionContext) => void | Promise<void>): Promise<unknown>;
+    };
   };
+  tool: { transform: (callback: (editor: { add: (definition: ToolDefinition) => void }) => void) => Promise<unknown> };
+  event: { subscribe: (options: { signal: AbortSignal }) => AsyncIterable<HostEvent> };
+};
+
+export default {
+  id: "agentspeedrun",
+  async setup(ctx: HostContext) {
+    try {
+      const directory: string = ctx.location.directory;
+      const busy = new Set<string>();
+      const pending = new Map<string, string>();
+      const controller = new AbortController();
+      function endTurn(sessionID: string) {
+        if (!busy.has(sessionID)) return;
+        // OpenCode standalone can exit immediately after publishing completion.
+        const result = spawnSync(bin(), ["ingest", "turn-end", "--host", HOST, "--session", sessionID], { cwd: directory, timeout: 2_000, encoding: "utf8" });
+        try {
+          const response = JSON.parse(result.stdout.trim().split("\n").pop() ?? "{}");
+          if (result.status === 0 && response.recorded === true) busy.delete(sessionID);
+          else debug("turn-end was not recorded", result.error ?? result.status);
+        } catch (e) { debug("turn-end response", e); }
+      }
+      const specs = await toolSpecs(directory);
+      await ctx.tool.transform((editor) => {
+        for (const spec of specs) editor.add({
+          name: spec.name, description: spec.description, input: spec.inputSchema,
+          execute: async (args: unknown, context: { sessionID: string }) => {
+            const content = await callTool(spec.name, args, directory);
+            if (spec.name === "speedrun_propose_milestones") pending.delete(context.sessionID);
+            return { content };
+          },
+        });
+      });
+      await ctx.session.hook("prompt", async (event: SessionPrompt) => {
+        try {
+          const session = await ctx.session.get({ sessionID: event.sessionID });
+          if (session.parentID || session.data?.parentID) return;
+          const text = event.prompt.text;
+          if (!text?.trim()) return;
+          const res = await ingest(["prompt", "--host", HOST, "--session", event.sessionID], directory, text);
+          if (res.recorded) busy.add(event.sessionID);
+          if (res.run_started && res.context) pending.set(event.sessionID, res.context);
+        } catch (e) { debug("prompt", e); }
+      });
+      await ctx.session.hook("context", (event: SessionContext) => {
+        const context = pending.get(event.sessionID);
+        if (context) event.system.push({ type: "text", text: context });
+      });
+      void (async () => {
+        try {
+          for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+            const data = event.data;
+            if (!data?.sessionID) continue;
+            if (["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "session.deleted"].includes(event.type)) {
+              endTurn(data.sessionID);
+              if (event.type === "session.deleted") pending.delete(data.sessionID);
+            }
+          }
+        } catch (e) { if (!controller.signal.aborted) debug("event stream", e); }
+      })();
+      return () => { controller.abort(); pending.clear(); };
+    } catch (e) { debug("setup", e); return () => {}; }
+  },
 };

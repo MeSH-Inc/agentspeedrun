@@ -1,136 +1,117 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { tool } from "@opencode-ai/plugin";
+import { writeFileSync, chmodSync } from "node:fs";
+import { join } from "node:path";
 import { ofType, sandbox, SPEEDRUN, type Sandbox } from "../../testkit";
+import plugin from "../agentspeedrun";
 
 let sb: Sandbox;
-let hooks: any;
-
-// Sessions whose id starts with "child" are subagents of "ses_main".
-const client = {
-  session: {
-    get: async ({ path }: { path: { id: string } }) => ({
-      data: { id: path.id, parentID: path.id.startsWith("child") ? "ses_main" : undefined },
-    }),
-  },
-};
-
-const message = (sessionID: string, text: string) => [
-  { sessionID, model: { providerID: "anthropic", modelID: "claude-x" } },
-  {
-    message: {},
-    parts: [
-      { type: "text", text },
-      { type: "text", text: "<file contents injected by opencode>", synthetic: true },
-    ],
-  },
-];
-
-const system = async (sessionID: string) => {
-  const out = { system: [] as string[] };
-  await hooks["experimental.chat.system.transform"]({ sessionID, model: {} }, out);
-  return out.system;
-};
-
-const idle = (sessionID: string) => [
-  { event: { type: "session.status", properties: { sessionID, status: { type: "idle" } } } },
-  { event: { type: "session.idle", properties: { sessionID } } },
-];
+const hooks: Record<string, (event: any) => Promise<void>> = {};
+const tools: Record<string, any> = {};
+let push: (event: any) => void;
+let cleanup: () => void;
 
 beforeAll(async () => {
   sb = await sandbox();
-  const { AgentSpeedrun } = await import("../agentspeedrun");
-  hooks = await AgentSpeedrun({ client, directory: sb.project, worktree: sb.project } as any);
+  let resolve: ((value: any) => void) | undefined;
+  const queue: any[] = [];
+  push = (event) => { if (resolve) { const r = resolve; resolve = undefined; r({ value: event, done: false }); } else queue.push(event); };
+  cleanup = await plugin.setup({
+    location: { directory: sb.project },
+    session: {
+      get: async ({ sessionID }: any) => ({ parentID: sessionID.startsWith("child") ? "parent" : undefined }),
+      hook: async (name: string, fn: any) => { hooks[name] = fn; },
+    },
+    tool: { transform: async (fn: any) => fn({ add: (tool: any) => { tools[tool.name] = tool; } }) },
+    event: { subscribe: () => ({ [Symbol.asyncIterator]: () => ({ next: () => queue.length ? Promise.resolve({ value: queue.shift(), done: false }) : new Promise((r) => { resolve = r; }) }) }) },
+  });
 });
+afterAll(() => { cleanup?.(); sb?.close(); });
 
-afterAll(() => sb?.close());
-
-/** What an agent sees of a JSON Schema: types, fields, which are required,
- * descriptions and array bounds. */
-function visible(s: any): any {
-  if (!s || typeof s !== "object") return s;
-  return {
-    type: s.type,
-    description: s.description,
-    properties: s.properties
-      ? Object.fromEntries(Object.entries(s.properties).map(([k, v]) => [k, visible(v)]))
-      : undefined,
-    required: s.type === "object" ? [...(s.required ?? [])].sort() : undefined,
-    items: visible(s.items),
-    minItems: s.minItems,
-    maxItems: s.maxItems,
-  };
-}
-
-test("every tool and field the CLI defines reaches the agent", () => {
+test("registers the CLI's tool schemas unchanged", () => {
   const defs = JSON.parse(execFileSync(SPEEDRUN, ["tool", "--list"], { encoding: "utf8" }));
-  expect(Object.keys(hooks.tool)).toEqual(defs.map((d: any) => d.name));
+  expect(Object.keys(tools)).toEqual(defs.map((d: any) => d.name));
   for (const d of defs) {
-    const registered = hooks.tool[d.name];
-    expect(registered.description).toBe(d.description);
-    const schema = tool.schema.toJSONSchema(tool.schema.object(registered.args));
-    expect(visible(schema)).toEqual(visible(d.inputSchema));
+    expect(tools[d.name].description).toBe(d.description);
+    expect(tools[d.name].input).toEqual(d.inputSchema);
   }
 });
 
-test("first prompt starts a run and tells the agent about it", async () => {
-  await hooks["chat.message"](...message("ses_main", "build a recipe box"));
-  const run = sb.status();
-  expect(run.prompt_count).toBe(1);
-  expect(run.open_turns).toBe(1);
-  expect(run.hosts).toEqual(["opencode"]);
+test("captures human prompt, injects context and ends execution once", async () => {
+  await hooks.prompt({ sessionID: "child_1", prompt: { text: "child" } });
+  await hooks.prompt({ sessionID: "main", prompt: { text: "build a recipe box" } });
   const [prompt] = ofType(sb.events(), "prompt_submitted");
-  // The log keeps a commitment to the prompt, never its text; the length shows
-  // the synthetic part was left out.
-  expect(prompt.payload).not.toHaveProperty("content");
   expect(prompt.payload.length).toBe("build a recipe box".length);
-  expect(prompt.payload.model).toBe("anthropic/claude-x");
-  expect((await system("ses_main")).join()).toContain("started a timed `any-percent` run");
-  expect(await system("ses_other")).toEqual([]);
-});
-
-test("subagent prompts are not recorded as human prompts", async () => {
-  await hooks["chat.message"](...message("child_1", "explore the codebase"));
+  expect(prompt.payload.model).toBeNull();
+  expect(prompt.payload).not.toHaveProperty("content");
+  expect(prompt.sig).toBeTruthy();
   expect(sb.status().prompt_count).toBe(1);
-});
-
-test("going idle ends the turn exactly once", async () => {
-  for (const e of idle("ses_main")) await hooks.event(e);
+  const context = { sessionID: "main", system: [] as any[] };
+  await hooks.context(context);
+  expect(context.system[0].text).toContain("started a timed `any-percent` run");
+  expect((await tools.speedrun_status.execute({}, { sessionID: "main" })).content).toContain("scaffold-runs");
+  expect((await tools.speedrun_propose_milestones.execute({ milestones: [{ title: "Recipes persist" }] }, { sessionID: "main" })).content).toContain("Proposed 1 milestones");
+  const after = { sessionID: "main", system: [] as any[] };
+  await hooks.context(after);
+  expect(after.system).toEqual([]);
+  push({ type: "session.execution.succeeded", data: { sessionID: "main" } });
+  await Bun.sleep(100);
+  push({ type: "session.execution.succeeded", data: { sessionID: "main" } });
+  await Bun.sleep(100);
   expect(ofType(sb.events(), "agent_turn_ended")).toHaveLength(1);
   expect(sb.status().open_turns).toBe(0);
-  for (const e of idle("child_1")) await hooks.event(e);
-  expect(ofType(sb.events(), "agent_turn_ended")).toHaveLength(1);
 });
 
-test("milestone tools go through the CLI", async () => {
-  const ctx = { directory: sb.project };
-  const proposed = await hooks.tool.speedrun_propose_milestones.execute(
-    { milestones: [{ title: "Recipes persist" }] },
-    ctx,
-  );
-  expect(proposed).toContain("Proposed 1 milestones");
-  await hooks["tool.execute.after"]({ tool: "speedrun_propose_milestones", sessionID: "ses_main" }, {});
-  expect(await system("ses_main")).toEqual([]);
-
-  sb.commit("scaffold");
-  const claimed = await hooks.tool.speedrun_claim_milestone.execute({ milestone: "scaffold-runs", commit: "HEAD" }, ctx);
-  expect(claimed).toContain("this milestone requires a semantic claim; attached evidence alone cannot verify it");
-  // An agent's claim on a self_declared milestone counts only once the user confirms it (D6).
-  expect(claimed).toContain("waits for the user to confirm it");
-  sb.cli("confirm", "scaffold-runs");
-  expect(sb.cli("status", "--line")).toMatch(/^⏱ any-percent 1\/2 · /);
-  expect(await hooks.tool.speedrun_status.execute({}, ctx)).toContain("scaffold-runs");
-  await expect(hooks.tool.speedrun_claim_milestone.execute({ milestone: "nope" }, ctx)).rejects.toThrow("no milestone");
+test("failed and interrupted executions end their turns", async () => {
+  for (const type of ["session.execution.failed", "session.execution.interrupted"]) {
+    await hooks.prompt({ sessionID: "main", prompt: { text: type } });
+    push({ type: "irrelevant" });
+    push({ type, data: { sessionID: "main" } });
+    await Bun.sleep(100);
+    expect(sb.status().open_turns).toBe(0);
+  }
+  expect(ofType(sb.events(), "agent_turn_ended")).toHaveLength(3);
 });
 
-test("a missing CLI never breaks opencode", async () => {
+test("tool failures reach the agent and missing CLI does not break prompt admission", async () => {
+  await expect(tools.speedrun_claim_milestone.execute({ milestone: "nope" }, { sessionID: "main" })).rejects.toThrow("no milestone");
   const saved = process.env.SPEEDRUN_BIN;
   process.env.SPEEDRUN_BIN = "/nonexistent/speedrun";
   try {
-    await hooks["chat.message"](...message("ses_main", "still works?"));
-    for (const e of idle("ses_main")) await hooks.event(e);
-    expect(await hooks.tool.speedrun_status.execute({}, { directory: sb.project })).toContain("not installed");
-  } finally {
-    process.env.SPEEDRUN_BIN = saved;
-  }
+    await hooks.prompt({ sessionID: "main", prompt: { text: "still works?" } });
+    expect((await tools.speedrun_status.execute({}, { sessionID: "main" })).content).toContain("not installed");
+  } finally { process.env.SPEEDRUN_BIN = saved; }
+});
+
+test("deleting a session closes its turn", async () => {
+  await hooks.prompt({ sessionID: "deleted", prompt: { text: "another prompt" } });
+  push({ type: "session.deleted", data: { sessionID: "deleted" } });
+  await Bun.sleep(100);
+  expect(sb.status().open_turns).toBe(0);
+});
+
+test("a zero exit with a rejected turn end keeps the session pending", async () => {
+  await hooks.prompt({ sessionID: "retry", prompt: { text: "retry completion" } });
+  const stub = join(sb.project, "reject-ingest");
+  writeFileSync(stub, `#!/bin/sh
+echo '{"recorded":false,"reason":"not a speedrun project"}'
+`);
+  chmodSync(stub, 0o755);
+  const saved = process.env.SPEEDRUN_BIN;
+  process.env.SPEEDRUN_BIN = stub;
+  try {
+    push({ type: "session.execution.succeeded", data: { sessionID: "retry" } });
+    await Bun.sleep(100);
+    expect(sb.status().open_turns).toBe(1);
+  } finally { process.env.SPEEDRUN_BIN = saved; }
+  push({ type: "session.execution.succeeded", data: { sessionID: "retry" } });
+  await Bun.sleep(100);
+  expect(sb.status().open_turns).toBe(0);
+});
+
+test("cleanup does not invent a turn end during hot reload", async () => {
+  await hooks.prompt({ sessionID: "unfinished", prompt: { text: "work" } });
+  expect(sb.status().open_turns).toBe(1);
+  cleanup();
+  expect(sb.status().open_turns).toBe(1);
 });

@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Value, json};
 
 const OPENCODE_PLUGIN: &str = include_str!("../../../plugins/opencode/agentspeedrun.ts");
 const PI_EXTENSION: &str = include_str!("../../../plugins/pi/agentspeedrun.ts");
@@ -13,7 +12,6 @@ const COPILOT_HOOKS: &str = include_str!("../../../plugins/copilot/agentspeedrun
 const MARKER: &str = "mesh-inc/agentspeedrun";
 /// JSON has no comments, so the hooks file is recognized by its commands.
 const COPILOT_MARKER: &str = "speedrun hook copilot";
-const OPENCODE_PLUGIN_DEP: (&str, &str) = ("@opencode-ai/plugin", "^1.19.5");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Host {
@@ -76,23 +74,6 @@ pub fn validate(host: Host, base: &Path, force: bool) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).with_context(|| format!("reading {}", file.display())),
     }
-    if host == Host::Opencode {
-        let path = base.join("package.json");
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let value: Value =
-                    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-                let object = value
-                    .as_object()
-                    .with_context(|| format!("{} is not a JSON object", path.display()))?;
-                if object.get("dependencies").is_some_and(|deps| !deps.is_object()) {
-                    bail!("{}: dependencies is not an object", path.display());
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-        }
-    }
     Ok(())
 }
 
@@ -121,15 +102,7 @@ pub fn install(host: Host, base: &Path, force: bool) -> Result<Vec<Outcome>> {
         std::fs::create_dir_all(file.parent().expect("has parent"))?;
         std::fs::write(&file, source).with_context(|| format!("writing {}", file.display()))?;
     }
-    let mut out = vec![outcome];
-    if host == Host::Opencode {
-        // opencode runs `bun install` in its config dir at startup; the plugin imports this package.
-        out.extend(ensure_dependency(
-            &base.join("package.json"),
-            OPENCODE_PLUGIN_DEP,
-        )?);
-    }
-    Ok(out)
+    Ok(vec![outcome])
 }
 
 /// Remove only an adapter bearing our marker. User configuration and dependencies remain.
@@ -154,36 +127,6 @@ pub fn remove(host: Host, base: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
-/// Add `dep` to package.json's dependencies unless already present. Keeps
-/// every other key and their order.
-fn ensure_dependency(path: &Path, (name, version): (&str, &str)) -> Result<Option<Outcome>> {
-    let mut pkg: Value = match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-    };
-    let Some(obj) = pkg.as_object_mut() else {
-        bail!("{} is not a JSON object", path.display());
-    };
-    let deps = obj
-        .entry("dependencies")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let Some(deps) = deps.as_object_mut() else {
-        bail!("{}: dependencies is not an object", path.display());
-    };
-    if deps.contains_key(name) {
-        return Ok(None);
-    }
-    let existed = path.exists();
-    deps.insert(name.to_string(), Value::String(version.to_string()));
-    std::fs::write(path, serde_json::to_string_pretty(&pkg)? + "\n")?;
-    Ok(Some(if existed {
-        Outcome::Upgraded(path.to_path_buf())
-    } else {
-        Outcome::Installed(path.to_path_buf())
-    }))
-}
-
 /// Is `speedrun` resolvable on PATH, where the adapters will look for it?
 pub fn on_path() -> bool {
     std::env::var_os("PATH")
@@ -193,6 +136,7 @@ pub fn on_path() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn installs_upgrades_and_leaves_foreign_files_alone() {
@@ -224,6 +168,7 @@ mod tests {
     fn removal_preserves_foreign_files_and_dependencies() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plugins/agentspeedrun.ts");
+        std::fs::write(dir.path().join("package.json"), "user configuration").unwrap();
         install(Host::Opencode, dir.path(), false).unwrap();
         assert_eq!(remove(Host::Opencode, dir.path()).unwrap(), Some(file.clone()));
         assert!(dir.path().join("package.json").exists());
@@ -234,30 +179,12 @@ mod tests {
     }
 
     #[test]
-    fn opencode_adds_plugin_dependency_without_touching_the_rest() {
+    fn opencode_install_does_not_modify_package_json() {
         let dir = tempfile::tempdir().unwrap();
         let pkg = dir.path().join("package.json");
-        std::fs::write(
-            &pkg,
-            r#"{"name":"cfg","dependencies":{"zeta":"1","alpha":"2"},"private":true}"#,
-        )
-        .unwrap();
+        std::fs::write(&pkg, "user configuration").unwrap();
         install(Host::Opencode, dir.path(), false).unwrap();
-        let text = std::fs::read_to_string(&pkg).unwrap();
-        let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["dependencies"]["@opencode-ai/plugin"], "^1.19.5");
-        assert_eq!(v["dependencies"]["zeta"], "1");
-        assert!(
-            text.find("zeta").unwrap() < text.find("alpha").unwrap(),
-            "key order preserved"
-        );
-        assert!(text.find("\"name\"").unwrap() < text.find("\"private\"").unwrap());
-
-        // A user's own pin wins.
-        std::fs::write(&pkg, r#"{"dependencies":{"@opencode-ai/plugin":"1.20.0"}}"#).unwrap();
-        install(Host::Opencode, dir.path(), false).unwrap();
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(&pkg).unwrap()).unwrap();
-        assert_eq!(v["dependencies"]["@opencode-ai/plugin"], "1.20.0");
+        assert_eq!(std::fs::read_to_string(pkg).unwrap(), "user configuration");
     }
 
     #[test]

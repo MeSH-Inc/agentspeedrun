@@ -18,6 +18,9 @@ capture metadata-only` to record timing without prompt text or text commitments.
 
 ## Quick start
 
+The source checkout includes an unreleased OpenCode v2 adapter. Published
+v0.3.1 embeds the earlier OpenCode v1 adapter; build this checkout to use v2.
+
 This guide describes the 0.3.1 preview. If its assets are not yet available on
 the Releases page, build this checkout to use the guided setup and milestone
 commands below:
@@ -101,7 +104,7 @@ prompts. Zed's extension provides tools but does not capture its own agent promp
 | Host | Install |
 |------|---------|
 | Claude Code | `/plugin marketplace add mesh-inc/agentspeedrun` ([details](plugins/claude-code)) |
-| opencode | `speedrun setup opencode` ([details](plugins/opencode)) |
+| OpenCode v2 | `speedrun setup opencode` ([details](plugins/opencode)) |
 | pi | `speedrun setup pi` ([details](plugins/pi)) |
 | oh-my-pi | `speedrun setup omp` ([details](plugins/pi)) |
 | Copilot agent (VS Code, Copilot CLI) | `speedrun setup copilot --project` ([details](plugins/copilot)) |

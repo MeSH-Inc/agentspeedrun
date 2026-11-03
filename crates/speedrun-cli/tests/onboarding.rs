@@ -89,8 +89,9 @@ fn positional_setup_remains_adapter_only() {
 fn conflicts_are_rejected_before_preferences_or_project_change() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    std::fs::create_dir_all(root.join(".opencode")).unwrap();
-    std::fs::write(root.join(".opencode/package.json"), "not json").unwrap();
+    std::fs::create_dir_all(root.join(".opencode/plugins")).unwrap();
+    let adapter = root.join(".opencode/plugins/agentspeedrun.ts");
+    std::fs::write(&adapter, "foreign plugin").unwrap();
     let result = run(
         root,
         &[
@@ -105,7 +106,7 @@ fn conflicts_are_rejected_before_preferences_or_project_change() {
         ],
     );
     assert!(!result.status.success());
-    assert!(!root.join(".opencode/plugins/agentspeedrun.ts").exists());
+    assert_eq!(std::fs::read_to_string(adapter).unwrap(), "foreign plugin");
     assert!(!root.join(".speedrun/project.json").exists());
     assert!(!root.join("data/preferences.json").exists());
 }
