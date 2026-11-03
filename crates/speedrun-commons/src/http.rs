@@ -251,6 +251,10 @@ async fn run_history(
 fn publish_error(error: PublishError) -> (StatusCode, String) {
     match error {
         PublishError::Refused(message) => (StatusCode::BAD_REQUEST, message),
+        PublishError::Busy => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "verification capacity is full; retry later".into(),
+        ),
         PublishError::Internal(error) => internal(error),
     }
 }

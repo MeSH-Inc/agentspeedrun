@@ -395,7 +395,7 @@ impl Store {
             );
         }
         let rows = sqlx::query_as::<_, PublicationRow>(
-            "SELECT bundles.run_id, bundles.digest, bundles.tier, bundles.received_at, log_leaves.leaf_index FROM bundles JOIN log_leaves ON log_leaves.bundle_digest = bundles.digest WHERE bundles.publisher_pubkey IN (SELECT device_pubkey FROM links WHERE github_id = ?) ORDER BY bundles.received_at DESC, bundles.rowid DESC",
+            "SELECT bundles.run_id, bundles.digest, bundles.tier, bundles.received_at, log_leaves.leaf_index FROM bundles JOIN log_leaves ON log_leaves.bundle_digest = bundles.digest WHERE bundles.publisher_pubkey IN (SELECT device_pubkey FROM links WHERE github_id = ?) ORDER BY log_leaves.leaf_index DESC",
         )
         .bind(github_id)
         .fetch_all(&self.pool)
@@ -425,7 +425,7 @@ impl Store {
     /// key that signed its bundle.
     pub async fn recent_publications(&self, limit: u32) -> Result<Vec<ListedPublication>> {
         let rows = sqlx::query_as::<_, ListedRow>(
-            "SELECT b.run_id, b.digest, b.tier, b.received_at, l.leaf_index, b.publisher_pubkey, (SELECT p.github_id FROM links lk JOIN people p ON p.github_id = lk.github_id WHERE lk.device_pubkey = b.publisher_pubkey ORDER BY lk.rowid DESC LIMIT 1), (SELECT p.login FROM links lk JOIN people p ON p.github_id = lk.github_id WHERE lk.device_pubkey = b.publisher_pubkey ORDER BY lk.rowid DESC LIMIT 1) FROM bundles b JOIN log_leaves l ON l.bundle_digest = b.digest ORDER BY b.received_at DESC, b.rowid DESC LIMIT ?",
+            "SELECT b.run_id, b.digest, b.tier, b.received_at, l.leaf_index, b.publisher_pubkey, (SELECT p.github_id FROM links lk JOIN people p ON p.github_id = lk.github_id WHERE lk.device_pubkey = b.publisher_pubkey ORDER BY lk.rowid DESC LIMIT 1), (SELECT p.login FROM links lk JOIN people p ON p.github_id = lk.github_id WHERE lk.device_pubkey = b.publisher_pubkey ORDER BY lk.rowid DESC LIMIT 1) FROM bundles b JOIN log_leaves l ON l.bundle_digest = b.digest ORDER BY l.leaf_index DESC LIMIT ?",
         )
         .bind(i64::from(limit))
         .fetch_all(&self.pool)

@@ -13,6 +13,7 @@ use speedrun_core::bundle::{self, BUNDLE_FORMAT, Bundle};
 use speedrun_core::commons::{Judgment, PublishReceipt, PublishedRun, TreeHead, judgment_digest};
 use speedrun_core::{Event, EventPayload, RunView, event, hash, merkle, sign};
 use speedrun_verify::Verifier;
+use tokio::sync::Semaphore;
 
 use crate::judge;
 use crate::log::{self, LogError};
@@ -23,6 +24,8 @@ use crate::store::{Publication, Store, StoredPublication};
 pub enum PublishError {
     /// The bundle breaks a rule; answer 400 and store nothing.
     Refused(String),
+    /// All evidence-verification slots are occupied; the caller may retry.
+    Busy,
     /// The commons' own state or output is wrong; answer 500.
     Internal(anyhow::Error),
 }
@@ -50,6 +53,11 @@ struct Validated {
     view: Option<RunView>,
 }
 
+/// Bound both blocking verifiers and the number of admitted checks. Tier-zero
+/// anchors and already-recorded bundles never need a verification slot.
+const MAX_VERIFICATIONS: usize = 4;
+static VERIFICATION_SLOTS: Semaphore = Semaphore::const_new(MAX_VERIFICATIONS);
+
 /// Validate, judge, sign and append `bundle`, whose exact request body is `body`.
 pub async fn publish(
     store: &Store,
@@ -71,10 +79,10 @@ pub async fn publish(
     }
 
     let validated = validate(&bundle)?;
-    let issued_at = Utc::now();
     let (milestones, local_completed, public_policy) = match &validated.view {
         // The verifier fetches over blocking HTTP; keep it off the async workers.
         Some(view) => {
+            let _permit = VERIFICATION_SLOTS.try_acquire().map_err(|_| PublishError::Busy)?;
             let (milestones, policy) =
                 tokio::task::block_in_place(|| judge::judge_policy(view, &validated.events, verifier));
             (
@@ -91,6 +99,17 @@ pub async fn publish(
             }),
         ),
     };
+    // History may have changed while evidence was being checked. Serialize the
+    // final idempotency and continuity checks with construction of the leaf.
+    let _guard = publishing.lock().await;
+    if let Some(existing) = store.publication(&digest).await? {
+        return existing_receipt(store, existing).await;
+    }
+    let history = store.publication_history(&bundle.run_id).await?;
+    validate_continuity(&bundle, &validated, &history)?;
+
+    // Receipt and issuance time are assigned at append, after verification.
+    let issued_at = Utc::now();
     let mut judgment = Judgment {
         bundle_digest: digest.clone(),
         run_id: bundle.run_id.clone(),
@@ -106,15 +125,6 @@ pub async fn publish(
     judgment.signature = sign::sign_hash(key, &judgment_digest_value);
     let judgment_body =
         serde_json::to_string(&judgment).map_err(|error| PublishError::Internal(error.into()))?;
-
-    // History may have changed while evidence was being checked. Serialize the
-    // final idempotency and continuity checks with construction of the leaf.
-    let _guard = publishing.lock().await;
-    if let Some(existing) = store.publication(&digest).await? {
-        return existing_receipt(store, existing).await;
-    }
-    let history = store.publication_history(&bundle.run_id).await?;
-    validate_continuity(&bundle, &validated, &history)?;
 
     let leaves = store.leaf_hashes().await?;
     let leaf_index = u64::try_from(leaves.len()).map_err(|error| PublishError::Internal(error.into()))?;
