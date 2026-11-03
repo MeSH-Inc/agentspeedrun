@@ -1510,16 +1510,17 @@ impl RejectedLog {
 /// How often a wait for a daemon looks again.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Whether `pid` has exited, by `kill -0` on the `kill` binary. Not `ps`,
-/// which the check sandbox cannot execute because it is setuid.
+/// Check process existence without requiring an external process utility.
 pub(crate) fn pid_exited(pid: u32) -> std::io::Result<bool> {
-    let pid = pid.to_string();
-    let status = Command::new("kill")
-        .args(["-0", pid.as_str()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    Ok(!status.success())
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid process id"))?;
+    match rustix::process::test_kill_process(pid) {
+        Ok(()) | Err(rustix::io::Errno::PERM) => Ok(false),
+        Err(rustix::io::Errno::SRCH) => Ok(true),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Poll `pid` until it exits, or `timeout` passes. `Ok(true)` means it exited.
@@ -1589,6 +1590,26 @@ fn daemon_executable() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn process_liveness_distinguishes_running_exited_and_invalid_pids() {
+        assert!(!super::pid_exited(std::process::id()).unwrap());
+        assert_eq!(
+            super::pid_exited(0).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            super::pid_exited(u32::MAX).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(super::pid_exited(pid).unwrap());
+    }
+
     #[test]
     fn rejected_diagnostics_are_private_paginated_and_key_independent() {
         use super::*;

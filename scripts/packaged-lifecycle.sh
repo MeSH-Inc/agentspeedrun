@@ -21,11 +21,14 @@ case "$(uname -s)/$(uname -m)" in
   Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-musl ;;
   *) echo 'unsupported test platform' >&2; exit 1 ;;
 esac
+checksum() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi
+}
 name="agentspeedrun-$SPEEDRUN_VERSION-$target"
 mkdir "$work/stage/$name"
 cp "$bin/speedrun" "$bin/speedrund" "$root/README.md" "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$work/stage/$name/"
 SOURCE_DATE_EPOCH=0 "$root/scripts/archive.py" "$work/stage" "$name" "$work/assets/$name.tar.gz"
-(cd "$work/assets" && shasum -a 256 "$name.tar.gz" >SHA256SUMS)
+(cd "$work/assets" && checksum "$name.tar.gz" >SHA256SUMS)
 python3 - "$work/assets" "$work/port" <<'PY' &
 import http.server, os, sys
 os.chdir(sys.argv[1])
@@ -63,9 +66,28 @@ sr setup --host opencode --scope user --capture content --yes >/dev/null
 printf '%s\n' '{"sessionId":"lifecycle","prompt":"packaged lifecycle prompt"}' | sr hook copilot user-prompt-submit
 sr capture | grep -qi captured
 printf 'second packaged prompt\n' | sr ingest prompt --host test --session lifecycle | grep -q '"recorded":true'
+sr preferences retention 37 >/dev/null
+cp "$SPEEDRUN_HOME/preferences.json" "$work/preferences"
+cp "$SPEEDRUN_HOME/trusted-projects.json" "$work/trust"
 before=$(sr daemon status)
+# Linux checks /proc without ps; elsewhere a failed ps must leave binaries alone.
+mkdir "$work/no-ps"
+printf '#!/bin/sh\nexit 127\n' > "$work/no-ps/ps"
+chmod +x "$work/no-ps/ps"
+cp "$SPEEDRUN_INSTALL_DIR/speedrun" "$work/before-no-ps"
+if [ "$(uname -s)" = Linux ]; then
+  PATH="$work/no-ps:$PATH" install
+  [ "$(sr daemon status)" != "$before" ] || { echo 'daemon was not restarted without ps' >&2; exit 1; }
+  before=$(sr daemon status)
+else
+  if PATH="$work/no-ps:$PATH" install; then echo 'missing ps was accepted' >&2; exit 1; fi
+  cmp "$work/before-no-ps" "$SPEEDRUN_INSTALL_DIR/speedrun"
+  [ "$(sr daemon status)" = "$before" ] || { echo 'daemon changed when ps failed' >&2; exit 1; }
+fi
 install # same-version replacement exercises upgrade/restart, not cross-version compatibility
 after=$(sr daemon status)
+cmp "$work/preferences" "$SPEEDRUN_HOME/preferences.json"
+cmp "$work/trust" "$SPEEDRUN_HOME/trusted-projects.json"
 [ "$(other daemon status)" = "$other_before" ] || { echo 'unrelated daemon changed' >&2; exit 1; }
 [ "$before" != "$after" ] || { echo 'daemon was not restarted' >&2; exit 1; }
 sr capture | grep -qi captured
@@ -79,7 +101,7 @@ cp "$work/assets/$name.tar.gz" "$work/valid.tar.gz"
 cp "$SPEEDRUN_INSTALL_DIR/speedrund" "$work/expected-daemon"
 rm "$work/stage/$name/speedrund"
 SOURCE_DATE_EPOCH=0 "$root/scripts/archive.py" "$work/stage" "$name" "$work/assets/$name.tar.gz"
-(cd "$work/assets" && shasum -a 256 "$name.tar.gz" > SHA256SUMS)
+(cd "$work/assets" && checksum "$name.tar.gz" > SHA256SUMS)
 if install; then echo 'incomplete archive accepted' >&2; exit 1; fi
 cmp "$work/expected" "$SPEEDRUN_INSTALL_DIR/speedrun"
 cmp "$work/expected-daemon" "$SPEEDRUN_INSTALL_DIR/speedrund"
@@ -96,10 +118,16 @@ sh "$root/install.sh" --uninstall
 [ ! -e "$SPEEDRUN_INSTALL_DIR/speedrun" ] || { echo "CLI was not removed" >&2; exit 1; }
 [ ! -e "$SPEEDRUN_INSTALL_DIR/speedrund" ] || { echo "daemon was not removed" >&2; exit 1; }
 [ -d "$SPEEDRUN_HOME" ] && [ -d .speedrun ]
-(cd "$work/assets" && shasum -a 256 "$name.tar.gz" > SHA256SUMS)
+(cd "$work/assets" && checksum "$name.tar.gz" > SHA256SUMS)
 install
 sr flush >/dev/null
 sr capture | grep -qi captured
+# Daemon liveness must not depend on the external kill utility.
+mkdir "$work/no-kill"
+printf '#!/bin/sh\n: > "$SPEEDRUN_TEST_KILL_MARKER"\nexit 127\n' > "$work/no-kill/kill"
+chmod +x "$work/no-kill/kill"
+SPEEDRUN_TEST_KILL_MARKER="$work/kill-invoked" PATH="$work/no-kill:$PATH" sr daemon stop
+[ ! -e "$work/kill-invoked" ] || { echo 'daemon stop invoked external kill' >&2; exit 1; }
 printf 'modified' >> "$SPEEDRUN_INSTALL_DIR/speedrund"
 sh "$root/install.sh" --uninstall
 [ -e "$SPEEDRUN_INSTALL_DIR/speedrund" ] || { echo 'modified binary removed' >&2; exit 1; }

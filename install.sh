@@ -32,7 +32,14 @@ matching_daemon() {
   status=$("$dest/speedrun" daemon status 2>/dev/null) || return 1
   pid=$(printf '%s\n' "$status" | sed -n 's/.* pid \([0-9][0-9]*\) at .*/\1/p')
   [ -n "$pid" ] || return 1
-  command=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+  if [ "$(uname -s)" = Linux ] && [ -L "/proc/$pid/exe" ]; then
+    command=$(readlink "/proc/$pid/exe" 2>/dev/null) ||
+      die "could not inspect daemon process $pid in /proc; binaries left untouched"
+  else
+    command -v ps >/dev/null 2>&1 || die "needs ps to check the running daemon; binaries left untouched"
+    command=$(ps -p "$pid" -o command= 2>/dev/null) ||
+      die "could not inspect daemon process $pid with ps; binaries left untouched"
+  fi
   [ "$command" = "$canonical_dest/speedrund" ] || [ "$command" = "$logical_dest/speedrund" ]
 }
 
