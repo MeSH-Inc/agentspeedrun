@@ -130,3 +130,28 @@ Retain preview status while important advertised paths remain unverified.
 A provider authentication failure is a coverage gap, not evidence that the
 adapter works or that it is broken. Do not relabel fixture-based tool tests as
 live-host verification.
+
+### Remaining promotion evidence after the v0.3.2 follow-ups
+
+Use `scripts/live-host.py` for repeatable CLI-host checks and
+`docs/FIRST_USE_TESTING.md` for the limits of the agent-led first-use sessions.
+Before promoting the next candidate:
+
+- Exercise a real VS Code Copilot agent prompt, completed turn, and milestone
+  tool call with the installed extension/hooks. CLI Copilot success and VS Code
+  extension-host tests do not establish that GUI integration.
+- Observe a fresh user completing setup, capture, a milestone, and a recovery
+  action without coaching. Agent-led and synthetic-hook sessions are separate
+  evidence, not a substitute for that usability observation.
+- Freeze the candidate, then verify its packaged installer/removal, upgrades,
+  recovery and host checks against its exact binaries. The source help fix
+  after v0.3.2 requires rebuilt artifacts if it is included in the release.
+
+Native Intel hardware remains unavailable; disclose emulated coverage or narrow
+platform claims instead of claiming a native pass. Treat Zed native prompt
+capture as unsupported and keep Zed model/tool coverage explicit. The disclosed
+OpenCode hot-reload limitation requires a host restart after adapter upgrades;
+verify ordinary restart/setup, and avoid presenting untested hot reload as
+supported. Build attestations remain absent; checksums and event signatures
+serve different purposes. No new CI or signing process is required merely to
+promote this greenfield tool, but these distribution limits must stay visible.

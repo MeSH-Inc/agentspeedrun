@@ -135,6 +135,26 @@ daemon with `speedrun daemon stop`. This command makes a real model request
 using the host account; the temporary Speedrun data does not isolate the host's
 own authentication profile.
 
+## Repeatable CLI-host checks
+
+The opt-in `scripts/live-host.py` harness subsequently passed actual Claude
+Code (Haiku), Copilot CLI (account default model), OpenCode 2.2.5
+(`opencode/big-pickle`), and oh-my-pi (`openai-codex/gpt-6-luna`) runs. Each
+run required successful status and milestone-proposal tool results, the requested
+agent-generated milestone in the signed log, prompt and turn events, and zero
+open turns. OpenCode's execution wrapper is checked using a temporary forwarding
+trace of successful whitelisted tool names, without retaining tool arguments,
+prompt text or responses. Copilot's forced GPT-6 Luna selection was unavailable
+to that isolated account profile; its default model succeeded.
+
+Pi's separate Codex login was unavailable to this harness run. Its successful
+manual verification above remains separate evidence; the harness does not count
+a missing login, provider error, or a fixture test as a live pass. See
+[LIVE_HOST_TESTING.md](LIVE_HOST_TESTING.md) for commands and authentication
+boundaries. Fresh agent-led workflows and their limits are recorded in
+[FIRST_USE_TESTING.md](FIRST_USE_TESTING.md); no unassisted human usability
+session or real VS Code Copilot agent prompt is established by these checks.
+
 ## Hardware and remaining coverage
 
 The renewed hardware inventory found an Apple M4 Pro Mac, a Linux x86-64 host with an AMD Ryzen 7 8745HS, and a Windows x64 host with an AMD Ryzen AI 7 PRO 450. The owner confirmed that no Intel machine is available. No native Intel smoke test was run; the existing Rosetta and native AMD results do not establish Intel hardware coverage. A native Intel macOS build and packaged binary smoke test remain necessary before claiming that platform was tested. Native Zed agent prompt capture is unsupported by design. Its installed GUI has no headless agent invocation in the available CLI; a real Zed model/tool session was not exercised. Claude Code, Pi and oh-my-pi now have successful real model/tool coverage in the versions and provider configurations recorded above. Other provider configurations are not implied by those results.
