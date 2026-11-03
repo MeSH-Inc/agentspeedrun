@@ -52,6 +52,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/people/{login}", get(person_record))
         .route("/", get(front_page))
         .route("/runs/{run_id}", get(run_page))
+        .route("/publications/{digest}", get(publication_page))
         .route("/people/{login}", get(person_page))
         .with_state(state)
 }
@@ -130,6 +131,13 @@ async fn run_page(
     Path(run_id): Path<String>,
 ) -> Result<Response, (StatusCode, String)> {
     page_response(pages::run(s.store.as_ref(), s.key.as_ref(), &s.public_url, &run_id).await)
+}
+
+async fn publication_page(
+    State(s): State<AppState>,
+    Path(digest): Path<String>,
+) -> Result<Response, (StatusCode, String)> {
+    page_response(pages::publication(s.store.as_ref(), s.key.as_ref(), &s.public_url, &digest).await)
 }
 
 async fn person_page(
