@@ -48,7 +48,8 @@ struct Log {
 
 fn fixture_id(name: &str) -> String {
     let key = sign::parse_seed(&hash::sha256_hex(name.as_bytes())).unwrap();
-    format!("{name:0<26}.{}", sign::pubkey_hex(&key))
+    let nonce = ulid::Ulid::from_bytes(key.to_bytes()[..16].try_into().unwrap());
+    format!("{nonce}.{}", sign::pubkey_hex(&key))
 }
 
 impl Log {
@@ -1578,4 +1579,47 @@ fn publication_identity_allows_certified_rotation_and_refuses_rollback() {
     let (status, _) = commons.post("/v1/bundles", &serde_json::to_value(rollback).unwrap());
     assert_eq!(status, 400);
     assert_eq!(commons.health().tree_size, 3);
+}
+
+#[test]
+fn publication_history_checks_every_device_and_committed_head() {
+    let commons = Commons::start();
+    let mut log = plain_run("HISTORY-DEVICES");
+    let other = sign::generate();
+    let key = sign::pubkey_hex(&other);
+    let mut joined = Event {
+        event_id: "second-device-joined".into(),
+        schema_version: SCHEMA_VERSION,
+        run_id: log.run_id.clone(),
+        seq: 1,
+        device_id: sign::fingerprint(&key).unwrap(),
+        occurred_at: t(41),
+        recorded_at: t(41),
+        payload: EventPayload::DeviceJoined { device_pubkey: key },
+        prev_hash: None,
+        hash: String::new(),
+        sig: None,
+    };
+    joined.hash = hash::compute_hash(&joined);
+    joined.sig = Some(sign::sign_hash(&other, &joined.hash));
+    log.events.push(joined);
+    commons.publish(&log.bundle(1));
+    log.events.pop();
+    let (status, _) = commons.post("/v1/bundles", &serde_json::to_value(log.bundle(1)).unwrap());
+    assert_eq!(status, 400, "a disclosed device cannot be removed");
+
+    let heads = Commons::start();
+    let mut head = log.head();
+    head.hash = "ab".repeat(32);
+    heads.publish(&log.heads_bundle(vec![head]));
+    let (status, _) = heads.post("/v1/bundles", &serde_json::to_value(log.bundle(1)).unwrap());
+    assert_eq!(status, 400, "disclosed events must contain the committed head");
+    let (status, _) = heads.post(
+        "/v1/bundles",
+        &serde_json::to_value(log.heads_bundle(vec![log.head()])).unwrap(),
+    );
+    assert_eq!(
+        status, 400,
+        "a commitment at the same sequence cannot be replaced"
+    );
 }

@@ -335,40 +335,60 @@ fn validate_continuity(
     validated: &Validated,
     history: &[StoredPublication],
 ) -> Result<(), PublishError> {
+    let current: BTreeMap<(&str, u64), &str> = validated
+        .events
+        .iter()
+        .map(|event| ((event.device_id.as_str(), event.seq), event.hash.as_str()))
+        .collect();
+    let current_heads: BTreeMap<&str, &bundle::ChainHead> = bundle
+        .chain_heads
+        .iter()
+        .map(|head| (head.device_id.as_str(), head))
+        .collect();
     for stored in history {
         let prior: Bundle =
             serde_json::from_str(&stored.body).map_err(|e| PublishError::Internal(e.into()))?;
         if !bundle.rotations.starts_with(&prior.rotations) {
             return refused("publication replaces or rolls back the origin's key history".into());
         }
-    }
-    let Some(start) = validated
-        .events
-        .iter()
-        .find(|e| matches!(e.payload, EventPayload::RunStarted { .. }))
-    else {
-        return Ok(());
-    };
-    let current: BTreeMap<u64, &str> = validated
-        .events
-        .iter()
-        .filter(|e| e.device_id == start.device_id)
-        .map(|e| (e.seq, e.hash.as_str()))
-        .collect();
-    for stored in history.iter().filter(|p| p.tier != 0) {
-        let prior: Bundle =
-            serde_json::from_str(&stored.body).map_err(|e| PublishError::Internal(e.into()))?;
         let old_events = parse_events(&prior).map_err(|e| PublishError::Internal(e.into()))?;
-        let old_start = old_events
-            .iter()
-            .find(|e| matches!(e.payload, EventPayload::RunStarted { .. }))
-            .ok_or_else(|| PublishError::Internal(anyhow!("stored run has no origin")))?;
-        for old in old_events.iter().filter(|e| e.device_id == old_start.device_id) {
-            if current.get(&old.seq).copied() != Some(old.hash.as_str()) {
-                return refused(format!(
-                    "publication replaces or truncates the origin chain of run {}",
-                    bundle.run_id
-                ));
+        if bundle.tier != 0 {
+            for old in &old_events {
+                if current.get(&(old.device_id.as_str(), old.seq)).copied() != Some(old.hash.as_str()) {
+                    return refused(format!(
+                        "publication replaces or truncates a device chain of run {}",
+                        bundle.run_id
+                    ));
+                }
+            }
+            for head in &prior.chain_heads {
+                if current.get(&(head.device_id.as_str(), head.seq)).copied() != Some(head.hash.as_str()) {
+                    return refused("publication does not contain a previously committed chain head".into());
+                }
+            }
+        } else {
+            let mut old_heads: BTreeMap<&str, (u64, &str)> = BTreeMap::new();
+            for event in &old_events {
+                let candidate = (event.seq, event.hash.as_str());
+                old_heads
+                    .entry(&event.device_id)
+                    .and_modify(|head| {
+                        if candidate.0 > head.0 {
+                            *head = candidate;
+                        }
+                    })
+                    .or_insert(candidate);
+            }
+            for head in &prior.chain_heads {
+                old_heads.insert(&head.device_id, (head.seq, &head.hash));
+            }
+            for (device, (seq, hash)) in old_heads {
+                let Some(head) = current_heads.get(device) else {
+                    return refused("publication omits a previously committed device chain".into());
+                };
+                if head.seq < seq || (head.seq == seq && head.hash != hash) {
+                    return refused("publication replaces or rolls back a chain head".into());
+                }
             }
         }
     }

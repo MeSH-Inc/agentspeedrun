@@ -504,7 +504,7 @@ each with its reason:
   C4; the owner chose SQLite on 2026-11-02, so no hosting choice is needed yet). speedrund pins
   rusqlite 0.39, which shares `libsqlite3-sys` with sqlx 0.9.
 
-**Bundle (`speedrun_core::bundle`, format 2, schema `schema/bundle.schema.json`).** A run ID consists of a 26-character nonce, a dot, and the lowercase hex origin public key. Bundles carry the ordered certificates from this origin key to the publishing key, including at tier 0. The origin key signs each rotation and the final key signs the bundle. This binds the run ID to its origin without disclosing the genesis event at tier 0. `events` are
+**Bundle (`speedrun_core::bundle`, format 2, schema `schema/bundle.schema.json`).** A run ID consists of a canonical 26-character ULID nonce, a dot, and the lowercase hex origin public key. Bundles carry the ordered certificates from this origin key to the publishing key, including at tier 0. The origin key signs each rotation and the final key signs the bundle. This binds the run ID to its origin without disclosing the genesis event at tier 0. `events` are
 the run's stored bodies, verbatim, ordered by `device_id` then `seq`. `digest` is the canonical
 digest without `signature`; `signature` is `sign::sign_hash(device key, digest)`; the publisher key
 must be the last key in the certified origin rotation chain. Tier 2's `prompts` are `speedrun export`'s commitments, one per `prompt_submitted` event.
@@ -562,8 +562,10 @@ there are problems.
   or of the run's latest publication: the bundle as stored, its judgment, its leaf index, and at
   tiers 1 and 2 the view `RunView::fold(events, the latest occurred_at among them)`. 404 when
   unknown. `GET /v1/runs/{run_id}/history` returns every publication in append order. The commons
-  stores an immutable predecessor link for each publication and rejects rotation rollback, origin
-  chain replacement and truncation. The history links are commons records; the bundle signatures
+  stores an immutable predecessor link for each publication and rejects rotation rollback, disclosed
+  device chain replacement and truncation. A disclosed log must contain every earlier tier-0 head;
+  a later tier-0 head cannot go backwards or change at the same sequence. Tier-0-only advancement
+  is a signed commitment, and its ancestry cannot be verified until the log is disclosed. The history links are commons records; the bundle signatures
   authenticate each bundle and the Merkle log authenticates its inclusion and order.
 - `GET /v1/health` is `CommonsHealth`.
 

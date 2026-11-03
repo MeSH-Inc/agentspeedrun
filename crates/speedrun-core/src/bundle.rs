@@ -54,7 +54,7 @@ pub struct RotationProof {
 /// The origin key is part of the run identifier and cannot be substituted.
 pub fn origin_key(run_id: &str) -> Option<&str> {
     let (nonce, key) = run_id.split_once('.')?;
-    if nonce.len() != 26
+    if !ulid::Ulid::from_string(nonce).is_ok_and(|value| value.to_string() == nonce)
         || key.len() != 64
         || !key
             .bytes()
@@ -92,6 +92,16 @@ pub fn bundle_schema() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_identity_requires_a_canonical_ulid_nonce() {
+        let key = "ab".repeat(32);
+        let valid = format!("{}.{}", ulid::Ulid::new(), key);
+        assert_eq!(origin_key(&valid), Some(key.as_str()));
+        assert_eq!(origin_key(&format!("0000000000000000000000000/.{key}")), None);
+        assert_eq!(origin_key(&format!("0000000000000000000000000i.{key}")), None);
+        assert_eq!(origin_key(&format!("80000000000000000000000000.{key}")), None);
+    }
 
     #[test]
     fn committed_bundle_schema_is_current() {
