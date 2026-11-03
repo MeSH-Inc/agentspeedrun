@@ -1,6 +1,6 @@
 {
   "name": "agentspeedrun",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Time agentic coding projects against milestone categories (any%, 100%, first revenue). Records every prompt with timing and lets Claude propose and claim milestones.",
   "author": { "name": "mesh-inc" }
 }

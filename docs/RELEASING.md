@@ -11,7 +11,7 @@ Local verification requires the pinned Rust toolchain, Python 3.11 or newer
    lockfiles, and the Claude Code marketplace pin to `vX.Y.Z`.
 2. Commit the candidate and run the local checks below. Record their results and
    asset hashes before creating a tag or publishing.
-3. For the prepared 0.3.2 preview, use tag `v0.3.2`, mark the GitHub release
+3. For the prepared 0.3.3 preview, use tag `v0.3.3`, mark the GitHub release
    as a prerelease explicitly, and package the VS Code extension with
    `vsce package --pre-release`. A numeric version keeps the extension
    manifests compatible; the tag alone does not identify it as a preview.
@@ -93,7 +93,7 @@ development binaries on each platform. Download each archive and its release's
 `SHA256SUMS`, then run the following for each baseline:
 
 ```bash
-scripts/release-upgrade.sh /path/to/agentspeedrun-v0.3.1-TARGET.tar.gz /path/to/SHA256SUMS target/debug
+scripts/release-upgrade.sh /path/to/agentspeedrun-v0.3.2-TARGET.tar.gz /path/to/SHA256SUMS target/debug
 scripts/release-upgrade.sh /path/to/agentspeedrun-v0.2.0-TARGET.tar.gz /path/to/SHA256SUMS target/debug
 ```
 
