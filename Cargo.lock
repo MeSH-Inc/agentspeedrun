@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "speedrun-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "chacha20poly1305",
@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "speedrun-commons"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "speedrun-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "speedrun-verify"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "serde_json",
@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "speedrund"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",

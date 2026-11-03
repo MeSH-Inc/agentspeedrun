@@ -57,7 +57,7 @@ An earlier clean-profile oh-my-pi startup had no default model; the subsequent e
 
 ## OpenCode v2
 
-OpenCode 2.2.5 rejected the published adapter's version-1 plugin API, and a
+OpenCode 2.2.5 rejected the v0.3.1 adapter's version-1 plugin API, and a
 fresh installation also could not resolve its runtime SDK dependency. The
 replacement targets the version-2 plugin API, uses JSON Schema tool definitions
 directly, and has no runtime package dependency. Setup leaves existing
