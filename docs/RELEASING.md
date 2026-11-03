@@ -140,8 +140,9 @@ Before promoting the next candidate:
 - Check the supported VS Code Local agent path with the installed candidate
   extension/hooks: real prompt, completed turn, and milestone tool call. The
   v0.3.3 work verified this path; see `docs/VS_CODE_LIVE_VERIFICATION.md` for
-  the exact artifact coverage. The newer Copilot SDK Agent Host did not capture
-  a prompt in that test configuration and must not be advertised as verified.
+  the exact artifact coverage. The follow-up also verified the Copilot SDK Agent Host after MCP startup
+  finished; retain the documented distinction between interrupted startup and
+  completed model/tool checks.
 - Observe a fresh user completing setup, capture, a milestone, and a recovery
   action without coaching. Agent-led and synthetic-hook sessions are separate
   evidence, not a substitute for that usability observation.
