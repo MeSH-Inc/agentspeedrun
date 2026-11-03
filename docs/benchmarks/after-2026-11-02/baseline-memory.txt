@@ -1,0 +1,166 @@
+
+CASE preserved_baseline events=1000 subscribers=1 iterations=30
+
+running 1 test
+seed events=1000 subscribers=1 seconds=0.02
+load_deserialize n=30 p50_ms=0.815 p95_ms=0.966
+fold n=30 p50_ms=0.132 p95_ms=0.232
+closed_loop_cycles_per_second=210.313
+http_get_live n=30 p50_ms=1.262 p95_ms=1.336
+http_append_response n=30 p50_ms=2.394 p95_ms=2.533
+append_to_all_subscribers n=30 p50_ms=3.463 p95_ms=3.580
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.35s
+
+        0.35 real         0.27 user         0.03 sys
+            24854528  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                1426  page reclaims
+                 331  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 154  messages sent
+                 545  messages received
+                   0  signals received
+                  89  voluntary context switches
+                1271  involuntary context switches
+          5325002310  instructions retired
+          1175793336  cycles elapsed
+            13664784  peak memory footprint
+
+CASE preserved_baseline events=1000 subscribers=20 iterations=30
+
+running 1 test
+seed events=1000 subscribers=20 seconds=0.02
+load_deserialize n=30 p50_ms=0.818 p95_ms=0.870
+fold n=30 p50_ms=0.130 p95_ms=0.166
+closed_loop_cycles_per_second=38.067
+http_get_live n=30 p50_ms=1.433 p95_ms=1.542
+http_append_response n=30 p50_ms=2.711 p95_ms=2.939
+append_to_all_subscribers n=30 p50_ms=24.841 p95_ms=25.818
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 1.00s
+
+        1.00 real         0.92 user         0.07 sys
+            29163520  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                2052  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 800  messages sent
+                1210  messages received
+                   0  signals received
+                 711  voluntary context switches
+                5628  involuntary context switches
+         17940488596  instructions retired
+          3914204223  cycles elapsed
+            18006592  peak memory footprint
+
+CASE preserved_baseline events=100000 subscribers=1 iterations=30
+
+running 1 test
+seed events=100000 subscribers=1 seconds=2.08
+load_deserialize n=30 p50_ms=101.064 p95_ms=118.219
+fold n=30 p50_ms=102.053 p95_ms=119.043
+closed_loop_cycles_per_second=1.186
+http_get_live n=30 p50_ms=209.355 p95_ms=220.257
+http_append_response n=30 p50_ms=419.134 p95_ms=441.890
+append_to_all_subscribers n=30 p50_ms=630.325 p95_ms=666.440
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 37.61s
+
+       37.62 real        34.01 user         3.10 sys
+           900923392  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              363912  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 154  messages sent
+                 545  messages received
+                   0  signals received
+                 696  voluntary context switches
+               37240  involuntary context switches
+        648028625986  instructions retired
+        148062452313  cycles elapsed
+           857851080  peak memory footprint
+
+CASE preserved_baseline events=100000 subscribers=20 iterations=30
+
+running 1 test
+seed events=100000 subscribers=20 seconds=2.05
+load_deserialize n=30 p50_ms=100.876 p95_ms=106.048
+fold n=30 p50_ms=102.012 p95_ms=106.362
+test benchmarks::history_pressure has been running for over 60 seconds
+closed_loop_cycles_per_second=0.206
+http_get_live n=30 p50_ms=208.674 p95_ms=253.727
+http_append_response n=30 p50_ms=415.735 p95_ms=452.236
+append_to_all_subscribers n=30 p50_ms=4618.766 p95_ms=4781.879
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 161.87s
+
+      161.88 real       145.99 user        14.01 sys
+          1227472896  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+             1692644  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 800  messages sent
+                1210  messages received
+                   0  signals received
+                1513  voluntary context switches
+              157243  involuntary context switches
+       2824852646052  instructions retired
+        641011500079  cycles elapsed
+          1178306312  peak memory footprint
+
+CASE preserved_baseline_repeat events=100000 subscribers=1 iterations=30
+
+running 1 test
+seed events=100000 subscribers=1 seconds=2.04
+load_deserialize n=30 p50_ms=101.591 p95_ms=119.697
+fold n=30 p50_ms=101.512 p95_ms=104.647
+closed_loop_cycles_per_second=1.186
+http_get_live n=30 p50_ms=209.887 p95_ms=222.430
+http_append_response n=30 p50_ms=417.666 p95_ms=458.003
+append_to_all_subscribers n=30 p50_ms=625.372 p95_ms=674.114
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 37.52s
+
+       37.54 real        33.78 user         3.17 sys
+          1034059776  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              363361  page reclaims
+                 331  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 154  messages sent
+                 545  messages received
+                   0  signals received
+                 689  voluntary context switches
+               35213  involuntary context switches
+        648023530844  instructions retired
+        148475467360  cycles elapsed
+          1281836640  peak memory footprint

@@ -1,0 +1,120 @@
+
+CASE events_per_project=1000 projects=3 subscribers=5 rate=180 offers=300 max_inflight=16
+
+running 1 test
+open_loop projects=3 events_per_project=1000 subscribers=5 offered=300 admitted=300 completed=300 admission_drops=0 failures=0 target_per_second=180 actual_offered_per_second=179.843 completed_per_second_including_drain=179.838 offered_seconds=1.668 drain_seconds=0.000 elapsed_seconds=1.668 max_inflight=16 max_observed_inflight=4
+subscriber_revision_coalesced=155 subscriber_revision_total=1500
+scheduled_to_response n=300 p50_ms=6.959 p95_ms=9.810
+scheduled_to_all_subscribers n=300 p50_ms=11.189 p95_ms=15.986
+test benchmarks::open_loop::open_loop_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 2.04s
+
+        2.05 real         1.79 user         0.29 sys
+            32096256  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                2228  page reclaims
+                  11  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                1969  messages sent
+                3774  messages received
+                   0  signals received
+                1747  voluntary context switches
+               10507  involuntary context switches
+         32956463734  instructions retired
+          8200752126  cycles elapsed
+            19956240  peak memory footprint
+
+CASE events_per_project=1000 projects=3 subscribers=5 rate=500 offers=300 max_inflight=16
+
+running 1 test
+open_loop projects=3 events_per_project=1000 subscribers=5 offered=300 admitted=295 completed=295 admission_drops=5 failures=0 target_per_second=500 actual_offered_per_second=499.471 completed_per_second_including_drain=463.315 offered_seconds=0.601 drain_seconds=0.036 elapsed_seconds=0.637 max_inflight=16 max_observed_inflight=16
+subscriber_revision_coalesced=1355 subscriber_revision_total=1475
+scheduled_to_response n=295 p50_ms=29.665 p95_ms=34.677
+scheduled_to_all_subscribers n=295 p50_ms=44.827 p95_ms=61.152
+test benchmarks::open_loop::open_loop_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.93s
+
+        0.93 real         0.80 user         0.14 sys
+            33767424  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                2348  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 733  messages sent
+                2508  messages received
+                   0  signals received
+                 502  voluntary context switches
+                5893  involuntary context switches
+         14929741717  instructions retired
+          3745728076  cycles elapsed
+            22430224  peak memory footprint
+
+CASE events_per_project=10000 projects=3 subscribers=5 rate=20 offers=100 max_inflight=16
+
+running 1 test
+open_loop projects=3 events_per_project=10000 subscribers=5 offered=100 admitted=100 completed=100 admission_drops=0 failures=0 target_per_second=20 actual_offered_per_second=19.995 completed_per_second_including_drain=19.995 offered_seconds=5.001 drain_seconds=0.000 elapsed_seconds=5.001 max_inflight=16 max_observed_inflight=2
+subscriber_revision_coalesced=85 subscriber_revision_total=500
+scheduled_to_response n=100 p50_ms=52.397 p95_ms=73.941
+scheduled_to_all_subscribers n=100 p50_ms=93.504 p95_ms=131.401
+test benchmarks::open_loop::open_loop_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 6.94s
+
+        6.94 real         6.02 user         0.84 sys
+           284884992  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               86589  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 638  messages sent
+                1243  messages received
+                   0  signals received
+                 818  voluntary context switches
+               10758  involuntary context switches
+        116246378596  instructions retired
+         27460702819  cycles elapsed
+           268059512  peak memory footprint
+
+CASE events_per_project=100000 projects=3 subscribers=5 rate=5 offers=30 max_inflight=16
+
+running 1 test
+open_loop projects=3 events_per_project=100000 subscribers=5 offered=30 admitted=30 completed=30 admission_drops=0 failures=0 target_per_second=5 actual_offered_per_second=4.998 completed_per_second_including_drain=3.879 offered_seconds=6.002 drain_seconds=1.732 elapsed_seconds=7.734 max_inflight=16 max_observed_inflight=9
+subscriber_revision_coalesced=120 subscriber_revision_total=150
+scheduled_to_response n=30 p50_ms=1367.117 p95_ms=2065.844
+scheduled_to_all_subscribers n=30 p50_ms=2359.641 p95_ms=3525.268
+test benchmarks::open_loop::open_loop_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 26.33s
+
+       26.35 real        23.21 user         2.26 sys
+          1281818624  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              168171  page reclaims
+                 339  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 114  messages sent
+                 299  messages received
+                   0  signals received
+                3124  voluntary context switches
+               33469  involuntary context switches
+        425919614392  instructions retired
+        102355922905  cycles elapsed
+          1430931328  peak memory footprint

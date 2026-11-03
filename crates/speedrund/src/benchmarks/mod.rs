@@ -1,5 +1,6 @@
 //! Opt-in local performance measurements; never part of the normal test run.
 mod history;
+mod open_loop;
 
 use crate::{
     health::Health,
@@ -21,6 +22,18 @@ use tokio::{
     sync::{mpsc, watch},
 };
 
+struct ServerGuard {
+    shutdown: Shutdown,
+    abort: tokio::task::AbortHandle,
+}
+
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        self.shutdown.request();
+        self.abort.abort();
+    }
+}
+
 fn report(name: &str, samples: &mut [f64]) {
     samples.sort_by(f64::total_cmp);
     let percentile = |p: usize| samples[(samples.len() * p).div_ceil(100).saturating_sub(1)];
@@ -33,17 +46,22 @@ fn report(name: &str, samples: &mut [f64]) {
 }
 
 async fn request(addr: std::net::SocketAddr, method: &str, path: &str, body: &str) -> String {
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
     let mut stream = TcpStream::connect(addr).await.unwrap();
     stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer benchmark\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).await.unwrap();
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     response
+    }).await.expect("request timeout")
 }
 
 fn subscribe(addr: std::net::SocketAddr, id: usize, tx: mpsc::UnboundedSender<(usize, u64, Instant)>) {
     // ureq decodes HTTP transfer framing before exposing the SSE body.
-    let response = ureq::get(&format!("http://{addr}/v1/live/stream"))
+    let response = ureq::AgentBuilder::new()
+        .timeout_read(std::time::Duration::from_secs(180))
+        .build()
+        .get(&format!("http://{addr}/v1/live/stream"))
         .set("Authorization", "Bearer benchmark")
         .call()
         .unwrap();
@@ -75,8 +93,9 @@ async fn wait_cursor(
 ) -> Instant {
     let mut seen = vec![false; clients];
     let mut last = None::<Instant>;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
     while seen.iter().any(|v| !v) {
-        let (id, observed, received) = tokio::time::timeout(std::time::Duration::from_secs(120), rx.recv())
+        let (id, observed, received) = tokio::time::timeout_at(deadline, rx.recv())
             .await
             .expect("subscriber timeout")
             .expect("subscriber disconnected");
@@ -147,6 +166,10 @@ async fn history_pressure() {
     let addr = listener.local_addr().unwrap();
     let shutdown = state.shutdown.clone();
     let server = tokio::spawn(async move { axum::serve(listener, http::router(state, &[])).await.unwrap() });
+    let _server_guard = ServerGuard {
+        shutdown: shutdown.clone(),
+        abort: server.abort_handle(),
+    };
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut tasks = Vec::new();
     for id in 0..subscribers {

@@ -1,0 +1,22 @@
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+   Compiling speedrund v0.2.0 (/Users/fluffypro/apps/agentspeedrun/crates/speedrund)
+    Finished `release` profile [optimized] target(s) in 11.46s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+count=100000 starts=33332 coordinate_bytes=24 tree_node_bytes=12 coordinate_and_tree_logical_bytes=2399904
+test benchmarks::open_loop::index_logical_storage ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.00s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s

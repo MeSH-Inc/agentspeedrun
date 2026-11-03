@@ -1,0 +1,66 @@
+
+CASE repeat_after events=100000 subscribers=1 iterations=30
+
+running 1 test
+seed events=100000 subscribers=1 seconds=2.12
+load_deserialize n=30 p50_ms=101.191 p95_ms=117.417
+fold n=30 p50_ms=29.247 p95_ms=31.197
+closed_loop_cycles_per_second=2.167
+http_get_live n=30 p50_ms=143.192 p95_ms=168.284
+http_append_response n=30 p50_ms=170.221 p95_ms=185.463
+append_to_all_subscribers n=30 p50_ms=312.457 p95_ms=345.347
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 23.92s
+
+       23.96 real        20.51 user         2.80 sys
+          1663188992  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              308254  page reclaims
+                 338  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 154  messages sent
+                 545  messages received
+                   0  signals received
+                 675  voluntary context switches
+               38718  involuntary context switches
+        385800121248  instructions retired
+         93272262776  cycles elapsed
+          1777240392  peak memory footprint
+
+CASE repeat_after events=100000 subscribers=20 iterations=30
+
+running 1 test
+seed events=100000 subscribers=20 seconds=2.15
+load_deserialize n=30 p50_ms=100.667 p95_ms=105.616
+fold n=30 p50_ms=29.774 p95_ms=31.871
+closed_loop_cycles_per_second=2.239
+http_get_live n=30 p50_ms=137.424 p95_ms=153.575
+http_append_response n=30 p50_ms=166.552 p95_ms=174.908
+append_to_all_subscribers n=30 p50_ms=305.840 p95_ms=317.023
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 23.37s
+
+       23.38 real        20.50 user         2.55 sys
+          1126924288  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              299088  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                 804  messages sent
+                1214  messages received
+                   0  signals received
+                1234  voluntary context switches
+               26150  involuntary context switches
+        388277393421  instructions retired
+         92428247782  cycles elapsed
+          1071891896  peak memory footprint

@@ -7,6 +7,20 @@ use crate::store::Store;
 /// Construct a signed, gapless single-device run in one transaction. Seeding
 /// bypasses service projection work so it does not dominate the measurement.
 pub fn seed(store: &mut Store, count: usize) -> anyhow::Result<()> {
+    seed_project(store, count, 0)
+}
+
+pub fn seed_project(store: &mut Store, count: usize, project: usize) -> anyhow::Result<()> {
+    let run = if project == 0 {
+        "benchmark-run".to_string()
+    } else {
+        format!("benchmark-run-{project}")
+    };
+    let prefix = if project == 0 {
+        String::new()
+    } else {
+        format!("project-{project}-")
+    };
     let categories = category::builtin()?;
     let category = &categories[0];
     let at = Utc::now() - chrono::Duration::milliseconds(count as i64);
@@ -14,11 +28,15 @@ pub fn seed(store: &mut Store, count: usize) -> anyhow::Result<()> {
     anyhow::ensure!(count >= minimum, "history must contain at least {minimum} events");
     store.transaction::<_, anyhow::Error>(|tx| {
         tx.insert(
-            "benchmark-run",
-            "start",
+            &run,
+            &format!("{prefix}start"),
             at,
             EventPayload::RunStarted {
-                project_id: "benchmark-project".into(),
+                project_id: if project == 0 {
+                    "benchmark-project".into()
+                } else {
+                    format!("benchmark-project-{project}")
+                },
                 project_root: None,
                 category_id: category.id.clone(),
                 category_version: category.version,
@@ -32,8 +50,8 @@ pub fn seed(store: &mut Store, count: usize) -> anyhow::Result<()> {
         for milestone in &category.milestones {
             let milestone_id = format!("{}@{}/{}", category.id, category.version, milestone.key);
             tx.insert(
-                "benchmark-run",
-                &format!("{}-proposed", milestone.key),
+                &run,
+                &format!("{prefix}{}-proposed", milestone.key),
                 at,
                 EventPayload::MilestoneProposed {
                     milestone_id: milestone_id.clone(),
@@ -45,8 +63,8 @@ pub fn seed(store: &mut Store, count: usize) -> anyhow::Result<()> {
                 },
             )?;
             tx.insert(
-                "benchmark-run",
-                &format!("{}-accepted", milestone.key),
+                &run,
+                &format!("{prefix}{}-accepted", milestone.key),
                 at,
                 EventPayload::MilestoneAccepted {
                     milestone_id,
@@ -71,8 +89,8 @@ pub fn seed(store: &mut Store, count: usize) -> anyhow::Result<()> {
                 _ => EventPayload::AgentTurnEnded { session_id },
             };
             tx.insert(
-                "benchmark-run",
-                &format!("history-{i}"),
+                &run,
+                &format!("{prefix}history-{i}"),
                 at + chrono::Duration::milliseconds(i as i64 + 1),
                 payload,
             )?;

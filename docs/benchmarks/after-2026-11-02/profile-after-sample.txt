@@ -1,0 +1,1069 @@
+Analysis of sampling speedrund-714949aff824cb79 (pid 61769) every 10 milliseconds
+Process:         speedrund-714949aff824cb79 [61769]
+Path:            /Volumes/VOLUME/*/speedrund-714949aff824cb79
+Load Address:    0x104f34000
+Identifier:      speedrund-714949aff824cb79
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  zsh [61768]
+Target Type:     live task
+
+Date/Time:       2026-11-02 20:15:47.254 -0800
+Launch Time:     2026-11-02 20:15:43.211 -0800
+OS Version:      macOS 26.7.2 (25G320)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         662.1M
+Physical footprint (peak):  837.7M
+Idle exit:                  untracked
+----
+
+Call graph:
+    272 Thread_12271560   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 272 start  (in dyld) + 6992  [0x180b354e4]
+    +   272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x32ad94  [0x10525ed94]
+    +     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3f7808  [0x10532b808]
+    +       272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x2f1078  [0x105225078]
+    +         272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x379184  [0x1052ad184]
+    +           272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x417ecc  [0x10534becc]
+    +             272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x427878  [0x10535b878]
+    +               272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x41e3f0  [0x1053523f0]
+    +                 272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x414760  [0x105348760]
+    +                   272 _dispatch_semaphore_wait_slow  (in libdispatch.dylib) + 76  [0x180d46ae8]
+    +                     272 _dispatch_sema4_timedwait  (in libdispatch.dylib) + 64  [0x180d79db8]
+    +                       272 semaphore_timedwait_trap  (in libsystem_kernel.dylib) + 8  [0x180ebcbc8]
+    272 Thread_12271563: benchmarks::history_pressure
+    + 272 thread_start  (in libsystem_pthread.dylib) + 8  [0x180efbc1c]
+    +   272 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x180f00c58]
+    +     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3ff0b4  [0x1053330b4]
+    +       272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x416530  [0x10534a530]
+    +         272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x40f204  [0x105343204]
+    +           272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x413528  [0x105347528]
+    +             272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x408358  [0x10533c358]
+    +               272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x32a6a8  [0x10525e6a8]
+    +                 272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3ce544  [0x105302544]
+    +                   272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x2a28e4  [0x1051d68e4]
+    +                     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x37db68  [0x1052b1b68]
+    +                       213 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3c6ce8  [0x1052face8]
+    +                       ! 164 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x2f36c0  [0x1052276c0]
+    +                       ! : 164 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1eb9e8  [0x10511f9e8]
+    +                       ! :   143 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1eaebc  [0x10511eebc]
+    +                       ! :   | 107 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4b784  [0x104f7f784]
+    +                       ! :   | + 30 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46230  [0x104f7a230]
+    +                       ! :   | + ! 10 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a728  [0x104f7e728]
+    +                       ! :   | + ! : 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a498  [0x104f7e498]
+    +                       ! :   | + ! : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4c4  [0x104f7e4c4]
+    +                       ! :   | + ! : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4d8  [0x104f7e4d8]
+    +                       ! :   | + ! : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4ec  [0x104f7e4ec]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a3a4  [0x104f7e3a4]
+    +                       ! :   | + ! 7 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a6c4  [0x104f7e6c4]
+    +                       ! :   | + ! : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a44c  [0x104f7e44c]
+    +                       ! :   | + ! : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4c4  [0x104f7e4c4]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a424  [0x104f7e424]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a470  [0x104f7e470]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+    +                       ! :   | + ! 6 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a6d4  [0x104f7e6d4]
+    +                       ! :   | + ! : 5 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a434  [0x104f7e434]
+    +                       ! :   | + ! 4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a6b4  [0x104f7e6b4]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a3a0  [0x104f7e3a0]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a418  [0x104f7e418]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a44c  [0x104f7e44c]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a500  [0x104f7e500]
+    +                       ! :   | + ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a874  [0x104f7e874]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a6e8  [0x104f7e6e8]
+    +                       ! :   | + 12 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x464fc  [0x104f7a4fc]
+    +                       ! :   | + ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aac4  [0x104f7eac4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aa1c  [0x104f7ea1c]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aa38  [0x104f7ea38]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aa70  [0x104f7ea70]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaa8  [0x104f7eaa8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaf8  [0x104f7eaf8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab14  [0x104f7eb14]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab64  [0x104f7eb64]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abb4  [0x104f7ebb4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abe4  [0x104f7ebe4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ac0c  [0x104f7ec0c]
+    +                       ! :   | + 11 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x464ec  [0x104f7a4ec]
+    +                       ! :   | + ! 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ac0c  [0x104f7ec0c]
+    +                       ! :   | + ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab98  [0x104f7eb98]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaa8  [0x104f7eaa8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aac4  [0x104f7eac4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaf8  [0x104f7eaf8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab48  [0x104f7eb48]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abb4  [0x104f7ebb4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ac10  [0x104f7ec10]
+    +                       ! :   | + 8 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x461cc  [0x104f7a1cc]
+    +                       ! :   | + ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x47fd4  [0x104f7bfd4]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48f44  [0x104f7cf44]
+    +                       ! :   | + ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aab4  [0x104f7eab4]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48f54  [0x104f7cf54]
+    +                       ! :   | + ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abd4  [0x104f7ebd4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x47860  [0x104f7b860]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48fd0  [0x104f7cfd0]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x47a08  [0x104f7ba08]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaf8  [0x104f7eaf8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x47ba4  [0x104f7bba4]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaa8  [0x104f7eaa8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x47ce4  [0x104f7bce4]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48f44  [0x104f7cf44]
+    +                       ! :   | + ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaa8  [0x104f7eaa8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x47d04  [0x104f7bd04]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaf8  [0x104f7eaf8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48158  [0x104f7c158]
+    +                       ! :   | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48f34  [0x104f7cf34]
+    +                       ! :   | + !     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab20  [0x104f7eb20]
+    +                       ! :   | + 6 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4650c  [0x104f7a50c]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aa1c  [0x104f7ea1c]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aa8c  [0x104f7ea8c]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aac0  [0x104f7eac0]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aafc  [0x104f7eafc]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab64  [0x104f7eb64]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abe0  [0x104f7ebe0]
+    +                       ! :   | + 4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46440  [0x104f7a440]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x49404  [0x104f7d404]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abf4  [0x104f7ebf4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x49414  [0x104f7d414]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab68  [0x104f7eb68]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x49424  [0x104f7d424]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abd0  [0x104f7ebd0]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x49460  [0x104f7d460]
+    +                       ! :   | + 4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46248  [0x104f7a248]
+    +                       ! :   | + 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x462dc  [0x104f7a2dc]
+    +                       ! :   | + ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48f34  [0x104f7cf34]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaa8  [0x104f7eaa8]
+    +                       ! :   | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaec  [0x104f7eaec]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48f44  [0x104f7cf44]
+    +                       ! :   | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ac00  [0x104f7ec00]
+    +                       ! :   | + 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x463d0  [0x104f7a3d0]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aa58  [0x104f7ea58]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abb4  [0x104f7ebb4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abf4  [0x104f7ebf4]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46270  [0x104f7a270]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab64  [0x104f7eb64]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ac00  [0x104f7ec00]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46318  [0x104f7a318]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab98  [0x104f7eb98]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abb4  [0x104f7ebb4]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x463e0  [0x104f7a3e0]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab48  [0x104f7eb48]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab80  [0x104f7eb80]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46484  [0x104f7a484]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aa70  [0x104f7ea70]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aac4  [0x104f7eac4]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x464dc  [0x104f7a4dc]
+    +                       ! :   | + ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x49684  [0x104f7d684]
+    +                       ! :   | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abb4  [0x104f7ebb4]
+    +                       ! :   | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ac0c  [0x104f7ec0c]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x462dc  [0x104f7a2dc]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x463a8  [0x104f7a3a8]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a8a8  [0x104f7e8a8]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46290  [0x104f7a290]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab64  [0x104f7eb64]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46338  [0x104f7a338]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abf4  [0x104f7ebf4]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x463c0  [0x104f7a3c0]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab9c  [0x104f7eb9c]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46454  [0x104f7a454]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab80  [0x104f7eb80]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x46054  [0x104f7a054]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x460c4  [0x104f7a0c4]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x460d8  [0x104f7a0d8]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x460e8  [0x104f7a0e8]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x462f8  [0x104f7a2f8]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x463b0  [0x104f7a3b0]
+    +                       ! :   | 16 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4b420  [0x104f7f420]
+    +                       ! :   | + 16 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x485d0  [0x104f7c5d0]
+    +                       ! :   | +   16 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a9c0  [0x104f7e9c0]
+    +                       ! :   | +     15 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4988c  [0x104f7d88c]
+    +                       ! :   | +     ! 5 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a348  [0x104f7e348]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a434  [0x104f7e434]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a450  [0x104f7e450]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a48c  [0x104f7e48c]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4e0  [0x104f7e4e0]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4e8  [0x104f7e4e8]
+    +                       ! :   | +     ! 4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a368  [0x104f7e368]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4b0  [0x104f7e4b0]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4d8  [0x104f7e4d8]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4ec  [0x104f7e4ec]
+    +                       ! :   | +     ! 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a2e8  [0x104f7e2e8]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4bc  [0x104f7e4bc]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4e0  [0x104f7e4e0]
+    +                       ! :   | +     ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a2c8  [0x104f7e2c8]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4c0  [0x104f7e4c0]
+    +                       ! :   | +     ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4ec  [0x104f7e4ec]
+    +                       ! :   | +     ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a278  [0x104f7e278]
+    +                       ! :   | +     !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aa8c  [0x104f7ea8c]
+    +                       ! :   | +     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x49d74  [0x104f7dd74]
+    +                       ! :   | +       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4adfc  [0x104f7edfc]
+    +                       ! :   | +         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x497e8  [0x104f7d7e8]
+    +                       ! :   | 12 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4b794  [0x104f7f794]
+    +                       ! :   | + 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a328  [0x104f7e328]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a3d8  [0x104f7e3d8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a41c  [0x104f7e41c]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4ec  [0x104f7e4ec]
+    +                       ! :   | + 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a368  [0x104f7e368]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a450  [0x104f7e450]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4e4  [0x104f7e4e4]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a2e8  [0x104f7e2e8]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4b4  [0x104f7e4b4]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4f0  [0x104f7e4f0]
+    +                       ! :   | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a348  [0x104f7e348]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4e8  [0x104f7e4e8]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a308  [0x104f7e308]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a47c  [0x104f7e47c]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a358  [0x104f7e358]
+    +                       ! :   | +   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abe4  [0x104f7ebe4]
+    +                       ! :   | 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4b478  [0x104f7f478]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48754  [0x104f7c754]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a6b4  [0x104f7e6b4]
+    +                       ! :   | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a3b0  [0x104f7e3b0]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x48934  [0x104f7c934]
+    +                       ! :   | +   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4af6c  [0x104f7ef6c]
+    +                       ! :   | +     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x497e8  [0x104f7d7e8]
+    +                       ! :   | 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4b68c  [0x104f7f68c]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4b200  [0x104f7f200]
+    +                       ! :   | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x45020  [0x104f79020]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d4ce0  [0x105108ce0]
+    +                       ! :   | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4b46c  [0x104f7f46c]
+    +                       ! :   | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x487e4  [0x104f7c7e4]
+    +                       ! :   | +   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a6c4  [0x104f7e6c4]
+    +                       ! :   | +     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4b4  [0x104f7e4b4]
+    +                       ! :   | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d49b0  [0x1051089b0]
+    +                       ! :   | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d51d0  [0x1051091d0]
+    +                       ! :   | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d6088  [0x10510a088]
+    +                       ! :   14 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1eadb0  [0x10511edb0]
+    +                       ! :   | 13 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1eb0ac  [0x10511f0ac]
+    +                       ! :   | + 13 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x485d0  [0x104f7c5d0]
+    +                       ! :   | +   13 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a9c0  [0x104f7e9c0]
+    +                       ! :   | +     13 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4988c  [0x104f7d88c]
+    +                       ! :   | +       4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a348  [0x104f7e348]
+    +                       ! :   | +       ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a460  [0x104f7e460]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a49c  [0x104f7e49c]
+    +                       ! :   | +       2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a298  [0x104f7e298]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaf8  [0x104f7eaf8]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ab48  [0x104f7eb48]
+    +                       ! :   | +       2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a2e8  [0x104f7e2e8]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a498  [0x104f7e498]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+    +                       ! :   | +       2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a328  [0x104f7e328]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a47c  [0x104f7e47c]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a484  [0x104f7e484]
+    +                       ! :   | +       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a2a8  [0x104f7e2a8]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4ec  [0x104f7e4ec]
+    +                       ! :   | +       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a318  [0x104f7e318]
+    +                       ! :   | +       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ac0c  [0x104f7ec0c]
+    +                       ! :   | +       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a368  [0x104f7e368]
+    +                       ! :   | +         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4ec  [0x104f7e4ec]
+    +                       ! :   | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1eafb0  [0x10511efb0]
+    +                       ! :   |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e7d00  [0x10511bd00]
+    +                       ! :   7 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1eae44  [0x10511ee44]
+    +                       ! :     4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e7d00  [0x10511bd00]
+    +                       ! :     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1f7804  [0x10512b804]
+    +                       ! :     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1f7840  [0x10512b840]
+    +                       ! :     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1f7880  [0x10512b880]
+    +                       ! :     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1f78cc  [0x10512b8cc]
+    +                       ! :     2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e7cb4  [0x10511bcb4]
+    +                       ! :     + 1 _malloc_zone_malloc  (in libsystem_malloc.dylib) + 0  [0x180d2c0bc]
+    +                       ! :     + 1 xzm_malloc_zone_malloc_type_malloc  (in libsystem_malloc.dylib) + 0  [0x180d28184]
+    +                       ! :     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e7d48  [0x10511bd48]
+    +                       ! :       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af80  [0x10558ef80]
+    +                       ! :         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65b608  [0x10558f608]
+    +                       ! :           1 _realloc  (in libsystem_malloc.dylib) + 252  [0x180d2ce4c]
+    +                       ! :             1 xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 272  [0x180d2761c]
+    +                       ! 27 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x2f36ac  [0x1052276ac]
+    +                       ! : 26 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ea570  [0x10511e570]
+    +                       ! : | 14 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9f68  [0x10511df68]
+    +                       ! : | + 7 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9964  [0x10511d964]
+    +                       ! : | + ! 4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e95f0  [0x10511d5f0]
+    +                       ! : | + ! : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ccfc8  [0x105100fc8]
+    +                       ! : | + ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1c8e94  [0x1050fce94]
+    +                       ! : | + ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1cdc50  [0x105101c50]
+    +                       ! : | + ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1c8eb4  [0x1050fceb4]
+    +                       ! : | + ! : |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ec5a0  [0x1051205a0]
+    +                       ! : | + ! : |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af80  [0x10558ef80]
+    +                       ! : | + ! : |       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65b608  [0x10558f608]
+    +                       ! : | + ! : |         1 _realloc  (in libsystem_malloc.dylib) + 252  [0x180d2ce4c]
+    +                       ! : | + ! : |           1 xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 200  [0x180d275d4]
+    +                       ! : | + ! : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1cd008  [0x105101008]
+    +                       ! : | + ! :   2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d3050  [0x105107050]
+    +                       ! : | + ! :     2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1cdc84  [0x105101c84]
+    +                       ! : | + ! :       2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ec5a0  [0x1051205a0]
+    +                       ! : | + ! :         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af80  [0x10558ef80]
+    +                       ! : | + ! :         + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65b5b0  [0x10558f5b0]
+    +                       ! : | + ! :         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af34  [0x10558ef34]
+    +                       ! : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9640  [0x10511d640]
+    +                       ! : | + ! : 1 _xzm_free  (in libsystem_malloc.dylib) + 1520  [0x180d1d708]
+    +                       ! : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e96fc  [0x10511d6fc]
+    +                       ! : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ccfc8  [0x105100fc8]
+    +                       ! : | + ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1c8e94  [0x1050fce94]
+    +                       ! : | + ! :     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1cdc84  [0x105101c84]
+    +                       ! : | + ! :       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ec5a0  [0x1051205a0]
+    +                       ! : | + ! :         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af34  [0x10558ef34]
+    +                       ! : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9964  [0x10511d964]
+    +                       ! : | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e95f0  [0x10511d5f0]
+    +                       ! : | + !     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ccfc8  [0x105100fc8]
+    +                       ! : | + !       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1c8eb4  [0x1050fceb4]
+    +                       ! : | + !         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ec5a0  [0x1051205a0]
+    +                       ! : | + !           1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af80  [0x10558ef80]
+    +                       ! : | + !             1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65b608  [0x10558f608]
+    +                       ! : | + !               1 _realloc  (in libsystem_malloc.dylib) + 452  [0x180d2cf14]
+    +                       ! : | + !                 1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x180d2c6f8]
+    +                       ! : | + !                   1 default_zone_realloc  (in libsystem_malloc.dylib) + 32  [0x180cf5c5c]
+    +                       ! : | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9948  [0x10511d948]
+    +                       ! : | + ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1de524  [0x105112524]
+    +                       ! : | + !   2 _platform_memcmp  (in libsystem_platform.dylib) + 168,236  [0x180f07fb8,0x180f07ffc]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e97ac  [0x10511d7ac]
+    +                       ! : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e95f0  [0x10511d5f0]
+    +                       ! : | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ccfc8  [0x105100fc8]
+    +                       ! : | + !     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1c8eb4  [0x1050fceb4]
+    +                       ! : | + !       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ec5a0  [0x1051205a0]
+    +                       ! : | + !         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af80  [0x10558ef80]
+    +                       ! : | + !           1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65b608  [0x10558f608]
+    +                       ! : | + !             1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 220  [0x180d2c740]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e98bc  [0x10511d8bc]
+    +                       ! : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ccfc8  [0x105100fc8]
+    +                       ! : | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1c8b1c  [0x1050fcb1c]
+    +                       ! : | + !     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ec5a0  [0x1051205a0]
+    +                       ! : | + !       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af80  [0x10558ef80]
+    +                       ! : | + !         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65b63c  [0x10558f63c]
+    +                       ! : | + !           1 _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 168  [0x180d1c9f8]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9914  [0x10511d914]
+    +                       ! : | + ! 1 _xzm_free  (in libsystem_malloc.dylib) + 196  [0x180d1d1dc]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e99a4  [0x10511d9a4]
+    +                       ! : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af80  [0x10558ef80]
+    +                       ! : | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65b608  [0x10558f608]
+    +                       ! : | + !     1 _realloc  (in libsystem_malloc.dylib) + 452  [0x180d2cf14]
+    +                       ! : | + !       1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x180d2c6f8]
+    +                       ! : | + !         1 xzm_realloc  (in libsystem_malloc.dylib) + 808  [0x180d1ceac]
+    +                       ! : | + !           1 _xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 536  [0x180d22154]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9898  [0x10511d898]
+    +                       ! : | 4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9ecc  [0x10511decc]
+    +                       ! : | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1fde7c  [0x105131e7c]
+    +                       ! : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1fdd7c  [0x105131d7c]
+    +                       ! : | + ! : 1 <deduplicated_symbol>  (in libsystem_malloc.dylib) + 0  [0x180d1c15c]
+    +                       ! : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1fdd90  [0x105131d90]
+    +                       ! : | + !   1 _platform_memmove  (in libsystem_platform.dylib) + 452  [0x180f0a524]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1fdd7c  [0x105131d7c]
+    +                       ! : | + ! 1 _malloc_zone_malloc  (in libsystem_malloc.dylib) + 120  [0x180d2c134]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1fde28  [0x105131e28]
+    +                       ! : | +   1 _malloc_zone_malloc  (in libsystem_malloc.dylib) + 64  [0x180d2c0fc]
+    +                       ! : | 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ea0e4  [0x10511e0e4]
+    +                       ! : | + 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e8fa4  [0x10511cfa4]
+    +                       ! : | +   2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1fd6ac  [0x1051316ac]
+    +                       ! : | +   ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ffc38  [0x105133c38]
+    +                       ! : | +   ! 1 _xzm_free  (in libsystem_malloc.dylib) + 1568  [0x180d1d738]
+    +                       ! : | +   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1fd6a4  [0x1051316a4]
+    +                       ! : | +     1 _free  (in libsystem_malloc.dylib) + 0  [0x180d2ccd0]
+    +                       ! : | 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e9fc4  [0x10511dfc4]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d3eb4  [0x105107eb4]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d3f94  [0x105107f94]
+    +                       ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ea098  [0x10511e098]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d3f5c  [0x105107f5c]
+    +                       ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ea0d0  [0x10511e0d0]
+    +                       ! : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1f5ea0  [0x105129ea0]
+    +                       ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ea0dc  [0x10511e0dc]
+    +                       ! : |   1 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x180d1d530]
+    +                       ! : |     1 DYLD-STUB$$mach_absolute_time  (in libsystem_malloc.dylib) + 12  [0x180d34b9c]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ea25c  [0x10511e25c]
+    +                       ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d1bc0  [0x105105bc0]
+    +                       ! 13 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x2f3600  [0x105227600]
+    +                       ! : 13 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x322060  [0x105256060]
+    +                       ! :   13 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3086a0  [0x10523c6a0]
+    +                       ! :     7 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30c478  [0x105240478]
+    +                       ! :     | 7 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24b7dc  [0x10517f7dc]
+    +                       ! :     |   7 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24c754  [0x105180754]
+    +                       ! :     |     2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3625c0  [0x1052965c0]
+    +                       ! :     |     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24c754  [0x105180754]
+    +                       ! :     |     + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3624d0  [0x1052964d0]
+    +                       ! :     |     + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x36b9bc  [0x10529f9bc]
+    +                       ! :     |     + !     1 <deduplicated_symbol>  (in libsystem_malloc.dylib) + 112  [0x180d1c1cc]
+    +                       ! :     |     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24caec  [0x105180aec]
+    +                       ! :     |     +   1 _xzm_xzone_thread_cache_fill_and_malloc  (in libsystem_malloc.dylib) + 120  [0x180d23638]
+    +                       ! :     |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x362334  [0x105296334]
+    +                       ! :     |     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x36af88  [0x10529ef88]
+    +                       ! :     |     +   1 _platform_memmove  (in libsystem_platform.dylib) + 428  [0x180f0a50c]
+    +                       ! :     |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3624d0  [0x1052964d0]
+    +                       ! :     |     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x36b9bc  [0x10529f9bc]
+    +                       ! :     |     +   1 _xzm_xzone_malloc_freelist_outlined  (in libsystem_malloc.dylib) + 756  [0x180d23994]
+    +                       ! :     |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x362530  [0x105296530]
+    +                       ! :     |     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x362550  [0x105296550]
+    +                       ! :     |     +   1 <deduplicated_symbol>  (in libsystem_malloc.dylib) + 212  [0x180d1c230]
+    +                       ! :     |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3625f4  [0x1052965f4]
+    +                       ! :     |     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x36b8e4  [0x10529f8e4]
+    +                       ! :     |     +   1 _platform_memcmp  (in libsystem_platform.dylib) + 272  [0x180f08020]
+    +                       ! :     |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24c36c  [0x10518036c]
+    +                       ! :     5 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30c2f4  [0x1052402f4]
+    +                       ! :     | 5 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x311538  [0x105245538]
+    +                       ! :     |   5 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4d6560  [0x10540a560]
+    +                       ! :     |     5 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51c6b4  [0x1054506b4]
+    +                       ! :     |       5 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51f394  [0x105453394]
+    +                       ! :     |         5 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5227b4  [0x1054567b4]
+    +                       ! :     |           4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5230a0  [0x1054570a0]
+    +                       ! :     |           + 4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x52a1a0  [0x10545e1a0]
+    +                       ! :     |           +   4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x52a328  [0x10545e328]
+    +                       ! :     |           +     4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5019ac  [0x1054359ac]
+    +                       ! :     |           +       4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x501f50  [0x105435f50]
+    +                       ! :     |           +         4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4f3d48  [0x105427d48]
+    +                       ! :     |           +           4 pread  (in libsystem_kernel.dylib) + 8  [0x180ebe650]
+    +                       ! :     |           1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5230c0  [0x1054570c0]
+    +                       ! :     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30c420  [0x105240420]
+    +                       ! :       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3bdd4c  [0x1052f1d4c]
+    +                       ! 9 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x2f3580  [0x105227580]
+    +                       !   9 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x2fb6dc  [0x10522f6dc]
+    +                       !     9 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x322a5c  [0x105256a5c]
+    +                       !       9 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x308914  [0x10523c914]
+    +                       !         6 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30c784  [0x105240784]
+    +                       !         | 6 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24bcc4  [0x10517fcc4]
+    +                       !         |   2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b5f8  [0x10518f5f8]
+    +                       !         |   + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24df8c  [0x105181f8c]
+    +                       !         |   +   2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x26a6ac  [0x10519e6ac]
+    +                       !         |   +     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3247c  [0x104f6647c]
+    +                       !         |   +     ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x307f4  [0x104f647f4]
+    +                       !         |   +     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x32588  [0x104f66588]
+    +                       !         |   +       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x352cc  [0x104f692cc]
+    +                       !         |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b430  [0x10518f430]
+    +                       !         |   + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x350710  [0x105284710]
+    +                       !         |   +   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x38d008  [0x1052c1008]
+    +                       !         |   +     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x2650d8  [0x1051990d8]
+    +                       !         |   +       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d103c  [0x10510503c]
+    +                       !         |   +         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d0154  [0x105104154]
+    +                       !         |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b5b4  [0x10518f5b4]
+    +                       !         |   + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24df8c  [0x105181f8c]
+    +                       !         |   +   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x26a6cc  [0x10519e6cc]
+    +                       !         |   +     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x32e64  [0x104f66e64]
+    +                       !         |   +       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x33770  [0x104f67770]
+    +                       !         |   +         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x32f40  [0x104f66f40]
+    +                       !         |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d115c  [0x10510515c]
+    +                       !         |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b944  [0x10518f944]
+    +                       !         3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30c654  [0x105240654]
+    +                       !           3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x311538  [0x105245538]
+    +                       !             3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4d6560  [0x10540a560]
+    +                       !               2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51c6b4  [0x1054506b4]
+    +                       !               + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51f394  [0x105453394]
+    +                       !               +   2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5227b4  [0x1054567b4]
+    +                       !               +     2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5230a0  [0x1054570a0]
+    +                       !               +       2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x52a1a0  [0x10545e1a0]
+    +                       !               +         2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x52a328  [0x10545e328]
+    +                       !               +           2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5019ac  [0x1054359ac]
+    +                       !               +             2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x501f50  [0x105435f50]
+    +                       !               +               2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4f3d48  [0x105427d48]
+    +                       !               +                 2 pread  (in libsystem_kernel.dylib) + 8  [0x180ebe650]
+    +                       !               1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51ce88  [0x105450e88]
+    +                       !                 1 _platform_memmove  (in libsystem_platform.dylib) + 180  [0x180f0a414]
+    +                       43 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3c6908  [0x1052fa908]
+    +                       ! 43 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x322a5c  [0x105256a5c]
+    +                       !   40 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x308914  [0x10523c914]
+    +                       !   : 23 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30c784  [0x105240784]
+    +                       !   : | 22 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24bcc4  [0x10517fcc4]
+    +                       !   : | + 7 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b430  [0x10518f430]
+    +                       !   : | + ! 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x350710  [0x105284710]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x38cf64  [0x1052c0f64]
+    +                       !   : | + ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x38c46c  [0x1052c046c]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x38d09c  [0x1052c109c]
+    +                       !   : | + ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24ce88  [0x105180e88]
+    +                       !   : | + ! : |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x353284  [0x105287284]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x38d008  [0x1052c1008]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3509dc  [0x1052849dc]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x390b84  [0x1052c4b84]
+    +                       !   : | + ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3a1408  [0x1052d5408]
+    +                       !   : | + ! :     1 _xzm_free  (in libsystem_malloc.dylib) + 320  [0x180d1d258]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3509fc  [0x1052849fc]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x391838  [0x1052c5838]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x350a1c  [0x105284a1c]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3996ec  [0x1052cd6ec]
+    +                       !   : | + ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3a11e8  [0x1052d51e8]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3509d0  [0x1052849d0]
+    +                       !   : | + 4 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b5f8  [0x10518f5f8]
+    +                       !   : | + ! 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24df8c  [0x105181f8c]
+    +                       !   : | + ! : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x26a6ac  [0x10519e6ac]
+    +                       !   : | + ! : | 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3247c  [0x104f6647c]
+    +                       !   : | + ! : |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30848  [0x104f64848]
+    +                       !   : | + ! : |   + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x32904  [0x104f66904]
+    +                       !   : | + ! : |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3117c  [0x104f6517c]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x26a6cc  [0x10519e6cc]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24df94  [0x105181f94]
+    +                       !   : | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25afd0  [0x10518efd0]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d103c  [0x10510503c]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d0154  [0x105104154]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d1134  [0x105105134]
+    +                       !   : | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b34c  [0x10518f34c]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24e258  [0x105182258]
+    +                       !   : | + ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d103c  [0x10510503c]
+    +                       !   : | + ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d01e8  [0x1051041e8]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24e290  [0x105182290]
+    +                       !   : | + !   1 <deduplicated_symbol>  (in libsystem_malloc.dylib) + 112  [0x180d1c1cc]
+    +                       !   : | + 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b5b4  [0x10518f5b4]
+    +                       !   : | + ! 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24df8c  [0x105181f8c]
+    +                       !   : | + !   2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x26a6ac  [0x10519e6ac]
+    +                       !   : | + !     2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x324d8  [0x104f664d8]
+    +                       !   : | + !       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x308cc  [0x104f648cc]
+    +                       !   : | + !       : 1 _platform_memcmp  (in libsystem_platform.dylib) + 0  [0x180f07f10]
+    +                       !   : | + !       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30bf0  [0x104f64bf0]
+    +                       !   : | + !         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x35880  [0x104f69880]
+    +                       !   : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25af90  [0x10518ef90]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24c2e8  [0x1051802e8]
+    +                       !   : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b698  [0x10518f698]
+    +                       !   : | + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x38b01c  [0x1052bf01c]
+    +                       !   : | + !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24e290  [0x105182290]
+    +                       !   : | + !     1 <deduplicated_symbol>  (in libsystem_malloc.dylib) + 112  [0x180d1c1cc]
+    +                       !   : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1d1160  [0x105105160]
+    +                       !   : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b004  [0x10518f004]
+    +                       !   : | + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x25b29c  [0x10518f29c]
+    +                       !   : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x24bce0  [0x10517fce0]
+    +                       !   : |   1 _platform_memmove  (in libsystem_platform.dylib) + 24  [0x180f0a378]
+    +                       !   : 14 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30c654  [0x105240654]
+    +                       !   : | 14 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x311538  [0x105245538]
+    +                       !   : |   14 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4d6560  [0x10540a560]
+    +                       !   : |     10 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51c6b4  [0x1054506b4]
+    +                       !   : |     + 10 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51f394  [0x105453394]
+    +                       !   : |     +   10 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5227b4  [0x1054567b4]
+    +                       !   : |     +     10 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5230a0  [0x1054570a0]
+    +                       !   : |     +       10 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x52a1a0  [0x10545e1a0]
+    +                       !   : |     +         9 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x52a328  [0x10545e328]
+    +                       !   : |     +         ! 9 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5019ac  [0x1054359ac]
+    +                       !   : |     +         !   9 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x501f50  [0x105435f50]
+    +                       !   : |     +         !     9 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4f3d48  [0x105427d48]
+    +                       !   : |     +         !       9 pread  (in libsystem_kernel.dylib) + 8  [0x180ebe650]
+    +                       !   : |     +         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x52a2b8  [0x10545e2b8]
+    +                       !   : |     2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51737c  [0x10544b37c]
+    +                       !   : |     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x524b90  [0x105458b90]
+    +                       !   : |     + ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x508e6c  [0x10543ce6c]
+    +                       !   : |     + 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x524cf0  [0x105458cf0]
+    +                       !   : |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x51ce88  [0x105450e88]
+    +                       !   : |     + 1 _platform_memmove  (in libsystem_platform.dylib) + 180  [0x180f0a414]
+    +                       !   : |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x5139a0  [0x1054479a0]
+    +                       !   : 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x30c730  [0x105240730]
+    +                       !   : | 2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3bdd48  [0x1052f1d48]
+    +                       !   : |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3bbb8  [0x104f6fbb8]
+    +                       !   : |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3bbe0  [0x104f6fbe0]
+    +                       !   : 1 _xzm_free  (in libsystem_malloc.dylib) + 1552  [0x180d1d728]
+    +                       !   2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3088fc  [0x10523c8fc]
+    +                       !   : 2 _platform_memmove  (in libsystem_platform.dylib) + 180  [0x180f0a414]
+    +                       !   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x308930  [0x10523c930]
+    +                       !     1 _platform_memmove  (in libsystem_platform.dylib) + 180  [0x180f0a414]
+    +                       14 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3c69d4  [0x1052fa9d4]
+    +                       ! 3 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e40a0  [0x1051180a0]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : | 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |           1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |             1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |               1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |                 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |                   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+    +                       ! : |                     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e6100  [0x10511a100]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5de0  [0x105119de0]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e60bc  [0x10511a0bc]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e1c94  [0x105115c94]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e05e4  [0x1051145e4]
+    +                       ! :   1 _platform_memcmp  (in libsystem_platform.dylib) + 56  [0x180f07f48]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e2160  [0x105116160]
+    +                       ! : 1 _platform_memcmp  (in libsystem_platform.dylib) + 280  [0x180f08028]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e2978  [0x105116978]
+    +                       ! : 1 _xzm_free  (in libsystem_malloc.dylib) + 624  [0x180d1d388]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e332c  [0x10511732c]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fac  [0x105119fac]
+    +                       ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fd8  [0x105119fd8]
+    +                       ! :     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e09f4  [0x1051149f4]
+    +                       ! :       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fd8  [0x105119fd8]
+    +                       ! :         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e09f4  [0x1051149f4]
+    +                       ! :           1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fac  [0x105119fac]
+    +                       ! :             1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fac  [0x105119fac]
+    +                       ! :               1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fd8  [0x105119fd8]
+    +                       ! :                 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e09f4  [0x1051149f4]
+    +                       ! :                   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fac  [0x105119fac]
+    +                       ! :                     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fac  [0x105119fac]
+    +                       ! :                       1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fac  [0x105119fac]
+    +                       ! :                         1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fac  [0x105119fac]
+    +                       ! :                           1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fd8  [0x105119fd8]
+    +                       ! :                             1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e09f4  [0x1051149f4]
+    +                       ! :                               1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fd8  [0x105119fd8]
+    +                       ! :                                 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e09cc  [0x1051149cc]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e34ec  [0x1051174ec]
+    +                       ! : 1 _platform_memcmp  (in libsystem_platform.dylib) + 280  [0x180f08028]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e3a0c  [0x105117a0c]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1fead0  [0x105132ad0]
+    +                       ! :   1 _platform_memcmp  (in libsystem_platform.dylib) + 272  [0x180f08020]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e3d78  [0x105117d78]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ff254  [0x105133254]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e3e00  [0x105117e00]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5de0  [0x105119de0]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e4194  [0x105118194]
+    +                       ! : 1 _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 32  [0x180d1c970]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e4bd4  [0x105118bd4]
+    +                       ! : 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e6490  [0x10511a490]
+    +                       ! :   1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x200c88  [0x105134c88]
+    +                       ! :     1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1f4768  [0x105128768]
+    +                       ! 1 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e21e4  [0x1051161e4]
+    +                       2 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3c6be8  [0x1052fabe8]
+    +                         1 _free  (in libsystem_malloc.dylib) + 0  [0x180d2ccd0]
+    +                         1 _xzm_free  (in libsystem_malloc.dylib) + 996  [0x180d1d4fc]
+    272 Thread_12271564: tokio-rt-worker
+    + 272 thread_start  (in libsystem_pthread.dylib) + 8  [0x180efbc1c]
+    +   272 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x180f00c58]
+    +     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3ff0b4  [0x1053330b4]
+    +       272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x43ecec  [0x105372cec]
+    +         272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x461fc8  [0x105395fc8]
+    +           272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x45d790  [0x105391790]
+    +             272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x43cde8  [0x105370de8]
+    +               272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x443858  [0x105377858]
+    +                 272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x44917c  [0x10537d17c]
+    +                   272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x451d74  [0x105385d74]
+    +                     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x452fb8  [0x105386fb8]
+    +                       272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4483f8  [0x10537c3f8]
+    +                         272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x447958  [0x10537b958]
+    +                           272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x44d64c  [0x10538164c]
+    +                             272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x45fc0c  [0x105393c0c]
+    +                               272 kevent  (in libsystem_kernel.dylib) + 8  [0x180ec2fc4]
+    272 Thread_12271565: tokio-rt-worker
+    + 272 thread_start  (in libsystem_pthread.dylib) + 8  [0x180efbc1c]
+    +   272 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x180f00c58]
+    +     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3ff0b4  [0x1053330b4]
+    +       272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x43ecec  [0x105372cec]
+    +         272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x461fc8  [0x105395fc8]
+    +           272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x45d790  [0x105391790]
+    +             272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x43cde8  [0x105370de8]
+    +               272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x443858  [0x105377858]
+    +                 272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x44917c  [0x10537d17c]
+    +                   272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x451d74  [0x105385d74]
+    +                     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x452fb8  [0x105386fb8]
+    +                       272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4483f8  [0x10537c3f8]
+    +                         272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x447998  [0x10537b998]
+    +                           272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x44debc  [0x105381ebc]
+    +                             272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x82e08  [0x104fb6e08]
+    +                               272 _pthread_cond_wait  (in libsystem_pthread.dylib) + 980  [0x180f01128]
+    +                                 272 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x180ec050c]
+    272 Thread_12271566: tokio-rt-worker
+    + 272 thread_start  (in libsystem_pthread.dylib) + 8  [0x180efbc1c]
+    +   272 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x180f00c58]
+    +     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3ff0b4  [0x1053330b4]
+    +       272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x43ecec  [0x105372cec]
+    +         272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x461fc8  [0x105395fc8]
+    +           272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x45d790  [0x105391790]
+    +             272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x43cde8  [0x105370de8]
+    +               272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x443858  [0x105377858]
+    +                 272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x44917c  [0x10537d17c]
+    +                   272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x451d74  [0x105385d74]
+    +                     272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x452fb8  [0x105386fb8]
+    +                       272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4483f8  [0x10537c3f8]
+    +                         272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x447998  [0x10537b998]
+    +                           272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x44debc  [0x105381ebc]
+    +                             272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x82e08  [0x104fb6e08]
+    +                               272 _pthread_cond_wait  (in libsystem_pthread.dylib) + 980  [0x180f01128]
+    +                                 272 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x180ec050c]
+    272 Thread_12271567: tokio-rt-worker
+      272 thread_start  (in libsystem_pthread.dylib) + 8  [0x180efbc1c]
+        272 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x180f00c58]
+          272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3ff0b4  [0x1053330b4]
+            272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x43ecec  [0x105372cec]
+              272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x461fc8  [0x105395fc8]
+                272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x45d790  [0x105391790]
+                  272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x43cde8  [0x105370de8]
+                    272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x443858  [0x105377858]
+                      272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x44917c  [0x10537d17c]
+                        272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x451d74  [0x105385d74]
+                          272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x452fb8  [0x105386fb8]
+                            272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4483f8  [0x10537c3f8]
+                              272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x447998  [0x10537b998]
+                                272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x44debc  [0x105381ebc]
+                                  272 ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x82e08  [0x104fb6e08]
+                                    272 _pthread_cond_wait  (in libsystem_pthread.dylib) + 980  [0x180f01128]
+                                      272 __psynch_cvwait  (in libsystem_kernel.dylib) + 8  [0x180ec050c]
+
+Total number in stack (recursive counted multiple, when >=5):
+        11       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e608c  [0x10511a08c]
+        8       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]
+        7       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fac  [0x105119fac]
+        7       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65af80  [0x10558ef80]
+        7       _platform_memcmp  (in libsystem_platform.dylib) + 0  [0x180f07f10]
+        7       _platform_memmove  (in libsystem_platform.dylib) + 0  [0x180f0a360]
+        7       _xzm_free  (in libsystem_malloc.dylib) + 0  [0x180d1d118]
+        6       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ec5a0  [0x1051205a0]
+        6       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4ec  [0x104f7e4ec]
+        5       <deduplicated_symbol>  (in libsystem_malloc.dylib) + 0  [0x180d1c15c]
+        5       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1ccfc8  [0x105100fc8]
+        5       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x1e5fd8  [0x105119fd8]
+        5       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x3ff0b4  [0x1053330b4]
+        5       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaa8  [0x104f7eaa8]
+        5       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaf8  [0x104f7eaf8]
+        5       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abb4  [0x104f7ebb4]
+        5       ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x65b608  [0x10558f608]
+        5       _pthread_start  (in libsystem_pthread.dylib) + 136  [0x180f00c58]
+        5       thread_start  (in libsystem_pthread.dylib) + 8  [0x180efbc1c]
+
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        816
+        kevent  (in libsystem_kernel.dylib)        272
+        semaphore_timedwait_trap  (in libsystem_kernel.dylib)        272
+        pread  (in libsystem_kernel.dylib)        15
+        ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4dc  [0x104f7e4dc]        13
+        _platform_memcmp  (in libsystem_platform.dylib)        8
+        _platform_memmove  (in libsystem_platform.dylib)        8
+        ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4a4ec  [0x104f7e4ec]        7
+        _xzm_free  (in libsystem_malloc.dylib)        7
+        ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4ac0c  [0x104f7ec0c]        6
+        <deduplicated_symbol>  (in libsystem_malloc.dylib)        5
+        ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaa8  [0x104f7eaa8]        5
+        ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4aaf8  [0x104f7eaf8]        5
+        ???  (in speedrund-714949aff824cb79)  load address 0x104f34000 + 0x4abb4  [0x104f7ebb4]        5
+
+Binary Images:
+       0x104f34000 -        0x1057a55ab +speedrund-714949aff824cb79 (0) <D49977A6-4B6E-3D23-B8E9-6CB71C6C31BE> /Volumes/*/speedrund-714949aff824cb79
+       0x180a8c000 -        0x180adeb4b  libobjc.A.dylib (951.7) <1D62B376-2303-376A-B993-9432A2004EB6> /usr/lib/libobjc.A.dylib
+       0x180adf000 -        0x180b14115  libdyld.dylib (1387.2) <41529082-1172-3CFC-8ADF-A682ABE693F8> /usr/lib/system/libdyld.dylib
+       0x180b15000 -        0x180bc8523  dyld (1.0.0 - 1387.2) <E6C09B79-51FC-3D85-AE34-8097A10B126A> /usr/lib/dyld
+       0x180bc9000 -        0x180bcc228  libsystem_blocks.dylib (96) <B33F1440-9364-38E4-AF85-8A21BFF24324> /usr/lib/system/libsystem_blocks.dylib
+       0x180bcd000 -        0x180c2155f  libxpc.dylib (3102.160.5) <325B7B6F-A547-30B6-9417-94915D72B91E> /usr/lib/system/libxpc.dylib
+       0x180c22000 -        0x180c42a1f  libsystem_trace.dylib (1861.160.4.700.1) <CFC3D51E-6886-3520-9DCB-C11E276E416D> /usr/lib/system/libsystem_trace.dylib
+       0x180c43000 -        0x180cf16b7  libcorecrypto.dylib (1922.160.10.700.1) <1AB30A65-3FE6-3A5A-9078-796D9D590B7C> /usr/lib/system/libcorecrypto.dylib
+       0x180cf2000 -        0x180d42257  libsystem_malloc.dylib (812.160.5) <BE7DCE21-9656-3C9E-9B8A-A26D090CAEC3> /usr/lib/system/libsystem_malloc.dylib
+       0x180d43000 -        0x180d8a23f  libdispatch.dylib (1542.160.2) <80E75F3F-333F-38A8-A3DD-6279FCDB771B> /usr/lib/system/libdispatch.dylib
+       0x180d8b000 -        0x180d8dffb  libsystem_featureflags.dylib (103) <5725BCFE-07F3-3629-9B44-551A435E2DE2> /usr/lib/system/libsystem_featureflags.dylib
+       0x180d8e000 -        0x180e0f1e7  libsystem_c.dylib (1752.160.4) <3498CA79-EF40-3587-AD44-75187CEE7D95> /usr/lib/system/libsystem_c.dylib
+       0x180e10000 -        0x180ea0ae7  libc++.1.dylib (2100.43) <D6EADBE3-BA0C-3862-B84A-3B907CF4641C> /usr/lib/libc++.1.dylib
+       0x180ea1000 -        0x180ebb75f  libc++abi.dylib (2100.43) <9106CD43-009C-3B85-8FC5-9CE451DC5B78> /usr/lib/libc++abi.dylib
+       0x180ebc000 -        0x180ef92f7  libsystem_kernel.dylib (12377.161.15.701.39) <1849F3F1-9113-37D6-AC40-1CC9376E69E3> /usr/lib/system/libsystem_kernel.dylib
+       0x180efa000 -        0x180f06b3b  libsystem_pthread.dylib (539.100.4) <275D7230-23C1-32EF-B22B-14F61E30AA89> /usr/lib/system/libsystem_pthread.dylib
+       0x180f07000 -        0x180f0f963  libsystem_platform.dylib (375.120.2) <3AF14164-15FE-3623-9EE3-46DE29FD5B5A> /usr/lib/system/libsystem_platform.dylib
+       0x180f10000 -        0x180f3f6eb  libsystem_info.dylib (600) <0037F576-2C50-36F0-9F36-6CB7A049D5B1> /usr/lib/system/libsystem_info.dylib
+       0x180f40000 -        0x18149e91f  com.apple.CoreFoundation (6.9 - 5026.6.7.5) <B2F25C03-6973-348A-B6B0-9718FDFDD0F7> /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+       0x18149f000 -        0x1817ba1df  com.apple.LaunchServices (1141.1 - 1141.1) <14D3442C-6B74-3243-A5F5-4B1A43E230D7> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices
+       0x1817bb000 -        0x1819a395f  com.apple.gpusw.MetalTools (1.0 - 1) <043F380D-30C6-36A2-82BE-662A81C2FFCF> /System/Library/PrivateFrameworks/MetalTools.framework/Versions/A/MetalTools
+       0x1819a4000 -        0x18219e4bf  libBLAS.dylib (1551.160.2) <6EE5A2F5-FD5B-3E70-89AD-B95619151E6A> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib
+       0x18219f000 -        0x1822ae35f  com.apple.Lexicon-framework (1.0 - 195.12) <70AAFCA7-1C2B-3B78-8216-0AA90B6D28FE> /System/Library/PrivateFrameworks/Lexicon.framework/Versions/A/Lexicon
+       0x1822af000 -        0x18241e38f  libSparse.dylib (184.160.6) <B6E32C5B-3FA9-3A13-AB9A-D415447257A2> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libSparse.dylib
+       0x18241f000 -        0x1824b210f  com.apple.SystemConfiguration (1.21 - 1.21) <A6E634C1-2104-3A1F-90E5-48100F18B457> /System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration
+       0x1824b3000 -        0x1824e757b  libCRFSuite.dylib (55) <873D36B8-2B8A-36DA-9180-E4299BB87E58> /usr/lib/libCRFSuite.dylib
+       0x1827b0000 -        0x1837967ff  com.apple.Foundation (6.9 - 5026.6.7.5) <AA7B4CDE-3032-3B19-ADB5-36D8FAECB577> /System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+       0x183947000 -        0x183a67cbf  com.apple.CoreDisplay (291.4 - 291.4) <A4C3C371-4631-378D-B1FF-712FAC46B075> /System/Library/Frameworks/CoreDisplay.framework/Versions/A/CoreDisplay
+       0x183a68000 -        0x183e2b03f  com.apple.audio.AudioToolboxCore (1.0 - 1556.709.1) <4C2B7287-C558-3CC5-B976-536FD083C70D> /System/Library/PrivateFrameworks/AudioToolboxCore.framework/Versions/A/AudioToolboxCore
+       0x183e2c000 -        0x184055ebf  com.apple.CoreText (877.20.0.2 - 877.20.0.2) <8ED93F4B-FBF9-35FD-BA37-C495B714D34C> /System/Library/Frameworks/CoreText.framework/Versions/A/CoreText
+       0x184056000 -        0x1847ebe1f  com.apple.audio.CoreAudio (5.0 - 5.0) <C7F6CF83-C75D-330F-A1D8-B8319CFEA360> /System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio
+       0x1847ec000 -        0x184c0b2bf  com.apple.security (7.0 - 61901.160.44.702.8) <5C38AF2C-49B2-3A66-A929-63E4AD9BA540> /System/Library/Frameworks/Security.framework/Versions/A/Security
+       0x184c0c000 -        0x184ee1d53  libicucore.A.dylib (76142.5.2.1) <5D454926-981F-3A3D-8FAB-558E6A32AC3D> /usr/lib/libicucore.A.dylib
+       0x184ee2000 -        0x184eebe5f  libsystem_darwin.dylib (1752.160.4) <B808D04B-2798-36C9-96F6-35534BDFCF11> /usr/lib/system/libsystem_darwin.dylib
+       0x184eec000 -        0x1851e3cbf  com.apple.CoreServices.CarbonCore (1333 - 1333) <627D09C4-40F0-310F-AB12-AA419CA9598E> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/CarbonCore.framework/Versions/A/CarbonCore
+       0x1851e4000 -        0x185223f47  com.apple.CoreServicesInternal (505 - 505) <1E89146A-9C2B-3038-B14B-28AC5CEB88CA> /System/Library/PrivateFrameworks/CoreServicesInternal.framework/Versions/A/CoreServicesInternal
+       0x185224000 -        0x1852631bf  com.apple.CSStore (1141.1 - 1141.1) <51135C8A-1337-3C0A-AAEB-614DB7A078A7> /System/Library/PrivateFrameworks/CoreServicesStore.framework/Versions/A/CoreServicesStore
+       0x185264000 -        0x18534c45f  com.apple.framework.IOKit (2.0.2 - 100231.120.3.700.1) <9FC2A9C3-D42A-3F75-98C7-43056A00B309> /System/Library/Frameworks/IOKit.framework/Versions/A/IOKit
+       0x18534d000 -        0x18535f1b6  libsystem_notify.dylib (348.160.3) <922BDCF4-CD33-3EEB-BC56-9DCAE54F8F65> /usr/lib/system/libsystem_notify.dylib
+       0x186c9c000 -        0x186cb23ff  com.apple.UniformTypeIdentifiers (709 - 709) <8E9C5B77-B3E3-3DB1-AD44-7D4D9ADE4268> /System/Library/Frameworks/UniformTypeIdentifiers.framework/Versions/A/UniformTypeIdentifiers
+       0x187193000 -        0x18726b95f  libboringssl.dylib (532.120.8) <9E353411-12D4-3350-A74D-FA71B482268F> /usr/lib/libboringssl.dylib
+       0x18726c000 -        0x1876211df  com.apple.CFNetwork (1.0 - 3860.700.1) <CD5A79B8-A638-35CD-A628-0D4AC9DB7C44> /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork
+       0x187622000 -        0x18763cf7b  libsystem_networkextension.dylib (2226.161.1.700.2) <83F224A4-40C4-3106-A97B-788D1D961DCB> /usr/lib/system/libsystem_networkextension.dylib
+       0x18763d000 -        0x18763e067  libenergytrace.dylib (23) <1A584316-EEC8-3137-8BA7-AFBE50DF5883> /usr/lib/libenergytrace.dylib
+       0x18763f000 -        0x1876be8ff  libMobileGestalt.dylib (1484.120.3.700.1) <51F2CE76-A7FE-3DF4-B0CA-91082CD39031> /usr/lib/libMobileGestalt.dylib
+       0x1876bf000 -        0x1876d6fdf  libsystem_asl.dylib (406) <FF6BE113-1093-3D23-8A55-E0A5B327CA8E> /usr/lib/system/libsystem_asl.dylib
+       0x1876d7000 -        0x1876fa797  com.apple.TCC (1.0 - 1) <3BC4BFE7-2666-3BA0-BEEB-550EBB717692> /System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC
+       0x1876fb000 -        0x187cb25ff  com.apple.SkyLight (1.600.0 - 922.13.4.2) <7B47BD3C-A139-3EAD-A4CA-175E0CE96AC6> /System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight
+       0x187cb3000 -        0x188409a7f  com.apple.CoreGraphics (2.0 - 1965.7.1) <6568C977-06EC-311F-85C0-75E917BDE485> /System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics
+       0x18840a000 -        0x1885b1b8b  com.apple.ColorSync (4.13.0 - 3813.5.1) <505BFEDB-09C2-37BB-968E-7CAA06F0D5D9> /System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync
+       0x188a06000 -        0x188df3f5f  com.apple.CoreData (120 - 1526) <2FBB5AF7-3927-38EC-BFD7-C0BB933103A6> /System/Library/Frameworks/CoreData.framework/Versions/A/CoreData
+       0x188df4000 -        0x188e0fddf  com.apple.ProtocolBuffer (1 - 310.26.4.23.2) <9EB0D65A-5174-3FA7-A474-35840A32C519> /System/Library/PrivateFrameworks/ProtocolBuffer.framework/Versions/A/ProtocolBuffer
+       0x188e10000 -        0x188ff8a2f  libsqlite3.dylib (382) <FA81FC7D-A418-36C7-80DC-F23D6D66D852> /usr/lib/libsqlite3.dylib
+       0x189096000 -        0x18918749f  com.apple.BaseBoard (732.1.1 - 732.1.1) <16B60505-4069-32A1-8D6A-D08F6306E261> /System/Library/PrivateFrameworks/BaseBoard.framework/Versions/A/BaseBoard
+       0x189188000 -        0x1891f3d5f  com.apple.RunningBoardServices (1.0 - 1015.160.2.0.1) <F4FC015F-2319-3F10-B3F4-E05231B26657> /System/Library/PrivateFrameworks/RunningBoardServices.framework/Versions/A/RunningBoardServices
+       0x1891f4000 -        0x189268c27  com.apple.AE (944 - 944) <899C2106-A1CB-3DE7-B994-2F93EF59E4D3> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/AE.framework/Versions/A/AE
+       0x189269000 -        0x18927ad87  libdns_services.dylib (2881.160.4.703.1) <8880DD48-4FB8-3A55-A625-4CB0494E81F9> /usr/lib/libdns_services.dylib
+       0x18927b000 -        0x189283387  libsystem_symptoms.dylib (2169.160.3.701.1) <7F0D4E31-268A-3EBB-8A2C-30CCC771A5A5> /usr/lib/system/libsystem_symptoms.dylib
+       0x189284000 -        0x18aaa129f  com.apple.Network (1.0 - 5812.160.9) <AC1376FE-23EB-3B99-AC45-655FE7FCEAFB> /System/Library/Frameworks/Network.framework/Versions/A/Network
+       0x18aaa2000 -        0x18aad1ddf  com.apple.analyticsd (1.0 - 1) <65EDCDA0-8FC3-3709-8AEB-B167115B6D72> /System/Library/PrivateFrameworks/CoreAnalytics.framework/Versions/A/CoreAnalytics
+       0x18aad2000 -        0x18aad38bb  libDiagnosticMessagesClient.dylib (113) <64AEDF19-F2F6-3E92-9396-711FD9E2D7AF> /usr/lib/libDiagnosticMessagesClient.dylib
+       0x18aad4000 -        0x18ab4037f  com.apple.spotlight.metadata.utilities (1.0 - 2418.6.3.9.403) <B0A092C0-436D-31A4-9C54-101D368A9E04> /System/Library/PrivateFrameworks/MetadataUtilities.framework/Versions/A/MetadataUtilities
+       0x18ab41000 -        0x18abccb5f  com.apple.Metadata (26.7 - 2418.6.3.9.403) <A29522C0-C5AE-37FB-80E0-79A6A974095B> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Metadata
+       0x18abcd000 -        0x18abd61eb  com.apple.DiskArbitration (2.7 - 2.7) <B3365165-E7DF-3201-A0DE-48B6E34D88C6> /System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration
+       0x18abd7000 -        0x18affb06b  com.apple.vImage (8.1 - 632.120.2.703.1) <BD29625A-11B1-3FA4-89B1-F27E39938DB6> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vImage.framework/Versions/A/vImage
+       0x18affc000 -        0x18b411e3f  com.apple.QuartzCore (1195.17.2 - 1195.17.2) <2FAA9A91-EEA8-365A-BBCB-DB91B7D24428> /System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore
+       0x18b412000 -        0x18b462cdf  libFontRegistry.dylib (408.20.0.2) <E697F2AF-E225-3F97-8296-3A072D5D3ABB> /System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATS.framework/Versions/A/Resources/libFontRegistry.dylib
+       0x18b729000 -        0x18b736aff  com.apple.OpenDirectory (26.7 - 666.100.1) <EE34C95B-B8B1-3474-A65B-1165278BCFD5> /System/Library/Frameworks/OpenDirectory.framework/Versions/A/OpenDirectory
+       0x18b737000 -        0x18b76027f  com.apple.CFOpenDirectory (26.7 - 666.100.1) <DC8CA2D2-E02B-3213-9B1C-9258AE624122> /System/Library/Frameworks/OpenDirectory.framework/Versions/A/Frameworks/CFOpenDirectory.framework/Versions/A/CFOpenDirectory
+       0x18b761000 -        0x18b76d91b  com.apple.CoreServices.FSEvents (1413.160.2 - 1413.160.2) <5A74D8B7-D870-39AA-863D-8718B69C3A87> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/FSEvents
+       0x18b76e000 -        0x18b7970df  com.apple.coreservices.SharedFileList (225 - 225) <5118BC7D-EA1E-3AA0-9A5D-EC4CDE67EC7C> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SharedFileList.framework/Versions/A/SharedFileList
+       0x18b798000 -        0x18b79b08f  libapp_launch_measurement.dylib (17) <8AE2A6D2-B312-36E9-8502-794BC2B1A538> /usr/lib/libapp_launch_measurement.dylib
+       0x18b79c000 -        0x18b7e49bf  com.apple.CoreAutoLayout (1.0 - 34) <6262E250-0A98-3E16-9062-8AD09CB13AEA> /System/Library/PrivateFrameworks/CoreAutoLayout.framework/Versions/A/CoreAutoLayout
+       0x18b7e5000 -        0x18b8cb3c3  libxml2.2.dylib (39.10.3) <BF2CA321-CA82-3E59-B87D-F7709F4F1BF9> /usr/lib/libxml2.2.dylib
+       0x18b8cc000 -        0x18b94cbbf  com.apple.CoreVideo (1.8 - 0.0) <97D8F3BE-3618-3D1C-B091-6F58BE12FAD1> /System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo
+       0x18b94d000 -        0x18b94ff5f  com.apple.loginsupport (3.0 - 264.4.2.100) <39085810-317C-3ABB-B56D-833012AB10C7> /System/Library/PrivateFrameworks/login.framework/Versions/A/Frameworks/loginsupport.framework/Versions/A/loginsupport
+       0x18b98e000 -        0x18b9ba65f  com.apple.UserManagement (1.0 - 1) <3AEEBF7E-995F-3330-82F5-343757443A29> /System/Library/PrivateFrameworks/UserManagement.framework/Versions/A/UserManagement
+       0x18d520000 -        0x18d558373  libsystem_containermanager.dylib (725.160.3.701.2) <1207D51D-2B9C-3B08-91DA-99A9D0394312> /usr/lib/system/libsystem_containermanager.dylib
+       0x18d559000 -        0x18d57525f  com.apple.IOSurface (393.5.11 - 393.5.11) <2F33717F-081B-39EF-8A1A-657F4F8DA9D5> /System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface
+       0x18d576000 -        0x18d58005f  com.apple.IOAccelerator (487.4.4 - 487.4.4) <5C447D86-369F-3F58-91C9-1EBDC4A04317> /System/Library/PrivateFrameworks/IOAccelerator.framework/Versions/A/IOAccelerator
+       0x18d581000 -        0x18d85b03f  com.apple.Metal (373.7.1 - 373.7.1) <3A740C13-7B05-3A5E-91BB-898CF2CA0CF4> /System/Library/Frameworks/Metal.framework/Versions/A/Metal
+       0x18d85c000 -        0x18d8853ff  com.apple.audio.caulk (1.0 - 214.701.1) <17D94B6F-C622-36F7-B775-2FE1F8A749B8> /System/Library/PrivateFrameworks/caulk.framework/Versions/A/caulk
+       0x18d886000 -        0x18da2777f  com.apple.CoreMedia (1.0 - 3330.13.105.2) <148DDDF5-5F2F-3A69-B0F7-7A64651648E5> /System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia
+       0x18da28000 -        0x18dcf74df  libFontParser.dylib (435.20.0.2) <56FA4653-4CB3-3075-AFD8-E58E3F188DD9> /System/Library/PrivateFrameworks/FontServices.framework/libFontParser.dylib
+       0x18e04d000 -        0x18e38df1f  com.apple.ImageIO (3.3.0 - 2784.6.4) <BEFD16FA-4E97-333B-8399-5AE054935A86> /System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO
+       0x18e38e000 -        0x18e878fbf  com.apple.CoreImage (19.0.0 - 1592.120.3) <DA3BA20E-EB50-3F7E-BB0B-CCCE7B5BA0B0> /System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage
+       0x18e879000 -        0x18e932ddf  com.apple.MetalPerformanceShaders.MPSCore (1.0 - 1) <FABD97E7-2A5C-392E-B1E1-E2CBA3431CBE> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSCore.framework/Versions/A/MPSCore
+       0x18e933000 -        0x18e9375d7  libsystem_configuration.dylib (1405.160.3.702.2) <2B64BA6F-6B26-3743-A977-D485645E6408> /usr/lib/system/libsystem_configuration.dylib
+       0x18e938000 -        0x18e93e99f  libsystem_sandbox.dylib (2680.160.6.701.1) <48D7EC25-49F3-3557-B08C-58CBF6A9495B> /usr/lib/system/libsystem_sandbox.dylib
+       0x18e93f000 -        0x18e94017f  com.apple.AggregateDictionary (1.0 - 1) <39320E6E-C885-325A-8E05-46299431F631> /System/Library/PrivateFrameworks/AggregateDictionary.framework/Versions/A/AggregateDictionary
+       0x18e941000 -        0x18e9454d3  com.apple.AppleSystemInfo (3.1.5 - 3.1.5) <FAB4C56B-86C3-3C4F-9C94-5424C8E5D7BA> /System/Library/PrivateFrameworks/AppleSystemInfo.framework/Versions/A/AppleSystemInfo
+       0x18e946000 -        0x18e94746b  liblangid.dylib (140) <37329BE8-053E-3997-8524-36DED44A3154> /usr/lib/liblangid.dylib
+       0x18e948000 -        0x18ea6745f  com.apple.CoreNLP (1.0 - 313) <8802B6CC-FE07-3F24-952B-D15B69928565> /System/Library/PrivateFrameworks/CoreNLP.framework/Versions/A/CoreNLP
+       0x18ea68000 -        0x18ea6e91f  com.apple.LinguisticData (1.0 - 483.10) <D9E92919-75FB-3FCF-928F-D8DDA620043F> /System/Library/PrivateFrameworks/LinguisticData.framework/Versions/A/LinguisticData
+       0x18ea6f000 -        0x18faf741f  libBNNS.dylib (1961.160.8) <28C22990-4E65-3B92-9292-CF67F93C7F18> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBNNS.dylib
+       0x18faf8000 -        0x18fc3546f  libvDSP.dylib (1126.160.2) <C4F25F56-4542-3369-92FE-E409CB6EE179> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libvDSP.dylib
+       0x18fc6a000 -        0x18fca3267  com.apple.IOMobileFramebuffer (343.0.0 - 343.0.0) <14AEC59B-4CC9-38DD-94D2-97394850F31B> /System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/Versions/A/IOMobileFramebuffer
+       0x18fe9c000 -        0x18feb36df  com.apple.MobileKeyBag (2.0 - 1.0) <0D9D9B47-D981-398D-84D1-D6AA2FCAF55C> /System/Library/PrivateFrameworks/MobileKeyBag.framework/Versions/A/MobileKeyBag
+       0x18feb4000 -        0x18fec20ff  com.apple.AssertionServices (1.0 - 1015.160.2.0.1) <D0A8C0DC-60DA-35BC-BDC5-AFF3790C77DD> /System/Library/PrivateFrameworks/AssertionServices.framework/Versions/A/AssertionServices
+       0x18fec3000 -        0x18ff55a9f  com.apple.securityfoundation (6.0 - 55293) <2AE0DB08-8817-3F9F-AA93-D41EEDC3745D> /System/Library/Frameworks/SecurityFoundation.framework/Versions/A/SecurityFoundation
+       0x18ff56000 -        0x18ff872ff  com.apple.coreservices.BackgroundTaskManagement (1.0 - 104) <C2ACE084-54F8-3A3A-AFE2-7383EEA19575> /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Versions/A/BackgroundTaskManagement
+       0x18ff93000 -        0x18ff961db  libquarantine.dylib (196.160.2.701.3) <DA61E1C2-CAC1-3573-84F7-C90BB204A615> /usr/lib/system/libquarantine.dylib
+       0x18ff97000 -        0x18ffa22bf  libCheckFix.dylib (33) <A873D376-4A28-389E-A479-159368FA8677> /usr/lib/libCheckFix.dylib
+       0x18ffa3000 -        0x18ffba7ab  libcoretls.dylib (187.100.3) <7642E799-417C-3426-BAB5-A863F45A30DF> /usr/lib/libcoretls.dylib
+       0x18ffbb000 -        0x18ffcc283  libbsm.0.dylib (90.0.0.700.1) <5B8E3D58-E197-3BE9-86F4-592423C4185D> /usr/lib/libbsm.0.dylib
+       0x18ffcd000 -        0x19002bc6b  libmecab.dylib (1121.5.1) <769E7E5E-AF33-3330-AD25-CBEB2D10E86B> /usr/lib/libmecab.dylib
+       0x19002c000 -        0x19002e41b  libgermantok.dylib (31) <C45F456C-A003-3694-B594-57E6E4F5474A> /usr/lib/libgermantok.dylib
+       0x19002f000 -        0x190042e3f  libLinearAlgebra.dylib (1551.160.2) <676371DF-AF18-3EB9-9D7F-E6C1195FA25F> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libLinearAlgebra.dylib
+       0x190043000 -        0x19029917f  com.apple.MetalPerformanceShaders.MPSNeuralNetwork (1.0 - 1) <9EB78C5E-A8CE-3823-937F-57A90DB73756> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSNeuralNetwork.framework/Versions/A/MPSNeuralNetwork
+       0x19029a000 -        0x1902ee19f  com.apple.MetalPerformanceShaders.MPSRayIntersector (1.0 - 1) <EFC07653-78BA-306E-94D3-059096963931> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSRayIntersector.framework/Versions/A/MPSRayIntersector
+       0x190482000 -        0x1904b357f  com.apple.MetalPerformanceShaders.MPSMatrix (1.0 - 1) <663F51FE-5F4C-3FDE-BB3D-EC3C25B34ED3> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSMatrix.framework/Versions/A/MPSMatrix
+       0x1904b4000 -        0x190683cdf  com.apple.MetalPerformanceShaders.MPSNDArray (1.0 - 1) <FAB67990-E231-3BAC-8143-DC1AE2540844> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSNDArray.framework/Versions/A/MPSNDArray
+       0x190684000 -        0x1907181df  com.apple.MetalPerformanceShaders.MPSImage (1.0 - 1) <84CA337F-E405-3BFA-AFEC-5230D99DFBA6> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSImage.framework/Versions/A/MPSImage
+       0x190719000 -        0x1907244c3  com.apple.AppleFSCompression (174.160.2 - 1.0) <AA26A8B3-4029-3ECA-A4F7-2DD6F3562DD2> /System/Library/PrivateFrameworks/AppleFSCompression.framework/Versions/A/AppleFSCompression
+       0x190725000 -        0x1907310a3  libbz2.1.0.dylib (49) <0824081F-39D6-33E2-94B8-C33B231C81FF> /usr/lib/libbz2.1.0.dylib
+       0x190732000 -        0x190738d03  libsystem_coreservices.dylib (191.5.1) <BF51842C-BC69-3725-9EB2-7A52804963F8> /usr/lib/system/libsystem_coreservices.dylib
+       0x190739000 -        0x19076aadf  com.apple.CoreServices.OSServices (1141.1 - 1141.1) <160540F1-8C4C-3251-AAAA-761D92FAC5A0> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/OSServices.framework/Versions/A/OSServices
+       0x190cb2000 -        0x190cc0d97  libz.1.dylib (100.120.1) <E4DB2DC8-3F00-308A-BFB5-65F71CB7D0D1> /usr/lib/libz.1.dylib
+       0x190cc1000 -        0x190cfea77  libsystem_m.dylib (3312.100.1) <E1EEE243-AA66-3CE8-8648-B4E2CD10589D> /usr/lib/system/libsystem_m.dylib
+       0x190cff000 -        0x190cffc9b  libcharset.1.dylib (115.120.2) <A2E8DF49-5A82-3DB3-88A1-D8E1B6516F8B> /usr/lib/libcharset.1.dylib
+       0x190d00000 -        0x190d03527  libmacho.dylib (1387.2) <A482169A-B97C-30E5-8A3A-2E98DFBA74E7> /usr/lib/system/libmacho.dylib
+       0x190d04000 -        0x190d1cdc3  libkxld.dylib (12377.161.15.701.39) <7EE9F6C0-55BC-3D2D-B14C-29DFB2F43ECB> /usr/lib/system/libkxld.dylib
+       0x190d1d000 -        0x190d2a3a7  libcommonCrypto.dylib (600035) <EBA6E4D0-4DD2-33BB-BF95-48A58591AAAD> /usr/lib/system/libcommonCrypto.dylib
+       0x190d2b000 -        0x190d34ca3  libunwind.dylib (2100.2) <81A35518-53E4-3519-B5BC-AE6A796E9DE1> /usr/lib/system/libunwind.dylib
+       0x190d35000 -        0x190d3c349  liboah.dylib (367.9) <3DBB2990-262D-3776-8FAC-B88C0373DCF0> /usr/lib/liboah.dylib
+       0x190d3d000 -        0x190d47d2b  libcopyfile.dylib (240.160.2.703.1) <16861DD1-EA84-358E-A019-816FB5A69685> /usr/lib/system/libcopyfile.dylib
+       0x190d48000 -        0x190d4b987  libcompiler_rt.dylib (103.3) <65D09B50-BE7D-3491-8547-6B85A3C2216D> /usr/lib/system/libcompiler_rt.dylib
+       0x190d4c000 -        0x190d5078b  libsystem_collections.dylib (1752.160.4) <34CEFA68-1E15-32F2-A5B1-97C0170A77C5> /usr/lib/system/libsystem_collections.dylib
+       0x190d51000 -        0x190d544cf  libsystem_secinit.dylib (168.100.7) <B6B286B6-6E08-3578-8AFC-E4C55697C760> /usr/lib/system/libsystem_secinit.dylib
+       0x190d55000 -        0x190d57bf7  libremovefile.dylib (85.100.6) <33530415-3DB6-3556-A59A-24C22681D632> /usr/lib/system/libremovefile.dylib
+       0x190d58000 -        0x190d58f27  libkeymgr.dylib (31) <AD45B9EE-CE2B-3E1F-B96B-15F7F9FA3712> /usr/lib/system/libkeymgr.dylib
+       0x190d59000 -        0x190d61e3f  libsystem_dnssd.dylib (2881.160.4.703.1) <FC88898F-B148-3CB8-83DE-7CA4DA174B60> /usr/lib/system/libsystem_dnssd.dylib
+       0x190d62000 -        0x190d6709b  libcache.dylib (95) <A13AF0DC-5928-38BE-97FF-E04C29EF96AF> /usr/lib/system/libcache.dylib
+       0x190d68000 -        0x190d69ce3  libSystem.B.dylib (1356) <8A197E38-519D-32D1-9011-49E892FA320D> /usr/lib/libSystem.B.dylib
+       0x190d6a000 -        0x190d6bfcf  libfakelink.dylib (5) <ADE2A84A-0131-36E6-8CE2-BA226701BEF2> /usr/lib/libfakelink.dylib
+       0x190d6c000 -        0x190d6ca33  com.apple.SoftLinking (1.0 - 71) <089D0FBB-10B7-361F-A38A-A987B003185E> /System/Library/PrivateFrameworks/SoftLinking.framework/Versions/A/SoftLinking
+       0x190da2000 -        0x190da92bb  libiconv.2.dylib (115.120.2) <20288349-686B-37CB-9D84-9566FCFFC979> /usr/lib/libiconv.2.dylib
+       0x190dbd000 -        0x190eb4f3f  libarchive.2.dylib (167.160.4) <F1A229FF-C9E3-3103-9DA7-AB7E9F8FEF7A> /usr/lib/libarchive.2.dylib
+       0x190eb5000 -        0x190f1a85b  com.apple.SearchKit (1.4.2 - 1.4.2) <E0FCA8AD-A12E-3EA6-ACAC-C2CFDEBB102D> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SearchKit.framework/Versions/A/SearchKit
+       0x190f1b000 -        0x190f2318f  libThaiTokenizer.dylib (28) <1D881129-7533-3846-9F23-4DB0840FF709> /usr/lib/libThaiTokenizer.dylib
+       0x190f24000 -        0x190f47f37  com.apple.applesauce (1.0 - 17.7) <78071698-F976-3AD1-BB7E-176B11BE1AA5> /System/Library/PrivateFrameworks/AppleSauce.framework/Versions/A/AppleSauce
+       0x190f48000 -        0x190f604ab  libapple_nghttp2.dylib (37.120.3) <24313FDE-140D-3460-AEBC-61E285D22976> /usr/lib/libapple_nghttp2.dylib
+       0x190f61000 -        0x19100a38f  libSparseBLAS.dylib (184.160.6) <1E50E208-E26B-33E1-8425-0325EB493980> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libSparseBLAS.dylib
+       0x19100b000 -        0x19100c63f  com.apple.MetalPerformanceShaders.MetalPerformanceShaders (1.0 - 1) <4B0A0B80-50E5-3439-857C-8AC71D4618F0> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/MetalPerformanceShaders
+       0x19100d000 -        0x191012ff7  libpam.2.dylib (35) <4DD45409-F205-3FBF-832F-22928AE3597A> /usr/lib/libpam.2.dylib
+       0x191013000 -        0x1910e779f  libcompression.dylib (193.120.2.700.1) <84629D51-C95B-3264-9A14-D3219455DF85> /usr/lib/libcompression.dylib
+       0x1910e8000 -        0x1910ec267  libQuadrature.dylib (8) <F9902EDE-5AED-3BCF-BAAD-5CD302E20A6B> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libQuadrature.dylib
+       0x1910ed000 -        0x1922bd94f  libLAPACK.dylib (1551.160.2) <A74A12EE-0D49-30AA-B403-35497BC18889> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libLAPACK.dylib
+       0x1922be000 -        0x1923144ff  com.apple.DictionaryServices (1.2 - 382.0.1) <D548B4D8-EB44-3E08-9874-D97CC53251F6> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/DictionaryServices.framework/Versions/A/DictionaryServices
+       0x192315000 -        0x1923334f7  liblzma.5.dylib (21) <A9563C70-3C72-3504-AAD0-E73E927159C3> /usr/lib/liblzma.5.dylib
+       0x192334000 -        0x19233585f  libcoretls_cfhelpers.dylib (187.100.3) <8288A14F-19BD-3CE1-B758-0AC8C0DBC494> /usr/lib/libcoretls_cfhelpers.dylib
+       0x192336000 -        0x1923a9adb  com.apple.APFS (2811.160.7 - 2811.160.7) <B34E5A78-CE55-3BDD-9AED-2B9531439E0D> /System/Library/PrivateFrameworks/APFS.framework/Versions/A/APFS
+       0x1923aa000 -        0x1923b877b  libxar.1.dylib (503.160.5.701.1) <81DADB5B-B121-3CFE-8314-C97638C39E20> /usr/lib/libxar.1.dylib
+       0x1923b9000 -        0x1923bc79b  libutil.dylib (73) <E3316786-3660-3F3E-A002-6AEBD7A77E20> /usr/lib/libutil.dylib
+       0x1923bd000 -        0x1923e7cbf  libxslt.1.dylib (21.13.2) <23EE1357-FB66-3926-AA35-FE75C28FBD14> /usr/lib/libxslt.1.dylib
+       0x1923f0000 -        0x192469587  libvMisc.dylib (1126.160.2) <8F315B9E-0F99-322E-BDD1-633F97D50765> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libvMisc.dylib
+       0x19246a000 -        0x1924f95df  libate.dylib (3.0.12) <0683FB66-0AFE-3920-A894-65F657D949F3> /usr/lib/libate.dylib
+       0x192503000 -        0x1925161bf  com.apple.CrashReporterSupport (10.13 - 15140) <D8D91D12-DA64-3C6A-9CEF-B80BED29370E> /System/Library/PrivateFrameworks/CrashReporterSupport.framework/Versions/A/CrashReporterSupport
+       0x19265a000 -        0x19269af9f  com.apple.pluginkit.framework (1.0 - 1) <4A67E28C-FAB3-3251-92A6-AB1E2B37F2E9> /System/Library/PrivateFrameworks/PlugInKit.framework/Versions/A/PlugInKit
+       0x192711000 -        0x1927599ff  com.apple.AppleVAFramework (6.2.10 - 6.2.10) <B268BFF8-59AF-3C97-81D1-E20A04A6BCC3> /System/Library/PrivateFrameworks/AppleVA.framework/Versions/A/AppleVA
+       0x19275a000 -        0x192774ccf  libexpat.1.dylib (47) <0D5AE600-87F2-33EA-BD47-481AB0A13960> /usr/lib/libexpat.1.dylib
+       0x192775000 -        0x19277ebfb  libheimdal-asn1.dylib (710.160.4.702.2) <04BD4F63-811C-3862-9426-55F0DB55891C> /usr/lib/libheimdal-asn1.dylib
+       0x19289f000 -        0x192960edf  com.apple.MediaExperience (1.0 - 1) <306FF096-098E-3D44-A8D6-3EFA868BDEBA> /System/Library/PrivateFrameworks/MediaExperience.framework/Versions/A/MediaExperience
+       0x19298e000 -        0x19299d7ff  com.apple.GraphVisualizer (1.0 - 307) <61AD2AE3-BAF5-37FF-A4DD-ED221184E591> /System/Library/PrivateFrameworks/GraphVisualizer.framework/Versions/A/GraphVisualizer
+       0x19299e000 -        0x1929dd6df  com.apple.OTSVG (1.0 - 877.20.0.2) <8D9030D7-22F1-30E4-B872-A23068025E06> /System/Library/PrivateFrameworks/OTSVG.framework/Versions/A/OTSVG
+       0x1929de000 -        0x1929eac7f  com.apple.xpc.AppServerSupport (1.0 - 3102.160.5) <F89F2765-0E4E-332C-98AB-70F34E180885> /System/Library/PrivateFrameworks/AppServerSupport.framework/Versions/A/AppServerSupport
+       0x1929eb000 -        0x1929f1abf  libspindump.dylib (419.11) <EA01F4F5-5B53-3199-821A-2C40EAEA51A9> /usr/lib/libspindump.dylib
+       0x1929f2000 -        0x192ab2ebf  com.apple.Heimdal (4.0 - 2.0) <77B7D169-4425-3864-8373-661F5687FBF9> /System/Library/PrivateFrameworks/Heimdal.framework/Versions/A/Heimdal
+       0x192d81000 -        0x192dc56ef  com.apple.AppleJPEG (1.0 - 1) <861A310F-68FB-393B-898B-BAADAEE2366D> /System/Library/PrivateFrameworks/AppleJPEG.framework/Versions/A/AppleJPEG
+       0x192dc6000 -        0x192f8692f  libJP2.dylib (2784.6.6) <D6771749-026F-303A-B7AF-8453B1930124> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libJP2.dylib
+       0x192f87000 -        0x192f88e1f  com.apple.WatchdogClient.framework (1.0 - 333) <7D66C07A-4E1F-3516-B662-FA18CC4128A5> /System/Library/PrivateFrameworks/WatchdogClient.framework/Versions/A/WatchdogClient
+       0x192f89000 -        0x192fced7f  com.apple.MultitouchSupport.framework (9461.1 - 9461.1) <3CB6DEE3-1A16-3AC9-8092-7403573A7F33> /System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/A/MultitouchSupport
+       0x192fcf000 -        0x19352537f  com.apple.VideoToolbox (1.0 - 3330.13.105.2) <BC0EC514-ED6C-3069-8F1F-71A3CC7E3506> /System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox
+       0x193526000 -        0x19354b20f  libAudioToolboxUtility.dylib (1556.709.1) <B0248522-B096-349B-A8D7-9F21C9247690> /usr/lib/libAudioToolboxUtility.dylib
+       0x19354c000 -        0x19357601f  libPng.dylib (2784.6.6) <8D855916-D266-3546-AC25-13F40BDE4916> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libPng.dylib
+       0x193577000 -        0x1935d7b63  libTIFF.dylib (2784.6.6) <E93D2259-A6F8-3FEB-819A-4EFEBF4AD71D> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libTIFF.dylib
+       0x1935d8000 -        0x1935f7257  com.apple.IOPresentment (67 - 67) <99734842-0D43-382B-B159-9BE7FAB2D49A> /System/Library/PrivateFrameworks/IOPresentment.framework/Versions/A/IOPresentment
+       0x1935f8000 -        0x1935fc7d3  com.apple.GPUWrangler (8.1.12 - 8.1.12) <6C088EE9-4EE0-35A1-860C-BE519A252A46> /System/Library/PrivateFrameworks/GPUWrangler.framework/Versions/A/GPUWrangler
+       0x1935fd000 -        0x1935ff913  libRadiance.dylib (2784.6.6) <DF198A7A-E7B5-3D02-81A1-2242FED93374> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libRadiance.dylib
+       0x193600000 -        0x1936052f3  com.apple.DSExternalDisplay (3.1 - 380) <5E80DD55-2D45-3BA7-A06F-19F9F2CC5A36> /System/Library/PrivateFrameworks/DSExternalDisplay.framework/Versions/A/DSExternalDisplay
+       0x193606000 -        0x193630baf  libJPEG.dylib (2784.6.6) <A41EB50C-F1E5-3462-B685-5A3B166F0DAF> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libJPEG.dylib
+       0x19365f000 -        0x1936649fb  libGIF.dylib (2784.6.6) <0A2ACF07-8A0B-3A24-8908-CEE660E2240B> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libGIF.dylib
+       0x193665000 -        0x19367519f  com.apple.CMCaptureCore (1.0 - 665.140.6) <2CF7294A-CEF4-3972-861B-F64E40EB8CB5> /System/Library/PrivateFrameworks/CMCaptureCore.framework/Versions/A/CMCaptureCore
+       0x1945ee000 -        0x19465c86f  libusrtcp.dylib (5812.160.9) <F09B4A99-0E34-3C89-A238-17DF2AA3DB0C> /usr/lib/libusrtcp.dylib
+       0x19465d000 -        0x194bff7ff  libswiftCore.dylib (6.3.2 - 6.3.2.1.11) <0BA3E214-4DF4-3FA7-8F74-04A52E089710> /usr/lib/swift/libswiftCore.dylib
+       0x194cb3000 -        0x194d0831f  libSessionUtility.dylib (398.701) <FDD6D3AA-4381-361A-98A1-DBFFEB263647> /System/Library/PrivateFrameworks/AudioSession.framework/libSessionUtility.dylib
+       0x194d09000 -        0x194ede41f  com.apple.audio.toolbox.AudioToolbox (1.14 - 1.14) <70081C59-75B8-30B3-939F-79A4E45657CA> /System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox
+       0x194edf000 -        0x194f5fb7f  com.apple.audio.AudioSession (1.0 - 398.701) <CA23DB9F-A36E-3F89-B5E1-58D87D7F5513> /System/Library/PrivateFrameworks/AudioSession.framework/Versions/A/AudioSession
+       0x194f60000 -        0x194f7939f  libAudioStatistics.dylib (262.601) <5C016DB5-65A6-30D6-9ADB-73F306FF1D8C> /usr/lib/libAudioStatistics.dylib
+       0x194ff6000 -        0x19501219b  libresolv.9.dylib (96) <002A6291-6D59-320A-8F15-133FDC398A21> /usr/lib/libresolv.9.dylib
+       0x195013000 -        0x1950257e7  libsasl2.2.dylib (215) <C9C33EA8-88A8-3706-AF1A-3E3812ED7D0B> /usr/lib/libsasl2.2.dylib
+       0x19520e000 -        0x1952ee337  libSMC.dylib (38) <919A3107-895B-39E3-A5B6-3B0A7B665E08> /usr/lib/libSMC.dylib
+       0x19534e000 -        0x19535b257  com.apple.NetAuth (6.2 - 6.2) <D04A8DDE-644C-3B4F-805E-AB87B200A8C1> /System/Library/PrivateFrameworks/NetAuth.framework/Versions/A/NetAuth
+       0x19536a000 -        0x195377b1f  com.apple.perfdata (1.0 - 130) <F9BA8F11-725E-3193-8286-7E511BD9483D> /System/Library/PrivateFrameworks/perfdata.framework/Versions/A/perfdata
+       0x195378000 -        0x195385c9f  libperfcheck.dylib (46) <EBC004E1-7C36-3FB5-B297-75B27297B2BA> /usr/lib/libperfcheck.dylib
+       0x195386000 -        0x195397187  com.apple.Kerberos (3.0 - 1) <61045540-CEE5-3987-AE84-241941A23E70> /System/Library/Frameworks/Kerberos.framework/Versions/A/Kerberos
+       0x195398000 -        0x1953e9b0f  com.apple.GSS (4.0 - 2.0) <FE6C3724-3DFF-35DF-859C-47FFCE66EFF8> /System/Library/Frameworks/GSS.framework/Versions/A/GSS
+       0x1953ea000 -        0x1953fad77  com.apple.CommonAuth (4.0 - 2.0) <1F8FD8D4-F29D-3C46-9C47-E0231FC43DD5> /System/Library/PrivateFrameworks/CommonAuth.framework/Versions/A/CommonAuth
+       0x1953fb000 -        0x1954df05f  com.apple.MobileAssets (1.0 - 1837.160.15) <9F0B80E6-21F3-3B15-A9E6-07C9DC7F92E8> /System/Library/PrivateFrameworks/MobileAsset.framework/Versions/A/MobileAsset
+       0x195572000 -        0x195581160  com.apple.CorePhoneNumbers (1.0 - 1) <B9AF3994-811E-3D50-B2A8-F2BACF6B1205> /System/Library/PrivateFrameworks/CorePhoneNumbers.framework/Versions/A/CorePhoneNumbers
+       0x19715f000 -        0x197252a36  com.apple.combine (1.0 - 3023) <DA7FE337-36D0-3509-BEF3-FA4FEF6A62D0> /System/Library/Frameworks/Combine.framework/Versions/A/Combine
+       0x1994c8000 -        0x1994c886f  com.apple.Accelerate.vecLib (3.11 - vecLib 3.11) <F1350C5C-B09C-3EF6-9FCF-E847AB817D03> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/vecLib
+       0x1994ed000 -        0x1994ed98f  com.apple.CoreServices (1226 - 1226) <67387C93-D477-3C78-A612-2433FE5A6E32> /System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices
+       0x19976c000 -        0x19976c417  com.apple.Accelerate (1.11 - Accelerate 1.11) <82B20638-E09A-3E9D-B8E3-E23242AB7ED0> /System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate
+       0x19a673000 -        0x19a6825df  com.apple.SymptomDiagnosticReporter (1.0 - 411.160.2) <981B22F6-55EC-368E-BBA0-017C639D8174> /System/Library/PrivateFrameworks/SymptomDiagnosticReporter.framework/Versions/A/SymptomDiagnosticReporter
+       0x19a683000 -        0x19a6b125f  com.apple.PowerLog (1.0 - 1) <6B78F2B3-DC0A-392E-A83E-2E9BE9CEC006> /System/Library/PrivateFrameworks/PowerLog.framework/Versions/A/PowerLog
+       0x19a6bf000 -        0x19a7706df  com.apple.DiscRecording (9.0.3 - 9030.4.5) <2A7D1D66-87DF-3183-930C-50158E0B9DC7> /System/Library/Frameworks/DiscRecording.framework/Versions/A/DiscRecording
+       0x19a771000 -        0x19a7a2137  com.apple.MediaKit (16 - 938) <B3A15621-8607-3F44-A416-3DA23BEBD903> /System/Library/PrivateFrameworks/MediaKit.framework/Versions/A/MediaKit
+       0x19b265000 -        0x19b27b950  libswiftDispatch.dylib (1542.160.2) <9B0D7D51-31D3-3DB2-89CE-6F0C8E104E20> /usr/lib/swift/libswiftDispatch.dylib
+       0x19b5c6000 -        0x19b652c3f  com.apple.BoardServices (1.0 - 732.1.1) <5955D381-FC7E-392A-8858-FEA7FC0E9AF5> /System/Library/PrivateFrameworks/BoardServices.framework/Versions/A/BoardServices
+       0x19b693000 -        0x19b6a053f  com.apple.GraphicsServices (1.0 - 1.0) <5C9B67AE-A63C-365C-8B8A-BD8A88112D6C> /System/Library/PrivateFrameworks/GraphicsServices.framework/Versions/A/GraphicsServices
+       0x19b9bd000 -        0x19b9dee9f  com.apple.DebugSymbols (216 - 217) <4BF7AD91-C408-381A-92F3-1B5866048FB6> /System/Library/PrivateFrameworks/DebugSymbols.framework/Versions/A/DebugSymbols
+       0x19b9df000 -        0x19bb3f39f  com.apple.CoreSymbolication (16.0 - 64575.57.1) <2EFA52FB-5B70-3C64-88AA-12B6BB27018C> /System/Library/PrivateFrameworks/CoreSymbolication.framework/Versions/A/CoreSymbolication
+       0x19bb40000 -        0x19bb4a09f  com.apple.CoreTime (334.0.16.3 - 334.0.16.3) <9238EED9-7424-3EBC-BECF-E0F046C4CED2> /System/Library/PrivateFrameworks/CoreTime.framework/Versions/A/CoreTime
+       0x19d49a000 -        0x19d50c7ff  com.apple.BackBoardServices (1.0 - 1.0) <18A604B3-AA79-39B4-AFF8-04C081C70AF9> /System/Library/PrivateFrameworks/BackBoardServices.framework/Versions/A/BackBoardServices
+       0x19d50d000 -        0x19d5484ef  com.apple.LDAPFramework (2.4.28 - 194.5) <1E7E7271-E012-386B-AFE7-9BE89CCB84B1> /System/Library/Frameworks/LDAP.framework/Versions/A/LDAP
+       0x19d549000 -        0x19d54a7b7  com.apple.TrustEvaluationAgent (2.0 - 38) <BA45BC5B-411C-3A7C-8877-385ED817C54E> /System/Library/PrivateFrameworks/TrustEvaluationAgent.framework/Versions/A/TrustEvaluationAgent
+       0x19d678000 -        0x19d73161f  com.apple.DiskImagesFramework (683.160.3.702.1 - 683.160.3.702.1) <7B33CD5A-446F-3856-B72C-299DCA683F63> /System/Library/PrivateFrameworks/DiskImages.framework/Versions/A/DiskImages
+       0x19d772000 -        0x19d78859f  com.apple.RemoteServiceDiscovery (1.0 - 219.160.4) <DF5E83C3-3E3E-39D2-93DA-6789CFE09833> /System/Library/PrivateFrameworks/RemoteServiceDiscovery.framework/Versions/A/RemoteServiceDiscovery
+       0x19d789000 -        0x19d79ec3f  com.apple.xpc.RemoteXPC (1.0 - 3102.160.5) <225AE965-0F8B-3EB4-96AD-167AB032069D> /System/Library/PrivateFrameworks/RemoteXPC.framework/Versions/A/RemoteXPC
+       0x19d833000 -        0x19d8b3f4b  libcurl.4.dylib (168) <830908CA-181D-310C-BABD-F69A3403FC69> /usr/lib/libcurl.4.dylib
+       0x19d8ba000 -        0x19d8fd25f  com.apple.AppSupport (1.0.0 - 29) <40E2D644-CC61-303D-957B-B2AA6D2B6907> /System/Library/PrivateFrameworks/AppSupport.framework/Versions/A/AppSupport
+       0x19dbce000 -        0x19dbd0f3f  com.apple.InternationalTextSearch (1.0 - 1) <0361FEB2-4BCA-343F-8E7F-E6437DE2BA55> /System/Library/PrivateFrameworks/InternationalTextSearch.framework/Versions/A/InternationalTextSearch
+       0x19e1a1000 -        0x19e1a13f7  libHeimdalProxy.dylib (88) <CA1B9BC6-607E-30F0-954F-DA020D8778EC> /System/Library/Frameworks/Kerberos.framework/Versions/A/Libraries/libHeimdalProxy.dylib
+       0x19e1cc000 -        0x19e1eab9f  com.apple.StreamingZip (1.0 - 1) <451AD4D9-F770-366B-A945-3CBA6B42E314> /System/Library/PrivateFrameworks/StreamingZip.framework/Versions/A/StreamingZip
+       0x19e244000 -        0x19e2476bf  libswiftObjectiveC.dylib (951.7) <6EB049B3-1C73-3081-922E-ACC82DDC13DC> /usr/lib/swift/libswiftObjectiveC.dylib
+       0x19e248000 -        0x19e2656ff  libswiftos.dylib (1082) <DCEFDB82-75C6-3C53-B737-5D0EFBDA57CC> /usr/lib/swift/libswiftos.dylib
+       0x19f1af000 -        0x19f23d85f  com.apple.proactive.support.ProactiveSupport (1.0 - 418.1) <A59F1416-C4B2-3C08-A888-C30256A546F7> /System/Library/PrivateFrameworks/ProactiveSupport.framework/Versions/A/ProactiveSupport
+       0x19f33a000 -        0x19f35e29f  com.apple.ASEProcessing (1.55.0 - 1.55.0) <1184392F-FA4B-3DF0-8D7B-6B5B3ED6FE16> /System/Library/PrivateFrameworks/ASEProcessing.framework/Versions/A/ASEProcessing
+       0x1a05be000 -        0x1a068e05f  com.apple.audio.midi.CoreMIDI (2.0 - 88) <A6C180A5-DA05-339C-A4A4-D17F5E44807D> /System/Library/Frameworks/CoreMIDI.framework/Versions/A/CoreMIDI
+       0x1a12d1000 -        0x1a12d575f  com.apple.IOSurfaceAccelerator (1.0.0 - 1.0.0) <940DFE19-71A0-3A5A-BD25-A6F73B82683B> /System/Library/PrivateFrameworks/IOSurfaceAccelerator.framework/Versions/A/IOSurfaceAccelerator
+       0x1a65a2000 -        0x1a65b59ff  com.apple.HID (1.0 - 1) <D50AA033-EC02-3CF3-8268-FC16D2E50F0F> /System/Library/PrivateFrameworks/HID.framework/Versions/A/HID
+       0x1ab198000 -        0x1ab1a729f  com.apple.NetFS (6.0 - 4.0) <D017525F-35EE-33E2-BA22-190DA49901DE> /System/Library/Frameworks/NetFS.framework/Versions/A/NetFS
+       0x1ab6f4000 -        0x1ab6f6707  libswiftDarwin.dylib (377.160.5) <D4F393FF-1E27-3CE7-A1BD-953E3F26F4AA> /usr/lib/swift/libswiftDarwin.dylib
+       0x1ad817000 -        0x1ad9004df  libquic.dylib (5812.160.9) <DC1C6608-D464-3491-8A95-9C0990338A42> /usr/lib/libquic.dylib
+       0x1ad90c000 -        0x1ad934edf  com.apple.private.SystemPolicy (1.0 - 1) <26DF32F1-3261-3DDD-BE2C-E549CF7BCC79> /System/Library/PrivateFrameworks/SystemPolicy.framework/Versions/A/SystemPolicy
+       0x1ae7f1000 -        0x1ae87fc1f  com.apple.LoggingSupport (1.0 - 1861.160.4.700.1) <B67E6479-ED9A-391F-9E53-9BF4A9B4A613> /System/Library/PrivateFrameworks/LoggingSupport.framework/Versions/A/LoggingSupport
+       0x1ae880000 -        0x1ae88cacb  com.apple.MallocStackLogging (1.0 - 65000) <4A6B2663-20AB-3977-BC7B-D2E00AE2081A> /System/Library/PrivateFrameworks/MallocStackLogging.framework/Versions/A/MallocStackLogging
+       0x1ae8b2000 -        0x1ae90cd9f  libmis.dylib (463.160.2) <419770CF-2387-32FF-8B40-C1104BA6884B> /usr/lib/libmis.dylib
+       0x1ae90d000 -        0x1ae910c5f  com.apple.gpusw.GPURawCounter (34 - 34) <55AA8F48-E61D-3062-95AC-BC3B20DD4433> /System/Library/PrivateFrameworks/GPURawCounter.framework/Versions/A/GPURawCounter
+       0x1ae911000 -        0x1ae93087f  libswiftCoreAudio.dylib (411.701.2) <CB63FDC2-EAF2-3FBB-A3C4-295E9E51F7CD> /usr/lib/swift/libswiftCoreAudio.dylib
+       0x1ae931000 -        0x1ae937327  libswiftCoreFoundation.dylib (2411) <F5FC1302-25A3-322E-BF63-308930E8C57B> /usr/lib/swift/libswiftCoreFoundation.dylib
+       0x1ae944000 -        0x1ae990843  libswiftXPC.dylib (128.120.2) <95CE0CC5-C069-3BAE-A3EC-7AA8186BEEF4> /usr/lib/swift/libswiftXPC.dylib
+       0x1ae992000 -        0x1ae9928a3  libswiftIOKit.dylib (1) <23C3D636-B793-3CFE-A510-BA94FCA4A05C> /usr/lib/swift/libswiftIOKit.dylib
+       0x1b09c3000 -        0x1b09fc2c7  libbootpolicy.dylib (289.160.2) <0DAC919B-0009-36B1-8AD0-2BDB098CC76D> /usr/lib/libbootpolicy.dylib
+       0x1b248b000 -        0x1b24a288b  libswiftsimd.dylib (23) <B841C29B-340E-3DFA-8946-585C218C6A0C> /usr/lib/swift/libswiftsimd.dylib
+       0x1b3bb4000 -        0x1b3bbd37f  com.apple.IOAccelMemoryInfo (1.0 - 1) <5794E11C-1FEF-37B9-B347-3315736D625F> /System/Library/PrivateFrameworks/IOAccelMemoryInfo.framework/Versions/A/IOAccelMemoryInfo
+       0x1b5284000 -        0x1b528d0be  libswiftCoreMIDI.dylib (6) <02FA41D4-BAE5-3254-B696-A93A679BFBAA> /usr/lib/swift/libswiftCoreMIDI.dylib
+       0x1b5a75000 -        0x1b5a7bbbf  com.apple.MSUDataAccessor (1.0 - 1) <B67F1F22-22F4-30C7-84E5-A1E279CE84FD> /System/Library/PrivateFrameworks/MSUDataAccessor.framework/Versions/A/MSUDataAccessor
+       0x1b5e9e000 -        0x1b5f00ddf  com.apple.SoftwareUpdateCoreSupport (1.0 - 1) <26309F6C-7649-35DC-9224-EC0A621C2FE8> /System/Library/PrivateFrameworks/SoftwareUpdateCoreSupport.framework/Versions/A/SoftwareUpdateCoreSupport
+       0x1b99cc000 -        0x1b9a2325f  com.apple.biome.BiomeFoundation (1.0 - 209.22) <F80EA57A-03C2-3A0D-8393-77AA76514CDB> /System/Library/PrivateFrameworks/BiomeFoundation.framework/Versions/A/BiomeFoundation
+       0x1bc90a000 -        0x1bc917a1f  libswiftMetal.dylib (373.7.1) <48F9AFD3-F894-38A3-90D6-E5D441B7AE62> /usr/lib/swift/libswiftMetal.dylib
+       0x1bc918000 -        0x1bc91ee05  libswiftCompression.dylib (11) <A0101920-47DA-3EB3-A44D-098F2068C37F> /usr/lib/swift/libswiftCompression.dylib
+       0x1bd852000 -        0x1bd8fcd7f  libFDR.dylib (1499.160.2) <4C334A1E-83F5-35CA-A1D5-5185E29C81E5> /usr/lib/libFDR.dylib
+       0x1bd97e000 -        0x1bdf4933f  com.apple.biome.BiomeStreams (1.0 - 209.22) <57D209D5-E6C5-3A5E-84EE-59819541AE13> /System/Library/PrivateFrameworks/BiomeStreams.framework/Versions/A/BiomeStreams
+       0x1be41d000 -        0x1be4318ff  com.apple.SoftwareUpdateCoreConnect (1.0 - 1) <E0B8577A-B9F8-3D60-85F2-8B43AB87EB33> /System/Library/PrivateFrameworks/SoftwareUpdateCoreConnect.framework/Versions/A/SoftwareUpdateCoreConnect
+       0x1c0875000 -        0x1c08dfc1f  com.apple.osanalytics.OSAnalytics (1.0 - 1) <3E8297C5-888A-36F5-9EB4-6CCED7856402> /System/Library/PrivateFrameworks/OSAnalytics.framework/Versions/A/OSAnalytics
+       0x1c1d31000 -        0x1c1d32f9f  libswiftQuartzCore.dylib (5) <7CCBEB85-167F-34DB-B007-B5476F190B63> /usr/lib/swift/libswiftQuartzCore.dylib
+       0x1c2124000 -        0x1c21298e7  com.apple.kperf (1.0 - 1) <9E9347FA-842B-395E-ABE1-FB76635235CB> /System/Library/PrivateFrameworks/kperf.framework/Versions/A/kperf
+       0x1c223b000 -        0x1c224063f  com.apple.MobileSystemServices (1.0 - 1) <33D7F953-EC70-3D6C-A82F-780FC8DF3C30> /System/Library/PrivateFrameworks/MobileSystemServices.framework/Versions/A/MobileSystemServices
+       0x1c382d000 -        0x1c384f29f  libamsupport.dylib (434.160.4) <ED360406-AA45-334A-96DA-AFE2F9C46256> /usr/lib/libamsupport.dylib
+       0x1c3c2b000 -        0x1c3c8b0ff  com.apple.biome.BiomePubSub (1.0 - 209.22) <1CF0A38C-0E3B-3C6A-A398-8A22CB539C8E> /System/Library/PrivateFrameworks/BiomePubSub.framework/Versions/A/BiomePubSub
+       0x1c3c8c000 -        0x1c3ccf19f  com.apple.biome.BiomeStorage (1.0 - 209.22) <C404FAEC-421E-36D7-B342-D38863AB8D19> /System/Library/PrivateFrameworks/BiomeStorage.framework/Versions/A/BiomeStorage
+       0x1c67c9000 -        0x1c67d813f  libswiftUniformTypeIdentifiers.dylib (877.5.2) <C56D7B1D-FB84-3087-90A4-295768410946> /usr/lib/swift/libswiftUniformTypeIdentifiers.dylib
+       0x1c67d9000 -        0x1c689ea9b  libswiftAccelerate.dylib (77.100.2) <014F4B48-5D67-370F-96AB-32E30745B619> /usr/lib/swift/libswiftAccelerate.dylib
+       0x1c69f7000 -        0x1c6a0811f  libpartition2_dynamic.dylib (3476.160.2) <66AF2013-AD83-3C69-85DE-E4FB7F273632> /usr/lib/libpartition2_dynamic.dylib
+       0x1c6f66000 -        0x1c6f70fdf  com.apple.AFKUser (1.0 - 1) <CFE481F7-2569-3099-8547-4F09B8F2943F> /System/Library/PrivateFrameworks/AFKUser.framework/Versions/A/AFKUser
+       0x1ca96d000 -        0x1ca9ce75f  libswiftCoreMedia.dylib (3330.13.105.2) <4710B99E-37C4-3F7B-BAB0-5ACA6F1231EC> /usr/lib/swift/libswiftCoreMedia.dylib
+       0x1cc120000 -        0x1cc121bbf  libswiftOSLog.dylib (10) <9E6680B9-DED4-3EED-BE0D-B17B87A774AF> /usr/lib/swift/libswiftOSLog.dylib
+       0x1d0237000 -        0x1d0343d5f  com.apple.Symbolication (16.0 - 64575.70.1) <A8A4A15D-C3A7-3F3A-BCAE-F3ED6307DA94> /System/Library/PrivateFrameworks/Symbolication.framework/Versions/A/Symbolication
+       0x1d48cb000 -        0x1d48db3ff  com.apple.OSLog (1.0 - 1861.160.4.700.1) <3FFE61BB-2BBC-3722-8B11-42813B6330C5> /System/Library/Frameworks/OSLog.framework/Versions/A/OSLog
+       0x1d4bdf000 -        0x1d4cf075f  com.apple.InternalSwiftProtobuf (1.0 - 1.26.0) <28367C89-09D9-3FD3-9785-400B18D1A3BE> /System/Library/PrivateFrameworks/InternalSwiftProtobuf.framework/Versions/A/InternalSwiftProtobuf
+       0x1d4db6000 -        0x1d4dc10bf  com.apple.HIDDisplay (1.0 - 1) <BD2C7B06-0452-3385-A739-8F07AE54F8C1> /System/Library/PrivateFrameworks/HIDDisplay.framework/Versions/A/HIDDisplay
+       0x1dcdeb000 -        0x1dcdebaf3  com.apple.FeatureFlags (1.0 - 103) <63DC9704-D3F6-3505-84AA-4744662C6A85> /System/Library/PrivateFrameworks/FeatureFlags.framework/Versions/A/FeatureFlags
+       0x1e653f000 -        0x1e65415bf  com.apple.ConfigProfileHelper (18.0 - 1800) <2AF58AA9-4AE2-3BCA-AC60-809CF1D58773> /System/Library/PrivateFrameworks/ConfigProfileHelper.framework/Versions/A/ConfigProfileHelper
+       0x226c5b000 -        0x226c62657  libCoreFSCache.dylib (352.4) <2F8553B6-0B8A-3828-B161-83A1F8479770> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCoreFSCache.dylib
+       0x226c63000 -        0x226c6867f  libCoreVMClient.dylib (352.4) <3ACFF4B6-7DA5-33EC-86ED-6F2CEA4C6844> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCoreVMClient.dylib
+       0x226c69000 -        0x226c792b7  com.apple.opengl (23.1.1 - 23.1.1) <5D9D43F5-4CC1-3220-A859-43A0AFEB8CB0> /System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL
+       0x226c7a000 -        0x226c7c7bf  libCVMSPluginSupport.dylib (23.1.1) <40E3483A-43C5-3B7B-B448-00FAC56DEE64> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCVMSPluginSupport.dylib
+       0x226c7d000 -        0x226c854ff  libGFXShared.dylib (23.1.1) <EB999372-0BBB-36B0-AAEA-26302DF59BC6> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGFXShared.dylib
+       0x226c86000 -        0x226cb954b  libGLImage.dylib (23.1.1) <C38ADA91-6CA2-37F0-AAEB-959BAD1AC0F0> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLImage.dylib
+       0x226cba000 -        0x226cf35bf  libGLU.dylib (23.1.1) <750D7734-2C62-3B49-A772-509157DBEC4D> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLU.dylib
+       0x226e4a000 -        0x226e53bc7  libGL.dylib (23.1.1) <51F309E2-D4E3-348A-8597-B203831AB0AE> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
+       0x228ce6000 -        0x228e59f1f  com.apple.ExtensionFoundation (97 - 97) <DE3F25CB-2FE4-3E29-B6D0-84DCDF66F76D> /System/Library/Frameworks/ExtensionFoundation.framework/Versions/A/ExtensionFoundation
+       0x22a0cd000 -        0x22a10fa1f  com.apple.LightweightCodeRequirements (1.0 - 1) <BEDD0E23-C326-37F4-8387-D8E4621EBCD3> /System/Library/Frameworks/LightweightCodeRequirements.framework/Versions/A/LightweightCodeRequirements
+       0x22af33000 -        0x22af511ff  com.apple.MPSBenchmarkLoop (1.0 - 1) <49877A92-986C-31B1-8C74-67A2EF5C56E8> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSBenchmarkLoop.framework/Versions/A/MPSBenchmarkLoop
+       0x22af52000 -        0x22af65e7f  com.apple.MPSFunctions (1.0 - 1) <CEFC6932-0769-3D08-9D41-E466C6778729> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSFunctions.framework/Versions/A/MPSFunctions
+       0x22af66000 -        0x22af6b53f  com.apple.MPSHost (1.0 - 1) <DC1000EF-B106-3D3C-AD53-CB30B980EC37> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSHost.framework/Versions/A/MPSHost
+       0x22e216000 -        0x22e3824bf  com.apple.SwiftData (1.0 - 135) <5E340782-7DE7-3D4E-B196-CF7D623BA5B8> /System/Library/Frameworks/SwiftData.framework/Versions/A/SwiftData
+       0x234eda000 -        0x234eeeabf  com.apple.AppleDeviceQuerySupport (1.0 - 408.120.3) <2E9B10D2-DAA3-3A7B-A50B-4183F68D7C93> /System/Library/PrivateFrameworks/AppleDeviceQuerySupport.framework/Versions/A/AppleDeviceQuerySupport
+       0x23566c000 -        0x2356e7b46  com.apple.AppleKeyStore (1.0 - 1.0) <FB942CE5-DA14-38AD-9177-34A5CFAF971F> /System/Library/PrivateFrameworks/AppleKeyStore.framework/Versions/A/AppleKeyStore
+       0x236014000 -        0x23602c9df  com.apple.private.AppleMobileFileIntegrity-fmk (1.0 - 1) <549D1080-1AE1-3BB0-91B9-FED7A8B6CDF4> /System/Library/PrivateFrameworks/AppleMobileFileIntegrity.framework/Versions/A/AppleMobileFileIntegrity
+       0x236526000 -        0x236538799  com.apple.AtomicsInternal (1.1.0 - 5026.6.1) <43048DE0-2CF1-364C-A087-42C78020BF98> /System/Library/PrivateFrameworks/AtomicsInternal.framework/Versions/A/AtomicsInternal
+       0x2365f5000 -        0x236617dff  com.apple.imgaudio.AudioAnalytics (1.0 - 1) <86ED47C7-2B54-3F2D-B89B-CF50C8864C36> /System/Library/PrivateFrameworks/AudioAnalytics.framework/Versions/A/AudioAnalytics
+       0x236c5b000 -        0x236ca385f  com.apple.BackBoardHIDEventFoundation (1.0 - 1) <50904B52-E93E-3684-B195-4ADFC7578837> /System/Library/PrivateFrameworks/BackBoardHIDEventFoundation.framework/Versions/A/BackBoardHIDEventFoundation
+       0x236d3c000 -        0x236d5577f  com.apple.biome.BiomeDSL (1.0 - 209.22) <58091704-8332-30A8-BE10-F148F0E2B5AC> /System/Library/PrivateFrameworks/BiomeDSL.framework/Versions/A/BiomeDSL
+       0x236d56000 -        0x237610f7f  com.apple.BiomeLibrary (274.60) <F8EBE4EA-1BFE-36AE-A6DC-D229E2834356> /System/Library/PrivateFrameworks/BiomeLibrary.framework/Versions/A/BiomeLibrary
+       0x237611000 -        0x237616b5f  com.apple.biome.BiomeSync (1.0 - 209.22) <9DB42D7C-E2E1-3DCF-9078-D541B3803CDA> /System/Library/PrivateFrameworks/BiomeSync.framework/Versions/A/BiomeSync
+       0x238c47000 -        0x238cdf8bf  com.apple.biome.CascadeSets (1.0 - 209.22) <AB4D3ED8-3ED8-3070-BB56-7A279E02B895> /System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/CascadeSets
+       0x23a09a000 -        0x23a1d84ee  com.apple.CollectionsInternal (1.2.0 - 5026.6.1) <0DFA2D20-8D7F-3883-BF21-6B9954E74D8D> /System/Library/PrivateFrameworks/CollectionsInternal.framework/Versions/A/CollectionsInternal
+       0x2417ac000 -        0x2417bf49f  com.apple.DeviceRecovery (1.0 - 1) <2D9EE4EA-C35F-35AB-BCD7-1F11BA67F399> /System/Library/PrivateFrameworks/DeviceRecovery.framework/Versions/A/DeviceRecovery
+       0x243a51000 -        0x243a542ff  com.apple.FontServices (1.0 - 1) <4FF88376-5BD6-30A2-BC7A-3980A6B75747> /System/Library/PrivateFrameworks/FontServices.framework/Versions/A/FontServices
+       0x243a55000 -        0x243b44e2f  libXTFontStaticRegistryData.dylib (335.4.0.6) <2CD23373-684A-338C-B3E2-E5CFE9E22665> /System/Library/PrivateFrameworks/FontServices.framework/libXTFontStaticRegistryData.dylib
+       0x243b46000 -        0x243b52c9f  com.apple.FramePacing (1.0 - 1) <2CFA85BC-22EE-3D6A-9FD5-E10B4F5F4558> /System/Library/PrivateFrameworks/FramePacing.framework/Versions/A/FramePacing
+       0x244c74000 -        0x244c79f07  libGPUCompilerUtils.dylib (32023.886.1) <EF6C5EC7-58CB-337E-86DF-8FBED1A6852F> /System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/libGPUCompilerUtils.dylib
+       0x2490e7000 -        0x249126797  libllvm-flatbuffers.dylib (32023.886.1) <14F06681-8D11-323D-8A16-6BA8A70B3F93> /System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/libllvm-flatbuffers.dylib
+       0x250a6a000 -        0x250b732bf  com.apple.InstalledContentLibrary (1.0 - 1.0) <A6F121A8-E55A-34EC-8C01-D50506EC63C9> /System/Library/PrivateFrameworks/InstalledContentLibrary.framework/Versions/A/InstalledContentLibrary
+       0x253496000 -        0x253c64d3f  com.apple.IntelligencePlatformLibrary (274.60) <E57B6924-E645-3CC6-9943-63D3CEEFFE34> /System/Library/PrivateFrameworks/IntelligencePlatformLibrary.framework/Versions/A/IntelligencePlatformLibrary
+       0x255546000 -        0x255bdc923  com.apple.MIL (3520.4 - 3520.4.1) <8C94FE5D-D074-3369-88BC-E1380C5EA88A> /System/Library/PrivateFrameworks/MIL.framework/Versions/A/MIL
+       0x25a7a9000 -        0x25a80aabf  com.apple.MessageSecurity (1.0 - 195.160.36) <0DAE2428-9918-329A-9C2C-FAC35974C991> /System/Library/PrivateFrameworks/MessageSecurity.framework/Versions/A/MessageSecurity
+       0x25f81d000 -        0x25f8471bf  com.apple.OSEligibility (319.160.17) <E5A19223-55EF-3ACE-86D6-5E4C7453226A> /System/Library/PrivateFrameworks/OSEligibility.framework/Versions/A/OSEligibility
+       0x2604aa000 -        0x2605c285f  com.apple.ParsingInternal (0.0.1 - 5026.6.1) <145B46E8-5DDD-39F4-A2C2-19254BB3E64B> /System/Library/PrivateFrameworks/ParsingInternal.framework/Versions/A/ParsingInternal
+       0x26395b000 -        0x26397ce1f  com.apple.accessibility.PhotosensitivityProcessing (1.0 - 1) <D28391E4-3ACF-3733-8F07-DD4CCAB5DE4C> /System/Library/PrivateFrameworks/PhotosensitivityProcessing.framework/Versions/A/PhotosensitivityProcessing
+       0x263d70000 -        0x263daca3c  com.apple.PoirotSQLite (1.0 - 1) <67EC3686-F23C-3C0B-AE66-34FCAAD521CB> /System/Library/PrivateFrameworks/PoirotSQLite.framework/Versions/A/PoirotSQLite
+       0x263dad000 -        0x263e1a25f  com.apple.PoirotSchematizer (1.0 - 1) <2039208B-D706-3CF4-A87F-F27BE89C45F9> /System/Library/PrivateFrameworks/PoirotSchematizer.framework/Versions/A/PoirotSchematizer
+       0x263e1b000 -        0x263e50bff  com.apple.PoirotUDFs (1.0 - 1) <D5194566-C55C-3D6B-9B6D-6044DD141DE1> /System/Library/PrivateFrameworks/PoirotUDFs.framework/Versions/A/PoirotUDFs
+       0x264fe9000 -        0x265124ddf  com.apple.ProDisplayLibrary (10.6.1 - 10.6.1) <02C16EC1-0F6A-35DE-AA44-1F97D3B2FCC9> /System/Library/PrivateFrameworks/ProDisplayLibrary.framework/Versions/A/ProDisplayLibrary
+       0x2660df000 -        0x2660e74df  com.apple.ReflectionInternal (1.0.0 - 5026.6.1) <87E77AE8-41F7-399B-81C5-23115A20E2AB> /System/Library/PrivateFrameworks/ReflectionInternal.framework/Versions/A/ReflectionInternal
+       0x267033000 -        0x2670469d7  com.apple.RuntimeInternal (1.0.0 - 5026.6.1) <1662B591-8508-3CF8-B700-AA4EABE970BA> /System/Library/PrivateFrameworks/RuntimeInternal.framework/Versions/A/RuntimeInternal
+       0x26729e000 -        0x26730babf  com.apple.SILManager (53.19 - 53.19) <690B1920-75BD-3AD3-A31E-35F7472A8106> /System/Library/PrivateFrameworks/SILManager.framework/Versions/A/SILManager
+       0x2727bc000 -        0x2727e84a1  com.apple.security.SwiftASN1Internal (1.0 - 1) <D382032D-FCEA-3886-B497-3952D5EA0429> /System/Library/PrivateFrameworks/SwiftASN1Internal.framework/Versions/A/SwiftASN1Internal
+       0x275c1c000 -        0x275c581df  com.apple.tightbeam (1.0 - 483.100.88) <14E9D0E3-68A5-37FF-A85B-9A0D38AF51CC> /System/Library/PrivateFrameworks/Tightbeam.framework/Versions/A/Tightbeam
+       0x27a394000 -        0x27a3952cf  com.apple.VideoToolboxParavirtualizationSupport (64.5 - 64.5) <13718053-13FB-31F2-A6AB-EF77A1108130> /System/Library/PrivateFrameworks/VideoToolboxParavirtualizationSupport.framework/Versions/A/VideoToolboxParavirtualizationSupport
+       0x284609000 -        0x2846a371f  libAppleArchive.dylib (450.160.2) <975456D7-2890-32AA-A43F-8A567D741976> /usr/lib/libAppleArchive.dylib
+       0x28475e000 -        0x28476845f  libCoreEntitlements.dylib (80.100.6) <6209C014-7DDE-3FA3-9118-954393060FDC> /usr/lib/libCoreEntitlements.dylib
+       0x284a54000 -        0x284a5b87f  libReverseProxyDevice.dylib (104.120.2) <F64B30E4-5B5D-3D46-8171-D350D1F582E5> /usr/lib/libReverseProxyDevice.dylib
+       0x284a5c000 -        0x284a63349  libRosetta.dylib (367.9) <3DBB2990-262D-3776-8FAC-B88C0373DCF0> /usr/lib/libRosetta.dylib
+       0x284acc000 -        0x284ad53ff  libTLE.dylib (80.100.6) <E8A7564E-61D7-3E10-ADBE-8EB212A6BB9F> /usr/lib/libTLE.dylib
+       0x2852e2000 -        0x2853f3b17  libcrypto.46.dylib (109.100.2) <57403D8D-6F93-3CE5-88F2-E98B983F19E7> /usr/lib/libcrypto.46.dylib
+       0x28552e000 -        0x28554a762  libhvf.dylib (11) <D52E9347-78AA-326D-8B94-69B6A84733A3> /usr/lib/libhvf.dylib
+       0x285e67000 -        0x285e9f527  libssl.48.dylib (109.100.2) <18915C60-BE00-33A3-BCB3-4EAC9B68F104> /usr/lib/libssl.48.dylib
+       0x285eda000 -        0x285f082ef  libswiftPrespecialized.dylib (0) <D7986DE8-DF39-305C-883F-01F0239033DD> /usr/lib/libswiftPrespecialized.dylib
+       0x2861a4000 -        0x2861b6043  libswiftDistributed.dylib (6.3.2 - 6.3.2.1.11) <F1DAEF01-95D0-3E53-8FDF-02F749198F87> /usr/lib/swift/libswiftDistributed.dylib
+       0x2861cd000 -        0x2861dcebc  libswiftObservation.dylib (6.3.2 - 6.3.2.1.11) <DBDCD1B5-F826-31C8-8F28-6F39DD9C29E0> /usr/lib/swift/libswiftObservation.dylib
+       0x286309000 -        0x28631c8ef  libswiftSynchronization.dylib (6.3.2 - 6.3.2.1.11) <D3DF2CF5-427D-3563-91F7-51E4D8B750CF> /usr/lib/swift/libswiftSynchronization.dylib
+       0x28631d000 -        0x286335e60  libswiftSystem.dylib (75) <49EB73B0-CC94-368C-BC8E-34D9B7244AE1> /usr/lib/swift/libswiftSystem.dylib
+       0x286337000 -        0x28634d79f  libswiftVideoToolbox.dylib (3330.13.105.2) <34DB5466-5B9A-3658-A66D-2F8718A1A633> /usr/lib/swift/libswiftVideoToolbox.dylib
+       0x28634f000 -        0x28634f669  libswift_Builtin_float.dylib (6.3.2.1.11) <D7804F06-BEB6-3DBC-B252-3C992736DB73> /usr/lib/swift/libswift_Builtin_float.dylib
+       0x286350000 -        0x2863db095  libswift_Concurrency.dylib (6.3.2 - 6.3.2.1.11) <D85F6BE0-0376-36C5-BED0-755B239E6548> /usr/lib/swift/libswift_Concurrency.dylib
+       0x2863dc000 -        0x2863def83  libswift_DarwinFoundation1.dylib (377.160.5) <9010E60D-F1FA-37DB-BB92-731AAE930186> /usr/lib/swift/libswift_DarwinFoundation1.dylib
+       0x2863df000 -        0x2863dfeeb  libswift_DarwinFoundation2.dylib (377.160.5) <67E63B4C-4D7B-3A10-9109-BBD029447851> /usr/lib/swift/libswift_DarwinFoundation2.dylib
+       0x2863e0000 -        0x2863e07a7  libswift_DarwinFoundation3.dylib (377.160.5) <5127E34D-DBF0-399A-95C2-700FF5C62A02> /usr/lib/swift/libswift_DarwinFoundation3.dylib
+       0x2863e1000 -        0x28647f49f  libswift_RegexParser.dylib (6.3.2 - 6.3.2.1.11) <56CEF951-89ED-30EC-BE85-BDFF4FB293EA> /usr/lib/swift/libswift_RegexParser.dylib
+       0x286480000 -        0x28650c0cd  libswift_StringProcessing.dylib (6.3.2 - 6.3.2.1.11) <AF0302A8-B3E0-3D3D-AD1E-212C70A3F3DC> /usr/lib/swift/libswift_StringProcessing.dylib
+       0x286671000 -        0x286674a4b  libsystem_darwindirectory.dylib (122) <6246210A-5279-391D-8F58-E62A87CAB309> /usr/lib/system/libsystem_darwindirectory.dylib
+       0x286675000 -        0x28667f39b  libsystem_eligibility.dylib (319.160.17) <85C0486B-60BE-3E10-ABBF-DD74341B7376> /usr/lib/system/libsystem_eligibility.dylib
+       0x286680000 -        0x28668788b  libsystem_sanitizers.dylib (26.1) <A8C4F7FC-3443-35F7-B306-068D06237ED0> /usr/lib/system/libsystem_sanitizers.dylib
+       0x286688000 -        0x286688bbf  libsystem_trial.dylib (474.2.18.2.1) <83FF8DEB-1153-35BA-99C3-2AEF9B7559CD> /usr/lib/system/libsystem_trial.dylib

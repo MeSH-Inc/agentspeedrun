@@ -1,0 +1,12 @@
+
+running 1 test
+seed events=100000 subscribers=20 seconds=2.11
+load_deserialize n=20 p50_ms=100.218 p95_ms=103.052
+fold n=20 p50_ms=29.767 p95_ms=31.937
+closed_loop_cycles_per_second=2.078
+http_get_live n=20 p50_ms=142.315 p95_ms=169.309
+http_append_response n=20 p50_ms=175.561 p95_ms=203.243
+append_to_all_subscribers n=20 p50_ms=320.058 p95_ms=369.854
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 18.30s
