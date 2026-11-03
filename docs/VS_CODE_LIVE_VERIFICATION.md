@@ -36,3 +36,10 @@ that test configuration, not a successful tool or compatibility check. The
 reason the hooks did not execute has not been established. Select Local for
 the verified flow and check recording after submitting a prompt. Investigate
 the SDK harness's hook discovery and tool exposure before claiming support.
+
+The final candidate VSIX corrects the README installation link. Its SHA-256 is
+`b0e8b29efbe1622533264e4bcdf4b1def197b5d42b62d7054019518a83746df1`.
+Every ZIP entry except `extension/readme.md` is byte-identical to the GUI-tested
+package above. Prerelease metadata and isolated installation, replacement,
+listing and removal passed again; the documentation change does not constitute
+a new model-turn test.
