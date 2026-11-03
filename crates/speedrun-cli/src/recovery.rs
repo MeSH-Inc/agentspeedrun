@@ -38,7 +38,13 @@ fn permitted(path: &str) -> bool {
             | "spool/outbox.key"
             | "spool/pending.jsonl"
             | "spool/rejected.jsonl"
-    ) || path
+    ) || path.strip_prefix("integrations/").is_some_and(|name| {
+        name.len() > 5
+            && name.ends_with(".json")
+            && name[..name.len() - 5]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    }) || path
         .strip_prefix("spool/")
         .is_some_and(|name| name.starts_with("flushing-") && !name.contains('/'))
         || path
@@ -115,7 +121,9 @@ fn inventory(dir: &Path, prefix: &Path, files: &mut BTreeMap<String, String>) ->
         let kind = entry.file_type()?;
         if kind.is_dir() {
             ensure!(
-                rel == Path::new("spool") || rel == Path::new("disclosure"),
+                rel == Path::new("spool")
+                    || rel == Path::new("disclosure")
+                    || rel == Path::new("integrations"),
                 "unexpected directory {}",
                 rel.display()
             );
@@ -427,6 +435,19 @@ fn create_in_place(
             copy_optional(&source.join(name), &destination.join(name))?;
             checkpoint(&format!("create.file.{name}"))?;
         }
+        let integrations = source.join("integrations");
+        if present(&integrations)? {
+            check_dir(&integrations)?;
+            private_dir(&destination.join("integrations"))?;
+            for item in fs::read_dir(integrations)? {
+                let item = item?;
+                copy_file(
+                    &item.path(),
+                    &destination.join("integrations").join(item.file_name()),
+                )?;
+                checkpoint("create.integrations.file")?;
+            }
+        }
         let disclosure = source.join("disclosure");
         if present(&disclosure)? {
             check_dir(&disclosure)?;
@@ -589,6 +610,12 @@ mod tests {
             &serde_json::to_vec(&speedrun_core::preferences::Preferences::default()).unwrap(),
         )
         .unwrap();
+        private_dir(&dir.join("integrations")).unwrap();
+        write_private(
+            &dir.join("integrations/70726f6a656374.json"),
+            br#"["pi","project"]"#,
+        )
+        .unwrap();
         private_dir(&dir.join("disclosure")).unwrap();
         let disclosure_key = sign::generate();
         write_private(
@@ -659,6 +686,70 @@ mod tests {
             "pending"
         );
         assert!(restore(&bundle, &dest).is_err());
+    }
+
+    #[test]
+    fn roundtrip_preserves_explicit_integration_selections() {
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        private_dir(&source.join("integrations")).unwrap();
+        let selection = source.join("integrations/70726f6a656374.json");
+        write_private(&selection, br#"["pi","project"]"#).unwrap();
+        write_private(
+            &source.join("preferences.json"),
+            br#"{"capture":"metadata_only"}"#,
+        )
+        .unwrap();
+        write_private(
+            &source.join("integrations/75736572.json"),
+            br#"["claude","user"]"#,
+        )
+        .unwrap();
+        write_private(
+            &source.join("integrations/65787465726e616c.json"),
+            br#"["vscode","external"]"#,
+        )
+        .unwrap();
+        let bundle = root.path().join("bundle");
+        let restored = root.path().join("restored");
+        create(&source, &bundle).unwrap();
+        restore(&bundle, &restored).unwrap();
+        assert_eq!(
+            fs::read(restored.join("integrations/75736572.json")).unwrap(),
+            br#"["claude","user"]"#
+        );
+        assert_eq!(
+            fs::read(restored.join("integrations/65787465726e616c.json")).unwrap(),
+            br#"["vscode","external"]"#
+        );
+        assert!(!restored.join("integrations/616273656e74.json").exists());
+        assert_eq!(
+            fs::read(restored.join("integrations/70726f6a656374.json")).unwrap(),
+            br#"["pi","project"]"#
+        );
+        assert_eq!(
+            fs::read(restored.join("preferences.json")).unwrap(),
+            br#"{"capture":"metadata_only"}"#
+        );
+        fs::write(
+            bundle.join("integrations/70726f6a656374.json"),
+            br#"["pi","user"]"#,
+        )
+        .unwrap();
+        assert!(restore(&bundle, &root.path().join("tampered")).is_err());
+    }
+
+    #[test]
+    fn rejects_unexpected_and_symlinked_integration_files() {
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        private_dir(&source.join("integrations")).unwrap();
+        let unexpected = source.join("integrations/unexpected.json");
+        write_private(&unexpected, b"[]").unwrap();
+        assert!(create(&source, &root.path().join("unexpected")).is_err());
+        fs::remove_file(unexpected).unwrap();
+        std::os::unix::fs::symlink(source.join("device.key"), source.join("integrations/61.json")).unwrap();
+        assert!(create(&source, &root.path().join("link")).is_err());
     }
 
     #[test]
@@ -944,8 +1035,8 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(creates.len(), 20);
-        assert_eq!(restores.len(), 20);
+        assert_eq!(creates.len(), 21);
+        assert_eq!(restores.len(), 21);
         for (mode, input, points) in [("create", &source, creates), ("restore", &bundle, restores)] {
             for (i, point) in points.iter().enumerate() {
                 let output = root.path().join(format!("killed-{mode}-{i}"));
@@ -1009,7 +1100,7 @@ mod tests {
         let count: i64 = db
             .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, hooks + 42); // two fixture rows and 40 checkpoint hooks
+        assert_eq!(count, hooks + 44); // two fixture rows and 42 checkpoint hooks
         crate::client::validate_existing_outbox(&source.join("spool/pending.sqlite3")).unwrap();
     }
 

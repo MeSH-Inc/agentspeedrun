@@ -65,8 +65,10 @@ def main():
 
         try:
             subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+            run(source, "setup", "--host", "pi", "--scope", "project", "--category", "any-percent", "--capture", "metadata-only", "--yes")
+            before_setup = json.loads(run(source, "readiness", "--json"))
+            assert before_setup["selected_integration"] == ["pi", "project"]
             live = start(source)
-            run(source, "init")
             initial = json.loads(run(source, "ingest", "prompt", "--host", "smoke", "--session", "initial", body="start recovery fixture"))
             assert initial["recorded"] and not initial["spooled"]
             live.terminate()
@@ -91,6 +93,10 @@ def main():
             source_after = queue(source)
             assert len(source_after) == 14
             run(source, "recovery", "restore", bundle, restored)
+            restored_setup = json.loads(run(restored, "readiness", "--json"))
+            assert restored_setup["selected_integration"] == ["pi", "project"]
+            assert "pi" in restored_setup["integrations"]
+            assert json.loads((restored / "preferences.json").read_text())["capture"] == "metadata_only"
             assert queue(restored) == included
             assert not (restored / "token").exists(), "recovery copied bearer token"
             recovered = start(restored)
@@ -106,6 +112,11 @@ def main():
             assert proof.startswith("ok"), proof
             recovered.terminate()
             recovered.wait(timeout=10)
+            for selection in (restored / "integrations").iterdir():
+                selection.unlink()
+            no_selection = json.loads(run(restored, "readiness", "--json"))
+            assert no_selection["selected_integration"] is None
+            assert "pi" in no_selection["integrations"]
             print(f"Recovery smoke passed: 14 accepted hooks, {len(included)} snapshotted, expired lease replayed exactly once; {proof}")
         finally:
             for process in processes:
