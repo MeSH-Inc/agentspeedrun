@@ -35,7 +35,23 @@ git -c user.name=smoke -c user.email=smoke@example.com commit -q --allow-empty -
 sr init --category any-percent >/dev/null
 
 out=$(echo "build a todo app" | sr ingest prompt --host smoke --session s1)
-has "$out" '"run_started":true' || fail "prompt did not start a run: $out"
+if has "$out" '"spooled":true'; then
+  # A slow startup can exceed the hook's bounded wait. The committed outbox
+  # must recover that same prompt once the daemon is ready.
+  deadline=$((SECONDS + 15))
+  # The initial ingest already spawned it; do not start more daemons while
+  # waiting for that process to finish initializing.
+  until SPEEDRUN_NO_AUTOSTART=1 sr flush >/dev/null 2>&1; do
+    (( SECONDS < deadline )) || fail "daemon did not become ready to flush: $out"
+    sleep 0.2
+  done
+  sr flush >/dev/null || fail "second flush"
+  status=$(sr status) || fail "status after flush"
+  has "$status" '(1 prompts, 1 sessions)' || fail "prompt was not recorded exactly once: $status"
+else
+  [ "${SPEEDRUN_SMOKE_EXPECT_SPOOL:-0}" != 1 ] || fail "expected delayed startup to spool: $out"
+  has "$out" '"run_started":true' || fail "prompt did not start a run: $out"
+fi
 # Commit evidence must be made after the run started, so commit once the prompt has started it.
 git -c user.name=smoke -c user.email=smoke@example.com commit -q --allow-empty -m scaffold
 
