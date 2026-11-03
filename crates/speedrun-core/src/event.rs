@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Bump when the envelope or a payload changes incompatibly.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// A single immutable fact in a run's log, as stored by the daemon.
 ///
@@ -159,7 +159,8 @@ pub enum EventPayload {
         host: String,
         model: Option<String>,
         /// HMAC-SHA256 (hex) of the redacted text under the device's prompt
-        /// key, which never leaves the machine.
+        /// key, which never leaves the machine. Empty means metadata-only
+        /// capture: no text was kept or committed.
         content_digest: String,
         /// Length of the redacted text, in characters.
         length: u64,

@@ -308,12 +308,54 @@ impl Service {
         self.store.rotate_key().map_err(Error::Internal)
     }
 
+    pub fn prompt_text(&self, event_id: &str) -> Result<Option<String>> {
+        self.store.prompt_text(event_id).map_err(Error::Internal)
+    }
+
+    pub fn erase_prompt(&self, event_id: &str) -> Result<bool> {
+        self.store.erase_prompt(event_id).map_err(Error::from)
+    }
+
+    pub fn apply_retention(&self) -> Result<usize> {
+        let prefs = match std::fs::read(self.store.preferences_path()) {
+            Ok(bytes) => serde_json::from_slice::<speedrun_core::preferences::Preferences>(&bytes)
+                .map_err(|e| Error::Internal(anyhow::anyhow!("invalid capture preferences: {e}")))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(Error::Internal(e.into())),
+        };
+        let Some(days) = prefs.retention_days else {
+            return Ok(0);
+        };
+        let duration = chrono::Duration::try_days(i64::from(days))
+            .ok_or_else(|| Error::BadRequest("retention period is too large".into()))?;
+        let cutoff = Utc::now()
+            .checked_sub_signed(duration)
+            .ok_or_else(|| Error::BadRequest("retention period is too large".into()))?;
+        self.store.erase_prompts_before(cutoff).map_err(Error::from)
+    }
+
     /// Record a prompt. The first prompt for a project (or the first after a
     /// reset) starts a run and seeds the category's milestones.
     pub fn record_prompt(&mut self, req: PromptRequest) -> Result<PromptResponse> {
         check_id("event_id", &req.event_id)?;
         check_id("project_id", &req.project_id)?;
         check_id("session_id", &req.session_id)?;
+        if req.metadata_only.is_some() && !req.content.is_empty() {
+            return Err(Error::BadRequest(
+                "metadata-only prompt must not include content".into(),
+            ));
+        }
+        let mode = match std::fs::read(self.store.preferences_path()) {
+            Ok(bytes) => {
+                serde_json::from_slice::<speedrun_core::preferences::Preferences>(&bytes)
+                    .map_err(|e| Error::Internal(anyhow::anyhow!("invalid capture preferences: {e}")))?
+                    .capture
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                speedrun_core::preferences::CaptureMode::Content
+            }
+            Err(e) => return Err(Error::Internal(e.into())),
+        };
         let categories = &self.categories;
         self.store.transaction(|tx| {
             if let Some(existing) = tx.reader().event(&req.event_id)? {
@@ -350,20 +392,26 @@ impl Service {
                 }
             };
             let (content, redacted) = redact(&req.content);
-            let event = tx.insert_prompt(
-                &run_id,
-                &req.event_id,
-                at,
-                EventPayload::PromptSubmitted {
-                    session_id: req.session_id.clone(),
-                    host: req.host.clone(),
-                    model: req.model.clone(),
-                    content_digest: String::new(),
-                    length: content.chars().count() as u64,
-                    redacted,
-                },
-                &content,
-            )?;
+            let metadata_only =
+                req.metadata_only.is_some() || mode == speedrun_core::preferences::CaptureMode::MetadataOnly;
+            let length = req
+                .metadata_only
+                .as_ref()
+                .map_or(content.chars().count() as u64, |m| m.length);
+            let redacted = req.metadata_only.as_ref().map_or(redacted, |m| m.redacted);
+            let payload = EventPayload::PromptSubmitted {
+                session_id: req.session_id.clone(),
+                host: req.host.clone(),
+                model: req.model.clone(),
+                content_digest: String::new(),
+                length,
+                redacted,
+            };
+            let event = if metadata_only {
+                tx.insert(&run_id, &req.event_id, at, payload)?
+            } else {
+                tx.insert_prompt(&run_id, &req.event_id, at, payload, &content)?
+            };
             if req.starts_turn {
                 tx.insert(
                     &run_id,
@@ -647,7 +695,16 @@ impl Service {
         if run.project_id != observation.project_id {
             return Err(Error::Conflict("run changed while the test was running".into()));
         }
-        let body = serde_json::to_string(observation).map_err(|e| Error::Internal(e.into()))?;
+        // Arguments may contain arbitrary credentials, including values that a
+        // pattern-based redactor cannot recognize. Preserve the argument count
+        // for diagnostics without retaining any of their contents.
+        let mut stored = observation.clone();
+        stored.argv = stored
+            .argv
+            .iter()
+            .map(|_| "[argument omitted]".to_owned())
+            .collect();
+        let body = serde_json::to_string(&stored).map_err(|e| Error::Internal(e.into()))?;
         self.store.record_local_test(
             &observation.id,
             &observation.run_id,
@@ -1032,16 +1089,19 @@ impl Service {
                 _ => None,
             })
             .ok_or_else(|| Error::NotFound(format!("run {run_id} has no disclosure commitment")))?;
-        let key = self.store.disclosure_key(run_id).map_err(Error::Internal)?;
         let reader = self.store.reader();
         let mut prompts = Vec::new();
         for event in &events {
-            if let EventPayload::PromptSubmitted { length, redacted, .. } = &event.payload
-                && let Some(text) = reader.prompt_text(&event.event_id)?
-            {
+            if let EventPayload::PromptSubmitted { length, redacted, .. } = &event.payload {
+                let commitment = reader.prompt_commitment(&event.event_id)?.ok_or_else(|| {
+                    Error::Conflict(
+                        "tier 2 is unavailable because a prompt was recorded without a text commitment"
+                            .into(),
+                    )
+                })?;
                 prompts.push(PromptCommitment {
                     event_id: event.event_id.clone(),
-                    commitment: speedrun_core::digest::text_digest(&key, &text),
+                    commitment,
                     length: *length,
                     redacted: *redacted,
                 });
@@ -1212,9 +1272,63 @@ mod tests {
             host: "test".into(),
             model: None,
             content: "build it. key: sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            metadata_only: None,
             occurred_at: None,
             starts_turn: true,
         }
+    }
+
+    #[test]
+    fn metadata_capture_never_stores_or_falsely_commits_text() {
+        let (mut s, dir) = svc();
+        std::fs::write(
+            dir.path().join("preferences.json"),
+            r#"{"capture":"metadata_only"}"#,
+        )
+        .unwrap();
+        let r = s.record_prompt(prompt("metadata")).unwrap();
+        assert!(s.prompt_text("metadata").unwrap().is_none());
+        assert!(
+            matches!(r.event.payload, EventPayload::PromptSubmitted { ref content_digest, .. } if content_digest.is_empty())
+        );
+        assert!(matches!(s.export(&r.run_id, 2), Err(Error::Conflict(_))));
+        assert!(s.verify_chain(&r.run_id).unwrap().ok);
+    }
+
+    #[test]
+    fn erasing_text_preserves_disclosure_and_signed_history() {
+        let (mut s, dir) = svc();
+        let r = s.record_prompt(prompt("erase")).unwrap();
+        let before = s.export(&r.run_id, 2).unwrap().prompts[0].commitment.clone();
+        assert!(s.erase_prompt("erase").unwrap());
+        assert!(s.prompt_text("erase").unwrap().is_none());
+        assert_eq!(s.export(&r.run_id, 2).unwrap().prompts[0].commitment, before);
+        assert!(s.verify_chain(&r.run_id).unwrap().ok);
+        drop(s);
+        let s = open_in(&dir);
+        assert!(s.prompt_text("erase").unwrap().is_none());
+        assert_eq!(s.export(&r.run_id, 2).unwrap().prompts[0].commitment, before);
+    }
+
+    #[test]
+    fn retention_erases_expired_ciphertext_but_keeps_commitments() {
+        let (mut s, dir) = svc();
+        let r = s.record_prompt(prompt("retained")).unwrap();
+        std::fs::write(
+            dir.path().join("preferences.json"),
+            r#"{"capture":"content","retention_days":1}"#,
+        )
+        .unwrap();
+        assert_eq!(s.apply_retention().unwrap(), 0);
+        assert_eq!(
+            s.store
+                .erase_prompts_before(Utc::now() + chrono::Duration::days(1))
+                .unwrap(),
+            1
+        );
+        assert!(s.prompt_text("retained").unwrap().is_none());
+        assert_eq!(s.export(&r.run_id, 2).unwrap().prompts.len(), 1);
+        assert!(s.verify_chain(&r.run_id).unwrap().ok);
     }
 
     fn append(s: &mut Service, run: &str, id: &str, payload: EventPayload) -> Result<AppendResponse> {
@@ -1391,7 +1505,7 @@ mod tests {
             run_id: run.clone(),
             project_id: "proj".into(),
             head: "abc".into(),
-            argv: vec!["test".into()],
+            argv: vec!["test".into(), "an-unrecognizable-secret".into()],
             status: TestStatus::Running,
             observed_at: Utc::now(),
             observer: "speedrund/local-test@1".into(),
@@ -1401,10 +1515,9 @@ mod tests {
         drop(s);
         let s = open_in(&dir);
         s.recover_verification_jobs().unwrap();
-        assert_eq!(
-            s.local_test_attempts(&run).unwrap()[0].status,
-            TestStatus::Interrupted
-        );
+        let attempt = &s.local_test_attempts(&run).unwrap()[0];
+        assert_eq!(attempt.status, TestStatus::Interrupted);
+        assert_eq!(attempt.argv, vec!["[argument omitted]", "[argument omitted]"]);
         assert!(
             s.store
                 .local_test_head("attempt", &run, "proj")

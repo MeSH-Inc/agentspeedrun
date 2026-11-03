@@ -42,10 +42,20 @@ pub struct PromptRequest {
     pub host: String,
     pub model: Option<String>,
     pub content: String,
+    /// Metadata-only capture: content must be empty and no text commitment is created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_only: Option<PromptMetadata>,
     pub occurred_at: Option<DateTime<Utc>>,
     /// Also mark an agent turn as started for this session.
     #[serde(default = "yes")]
     pub starts_turn: bool,
+}
+
+/// Properties of the client-redacted prompt, without the prompt itself.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PromptMetadata {
+    pub length: u64,
+    pub redacted: bool,
 }
 
 fn yes() -> bool {

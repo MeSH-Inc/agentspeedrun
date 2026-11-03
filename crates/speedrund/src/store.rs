@@ -5,6 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
+use chacha20poly1305::{
+    XChaCha20Poly1305, XNonce,
+    aead::{Aead, AeadCore, KeyInit, OsRng, Payload},
+};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -91,6 +95,14 @@ CREATE TABLE local_test_observations (
     succeeded INTEGER NOT NULL
 );
 "#,
+    r#"
+-- Older builds retained the original command arguments in observation bodies.
+UPDATE local_test_observations SET body = json_set(body, '$.argv', json('[]'));
+"#,
+    r#"
+ALTER TABLE prompts ADD COLUMN ciphertext BLOB;
+ALTER TABLE prompts ADD COLUMN disclosure_digest TEXT;
+"#,
 ];
 
 pub struct Store {
@@ -100,7 +112,78 @@ pub struct Store {
     /// Where `key` is kept, so a rotation can replace it.
     key_path: PathBuf,
     prompt_key: [u8; SEED_LEN],
+    content_key: [u8; SEED_LEN],
+    data_dir: PathBuf,
     disclosure: Disclosure,
+}
+
+fn encrypt_prompt(key: &[u8; SEED_LEN], event_id: &str, text: &str) -> rusqlite::Result<Vec<u8>> {
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let encrypted = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: text.as_bytes(),
+                aad: event_id.as_bytes(),
+            },
+        )
+        .map_err(|_| {
+            rusqlite::Error::ToSqlConversionFailure(std::io::Error::other("prompt encryption failed").into())
+        })?;
+    let mut out = nonce.to_vec();
+    out.extend(encrypted);
+    Ok(out)
+}
+
+fn migrate_prompt_text(conn: &mut Connection, key: &[u8; SEED_LEN], disclosure: &Disclosure) -> Result<()> {
+    let pending = {
+        let mut query = conn.prepare("SELECT p.event_id, p.content, e.run_id FROM prompts p JOIN events e ON e.event_id = p.event_id WHERE p.ciphertext IS NULL AND p.disclosure_digest IS NULL")?;
+        let rows = query.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let migrated = !pending.is_empty();
+    let tx = conn.transaction()?;
+    if migrated {
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('prompt_scrub_pending', '1')",
+            [],
+        )?;
+    }
+    for (event_id, content, run_id) in pending {
+        let encrypted = encrypt_prompt(key, &event_id, &content)?;
+        let commitment = speedrun_core::digest::text_digest(&disclosure.load(&run_id)?, &content);
+        tx.execute(
+            "UPDATE prompts SET content = '', ciphertext = ?2, disclosure_digest = ?3 WHERE event_id = ?1",
+            params![event_id, encrypted, commitment],
+        )?;
+    }
+    tx.commit()?;
+    let scrub_pending: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meta WHERE key = 'prompt_scrub_pending')",
+        [],
+        |r| r.get(0),
+    )?;
+    if scrub_pending {
+        // Remove old plaintext database pages and truncate the WAL where the
+        // filesystem permits. This cannot erase external snapshots or SSD remnants.
+        let checkpoint = |conn: &Connection| -> Result<()> {
+            let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+            anyhow::ensure!(busy == 0, "prompt migration checkpoint is busy");
+            Ok(())
+        };
+        checkpoint(conn)?;
+        conn.execute_batch("VACUUM")?;
+        checkpoint(conn)?;
+        conn.execute("DELETE FROM meta WHERE key = 'prompt_scrub_pending'", [])?;
+    }
+    Ok(())
 }
 
 impl Store {
@@ -194,6 +277,7 @@ impl Store {
         // migration can change a database written by a newer build.
         let schema = Schema::THIS_BUILD;
         schema.refuse_newer(&conn, path)?;
+        conn.pragma_update(None, "secure_delete", "ON")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -216,13 +300,28 @@ impl Store {
         };
         let prompt_key_path = path.with_file_name(crate::keys::PROMPT_KEY_FILE);
         let prompt_key = crate::keys::load_or_create_secret(&prompt_key_path)?;
+        let content_key_path = path.with_file_name("content.key");
+        let encrypted: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM prompts WHERE ciphertext IS NOT NULL)",
+            [],
+            |r| r.get(0),
+        )?;
+        let content_key = if encrypted {
+            crate::keys::read_secret(&content_key_path)?
+        } else {
+            crate::keys::load_or_create_secret(&content_key_path)?
+        };
+        let disclosure = Disclosure::beside(path);
+        migrate_prompt_text(&mut conn, &content_key, &disclosure)?;
         Ok(Self {
             conn,
             device_id,
             key,
             key_path: key_path.to_path_buf(),
             prompt_key,
-            disclosure: Disclosure::beside(path),
+            content_key,
+            data_dir: path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
+            disclosure,
         })
     }
 
@@ -269,6 +368,7 @@ impl Store {
             device_id: &self.device_id,
             key: &self.key,
             prompt_key: &self.prompt_key,
+            content_key: &self.content_key,
             disclosure: &self.disclosure,
         };
         let out = f(&mut w)?;
@@ -280,6 +380,51 @@ impl Store {
         Reader(&self.conn)
     }
 
+    pub fn preferences_path(&self) -> PathBuf {
+        self.data_dir.join("preferences.json")
+    }
+
+    pub fn prompt_text(&self, event_id: &str) -> Result<Option<String>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT ciphertext FROM prompts WHERE event_id = ?1",
+                [event_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(blob) = blob else { return Ok(None) };
+        if blob.len() < 24 {
+            anyhow::bail!("invalid encrypted prompt");
+        }
+        let cipher = XChaCha20Poly1305::new((&self.content_key).into());
+        let text = cipher
+            .decrypt(
+                XNonce::from_slice(&blob[..24]),
+                Payload {
+                    msg: &blob[24..],
+                    aad: event_id.as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow!("prompt authentication failed"))?;
+        Ok(Some(String::from_utf8(text)?))
+    }
+
+    pub fn erase_prompt(&self, event_id: &str) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE prompts SET ciphertext = NULL WHERE event_id = ?1 AND ciphertext IS NOT NULL",
+            [event_id],
+        )? != 0)
+    }
+
+    pub fn erase_prompts_before(&self, cutoff: DateTime<Utc>) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "UPDATE prompts SET ciphertext = NULL WHERE ciphertext IS NOT NULL AND event_id IN (SELECT event_id FROM events WHERE julianday(recorded_at) < julianday(?1))",
+            [cutoff.to_rfc3339()],
+        )
+    }
+
     /// Hex public key this device signs with now.
     pub fn device_pubkey(&self) -> String {
         pubkey_hex(&self.key)
@@ -289,11 +434,6 @@ impl Store {
     /// `signature`, checkable against [`Store::device_pubkey`].
     pub fn sign_digest(&self, digest: &str) -> String {
         sign_hash(&self.key, digest)
-    }
-
-    /// Read the disclosure key a run started with, for a tier 2 export.
-    pub fn disclosure_key(&self, run_id: &str) -> Result<[u8; SEED_LEN]> {
-        self.disclosure.load(run_id)
     }
 
     /// Replace this device's signing key. Every chain this device keeps that
@@ -323,6 +463,7 @@ impl Store {
                 device_id: &self.device_id,
                 key: &new,
                 prompt_key: &self.prompt_key,
+                content_key: &self.content_key,
                 disclosure: &self.disclosure,
             };
             let runs: Vec<String> = {
@@ -476,16 +617,16 @@ impl Reader<'_> {
             .transpose()
     }
 
-    /// The redacted prompt text stored for `event_id`, if it has not been
-    /// deleted. The text lives outside the chain, so a missing row is normal.
-    pub fn prompt_text(&self, event_id: &str) -> rusqlite::Result<Option<String>> {
+    /// Commitment retained separately from erasable prompt ciphertext.
+    pub fn prompt_commitment(&self, event_id: &str) -> rusqlite::Result<Option<String>> {
         self.0
             .query_row(
-                "SELECT content FROM prompts WHERE event_id = ?1",
+                "SELECT disclosure_digest FROM prompts WHERE event_id = ?1",
                 [event_id],
-                |r| r.get(0),
+                |r| r.get::<_, Option<String>>(0),
             )
             .optional()
+            .map(Option::flatten)
     }
 
     /// The project root a run started with, if it has one.
@@ -725,6 +866,7 @@ pub struct Tx<'c> {
     device_id: &'c str,
     key: &'c SigningKey,
     prompt_key: &'c [u8; SEED_LEN],
+    content_key: &'c [u8; SEED_LEN],
     disclosure: &'c Disclosure,
 }
 
@@ -846,9 +988,15 @@ impl Tx<'_> {
             *content_digest = speedrun_core::digest::text_digest(self.prompt_key, text);
         }
         let event = self.insert(run_id, event_id, occurred_at, payload)?;
+        let encrypted = encrypt_prompt(self.content_key, event_id, text)?;
+        let key = self
+            .disclosure
+            .load(run_id)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(std::io::Error::other(e).into()))?;
+        let commitment = speedrun_core::digest::text_digest(&key, text);
         self.tx.execute(
-            "INSERT INTO prompts (event_id, content) VALUES (?1, ?2)",
-            params![event_id, text],
+            "INSERT INTO prompts (event_id, content, ciphertext, disclosure_digest) VALUES (?1, '', ?2, ?3)",
+            params![event_id, encrypted, commitment],
         )?;
         Ok(event)
     }

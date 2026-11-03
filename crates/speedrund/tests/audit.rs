@@ -833,12 +833,22 @@ fn audit_w1_d_prompt_text_is_kept_outside_the_chain() {
         )
         .unwrap();
     assert_eq!(in_chain, 0, "the prompt text must not be in any event body");
-    let kept: String = conn
-        .query_row("SELECT content FROM prompts WHERE event_id = 'p1'", [], |r| {
-            r.get(0)
-        })
-        .expect("the prompts table holds the text, keyed by event_id");
-    assert_eq!(kept, PROMPT_TEXT);
+    let (kept, ciphertext): (String, Vec<u8>) = conn
+        .query_row(
+            "SELECT content, ciphertext FROM prompts WHERE event_id = 'p1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the prompts table holds encrypted text, keyed by event_id");
+    assert!(kept.is_empty());
+    assert!(
+        !ciphertext
+            .windows(PROMPT_TEXT.len())
+            .any(|w| w == PROMPT_TEXT.as_bytes())
+    );
+    let (status, text) = d.get("/v1/prompts/p1", Some(&d.token));
+    assert_eq!(status, 200);
+    assert_eq!(text, json!(PROMPT_TEXT));
 }
 
 #[test]
@@ -860,6 +870,28 @@ fn audit_w1_d_prompt_digest_is_an_hmac_under_the_device_prompt_key() {
         json!(hmac_hex(&key, PROMPT_TEXT.as_bytes()))
     );
     assert_eq!(prompts[0]["length"], json!(PROMPT_TEXT.chars().count()));
+}
+
+#[test]
+fn encrypted_prompt_authenticates_ciphertext_without_affecting_chain() {
+    let d = Daemon::start();
+    let run = prompt_text(&d, "p1", "proj", PROMPT_TEXT);
+    let conn = rusqlite::Connection::open(d.home.path().join("speedrun.sqlite")).unwrap();
+    let mut ciphertext: Vec<u8> = conn
+        .query_row("SELECT ciphertext FROM prompts WHERE event_id = 'p1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let last = ciphertext.len() - 1;
+    ciphertext[last] ^= 1;
+    conn.execute(
+        "UPDATE prompts SET ciphertext = ?1 WHERE event_id = 'p1'",
+        [&ciphertext],
+    )
+    .unwrap();
+    assert_eq!(d.get("/v1/prompts/p1", Some(&d.token)).0, 500);
+    let (_, chain) = d.get(&format!("/v1/runs/{run}/verify"), Some(&d.token));
+    assert_eq!(chain["ok"], true);
 }
 
 #[test]

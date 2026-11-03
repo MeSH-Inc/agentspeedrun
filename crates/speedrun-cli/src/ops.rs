@@ -8,6 +8,7 @@ use speedrun_core::{
 };
 
 use crate::client::{Client, Durable, SpoolReason};
+use crate::preferences::{self, CaptureMode};
 use crate::project::Project;
 use crate::redacted::RedactedText;
 
@@ -20,7 +21,8 @@ pub fn record_prompt(
     content: &str,
 ) -> Result<Option<PromptResponse>> {
     p.require_trusted()?;
-    let content = RedactedText::new(content);
+    let mode = preferences::read()?;
+    let (content, metadata) = prompt_capture(content, mode);
     let mut body = json!({
         "event_id": speedrun_core::new_id(),
         "project_id": p.config.project_id,
@@ -29,7 +31,8 @@ pub fn record_prompt(
         "session_id": session_id,
         "host": host,
         "model": model,
-        "content": content.as_str(),
+        "content": content,
+        "metadata_only": metadata,
         "occurred_at": chrono::Utc::now(),
         "starts_turn": true,
     });
@@ -42,6 +45,26 @@ pub fn record_prompt(
         body_object.insert("category_version".to_string(), json!(version));
     }
     Ok(c.post_durable("/v1/prompts", &body)?.recorded())
+}
+
+/// Apply capture preference before a durable request can be created.
+pub(crate) fn prompt_capture(
+    raw: &str,
+    mode: CaptureMode,
+) -> (String, Option<speedrun_core::api::PromptMetadata>) {
+    match mode {
+        CaptureMode::Content => (RedactedText::new(raw).as_str().to_owned(), None),
+        CaptureMode::MetadataOnly => {
+            let (redacted, changed) = speedrun_core::redact::redact(raw);
+            (
+                String::new(),
+                Some(speedrun_core::api::PromptMetadata {
+                    length: redacted.chars().count() as u64,
+                    redacted: changed,
+                }),
+            )
+        }
+    }
 }
 
 /// Append to the project's active run; spooled if the daemon is down.

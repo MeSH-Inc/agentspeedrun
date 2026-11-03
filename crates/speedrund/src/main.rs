@@ -46,6 +46,9 @@ async fn main() -> Result<()> {
     let device_pubkey = store.device_pubkey();
     startup::write_addr(&dir, addr)?;
     let service = service::Service::new(store, category::builtin()?, health.data_dir_id().to_string());
+    service
+        .apply_retention()
+        .map_err(|error| anyhow::anyhow!("applying prompt retention: {error:?}"))?;
     logging::startup(addr, &dir, &device_pubkey);
 
     let cors_origins: Vec<String> = std::env::var("SPEEDRUN_CORS_ORIGINS")
@@ -68,6 +71,20 @@ async fn main() -> Result<()> {
         changes: Arc::new(tokio::sync::watch::channel(0).0),
         shutdown: shutdown.clone(),
     };
+    let retention_service = state.service.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            if let Err(error) = retention_service
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .apply_retention()
+            {
+                tracing::error!(?error, "could not apply prompt retention");
+            }
+        }
+    });
     http::start_verification_recovery(state.clone());
     let app = http::router(state, &cors_origins);
     let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown.clone().wait());

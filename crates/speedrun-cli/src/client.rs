@@ -11,6 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use chacha20poly1305::{
+    XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit, Payload},
+};
+use rand_core::{OsRng, RngCore};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -153,7 +158,7 @@ impl Credential {
 /// One spooled request. `credential` is omitted for a full-token entry, as
 /// every entry written before agent credentials have it; `"agent"` marks one
 /// written with the agent token, so `flush` replays it with that token.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SpoolEntry {
     path: String,
     body: Value,
@@ -432,7 +437,11 @@ impl Client {
             return Err(CallError::WrongDataDir { addr: addr.clone() });
         };
         let expected = speedrun_core::digest::token_proof(&Credential::Full.token()?, &nonce);
-        if proof == expected.as_str() {
+        let dir = paths::data_dir()
+            .canonicalize()
+            .map_err(|e| CallError::Unreachable(format!("resolving data directory: {e}")))?;
+        let expected_dir = speedrun_core::hash::sha256_hex(dir.as_os_str().as_encoded_bytes());
+        if proof == expected.as_str() && health.data_dir_id == expected_dir {
             *self.verified.borrow_mut() = Some(base);
             Ok(health)
         } else {
@@ -451,6 +460,11 @@ impl Client {
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
         self.ready()?;
         self.send("GET", path, None, Delivery::Fresh, self.credential)
+    }
+
+    pub fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
+        self.ready()?;
+        self.send("DELETE", path, None, Delivery::Fresh, self.credential)
     }
 
     pub fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T, CallError> {
@@ -732,11 +746,251 @@ fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> any
         set_busy_deadline(&db, deadline)?;
         db.execute_batch(statement)?;
     }
+    initialize_outbox_crypto(&db, path)?;
     Ok(db)
 }
 
+// The key is independent of daemon keys: retain it with the outbox during recovery.
+fn outbox_key_path(db: &Connection) -> anyhow::Result<PathBuf> {
+    let path = db
+        .path()
+        .ok_or_else(|| anyhow::anyhow!("outbox has no filesystem path"))?;
+    Ok(Path::new(path)
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("outbox has no directory"))?
+        .join("outbox.key"))
+}
+
+fn read_outbox_key(db: &Connection) -> anyhow::Result<[u8; 32]> {
+    let path = outbox_key_path(db)?;
+    let bytes =
+        fs::read(&path).map_err(|e| anyhow::anyhow!("cannot read outbox key {}: {e}", path.display()))?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid outbox key length"))
+}
+
+fn seal(key: &[u8; 32], plaintext: &[u8], aad: &[u8]) -> anyhow::Result<Value> {
+    let mut nonce = [0u8; 24];
+    OsRng.fill_bytes(&mut nonce);
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let ciphertext = cipher
+        .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext, aad })
+        .map_err(|_| anyhow::anyhow!("outbox encryption failed"))?;
+    Ok(serde_json::json!({"outbox_ciphertext": hex::encode(ciphertext), "nonce": hex::encode(nonce)}))
+}
+
+fn open_sealed(key: &[u8; 32], envelope: &Value, aad: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let ciphertext = hex::decode(
+        envelope
+            .get("outbox_ciphertext")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("invalid outbox ciphertext"))?,
+    )?;
+    let nonce = hex::decode(
+        envelope
+            .get("nonce")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("invalid outbox nonce"))?,
+    )?;
+    anyhow::ensure!(nonce.len() == 24, "invalid outbox nonce length");
+    XChaCha20Poly1305::new(key.into())
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("outbox authentication failed"))
+}
+
+fn entry_aad(entry: &SpoolEntry) -> anyhow::Result<Vec<u8>> {
+    let id = entry
+        .body
+        .get("event_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("prompt outbox entry has no event id"))?;
+    Ok(serde_json::to_vec(&(&entry.path, id))?)
+}
+
+fn protect_entry(db: &Connection, entry: &SpoolEntry) -> anyhow::Result<SpoolEntry> {
+    let mut protected = entry.clone();
+    if entry.path == "/v1/prompts"
+        && entry.body.get("metadata_only").is_none_or(Value::is_null)
+        && let Some(content) = entry.body.get("content").and_then(Value::as_str)
+    {
+        let aad = entry_aad(entry)?;
+        protected.body["content"] = seal(&read_outbox_key(db)?, content.as_bytes(), &aad)?;
+    }
+    Ok(protected)
+}
+
+fn unprotect_entry(db: &Connection, mut entry: SpoolEntry) -> anyhow::Result<SpoolEntry> {
+    if let Some(content) = entry.body.get("content")
+        && (content.get("outbox_ciphertext").is_some()
+            || (entry.path == "/v1/prompts" && entry.body.get("metadata_only").is_none_or(Value::is_null)))
+    {
+        anyhow::ensure!(content.is_object(), "plaintext prompt found in encrypted outbox");
+        let plaintext = open_sealed(&read_outbox_key(db)?, content, &entry_aad(&entry)?)?;
+        entry.body["content"] = Value::String(String::from_utf8(plaintext)?);
+    }
+    Ok(entry)
+}
+
+/// Validate an existing copied outbox without creating or modifying files.
+pub(crate) fn validate_existing_outbox(path: &Path) -> anyhow::Result<()> {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let columns: Vec<String> = {
+        let mut statement = db.prepare("PRAGMA table_info(outbox)")?;
+        let rows = statement.query_map([], |row| row.get(1))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for required in ["id", "entry", "state", "owner", "lease_until", "source"] {
+        anyhow::ensure!(
+            columns.iter().any(|column| column == required),
+            "invalid outbox schema: missing {required}"
+        );
+    }
+    let initialized: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='outbox_crypto')",
+        [],
+        |row| row.get(0),
+    )?;
+    if initialized {
+        let verifier: String = db
+            .query_row("SELECT verifier FROM outbox_crypto WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .map_err(|_| anyhow::anyhow!("initialized outbox has no valid key verifier"))?;
+        let key = read_outbox_key(&db)?;
+        let envelope: Value = serde_json::from_str(&verifier)?;
+        anyhow::ensure!(
+            open_sealed(&key, &envelope, b"outbox-key-v1")? == b"speedrun outbox",
+            "invalid outbox key"
+        );
+    }
+    // Rejected diagnostics may have been deliberately truncated; they are never replayed.
+    let mut statement = db.prepare("SELECT entry FROM outbox WHERE state IN ('pending','leased')")?;
+    let entries = statement.query_map([], |row| row.get::<_, String>(0))?;
+    for encoded in entries {
+        let entry: SpoolEntry = serde_json::from_str(&encoded?)?;
+        if entry.path == "/v1/prompts" {
+            entry_aad(&entry)?;
+            let content = entry
+                .body
+                .get("content")
+                .ok_or_else(|| anyhow::anyhow!("prompt outbox entry has no content"))?;
+            if entry
+                .body
+                .get("metadata_only")
+                .is_some_and(|value| !value.is_null())
+            {
+                anyhow::ensure!(
+                    content.as_str() == Some(""),
+                    "metadata-only outbox entry has nonempty content"
+                );
+            } else if initialized {
+                anyhow::ensure!(content.is_object(), "plaintext prompt found in encrypted outbox");
+            } else {
+                anyhow::ensure!(content.is_string(), "legacy prompt has invalid content");
+            }
+        }
+        if initialized {
+            unprotect_entry(&db, entry)?;
+        } else {
+            // A legacy outbox is eligible for encryption during migration, but
+            // encrypted records without a verifier cannot be authenticated.
+            anyhow::ensure!(
+                entry
+                    .body
+                    .get("content")
+                    .is_none_or(|value| value.get("outbox_ciphertext").is_none()),
+                "encrypted outbox entry has no verifier"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn initialize_outbox_crypto(db: &Connection, path: &Path) -> anyhow::Result<()> {
+    db.execute_batch("CREATE TABLE IF NOT EXISTS outbox_crypto (id INTEGER PRIMARY KEY CHECK(id=1), verifier TEXT NOT NULL, scrub_pending INTEGER NOT NULL);")?;
+    let tx = db.unchecked_transaction()?;
+    // Obtain a write lock before inspecting the marker or creating a key.
+    tx.execute("UPDATE outbox_crypto SET id=id WHERE id=1", [])?;
+    let verifier: Option<(String, bool)> = tx
+        .query_row(
+            "SELECT verifier,scrub_pending FROM outbox_crypto WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((verifier, scrub_pending)) = verifier {
+        let key = read_outbox_key(&tx)?;
+        let envelope: Value = serde_json::from_str(&verifier)?;
+        anyhow::ensure!(
+            open_sealed(&key, &envelope, b"outbox-key-v1")? == b"speedrun outbox",
+            "invalid outbox key"
+        );
+        tx.commit()?;
+        if scrub_pending {
+            scrub_migrated_outbox(db)?;
+        }
+        return Ok(());
+    }
+    let key_path = outbox_key_path(&tx)?;
+    if !key_path.exists() {
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&key_path)?;
+        file.write_all(&key)?;
+        file.sync_all()?;
+        fs::File::open(
+            path.parent()
+                .ok_or_else(|| anyhow::anyhow!("outbox has no directory"))?,
+        )?
+        .sync_all()?;
+    }
+    let key = read_outbox_key(&tx)?;
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = tx.prepare("SELECT id,entry FROM outbox")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (id, encoded) in rows {
+        let entry: SpoolEntry = serde_json::from_str(&encoded)?;
+        let protected = protect_entry(&tx, &entry)?;
+        tx.execute(
+            "UPDATE outbox SET entry=?1 WHERE id=?2",
+            params![serde_json::to_string(&protected)?, id],
+        )?;
+    }
+    let verifier = seal(&key, b"speedrun outbox", b"outbox-key-v1")?;
+    tx.execute(
+        "INSERT INTO outbox_crypto(id,verifier,scrub_pending) VALUES(1,?1,1)",
+        [serde_json::to_string(&verifier)?],
+    )?;
+    tx.commit()?;
+    scrub_migrated_outbox(db)
+}
+
+fn scrub_migrated_outbox(db: &Connection) -> anyhow::Result<()> {
+    // A crash leaves scrub_pending set, so the next opener repeats this work.
+    let busy: i64 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    anyhow::ensure!(busy == 0, "outbox WAL checkpoint is busy");
+    db.execute_batch("VACUUM;")?;
+    let busy: i64 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    anyhow::ensure!(busy == 0, "outbox WAL checkpoint is busy");
+    db.execute("UPDATE outbox_crypto SET scrub_pending=0 WHERE id=1", [])?;
+    Ok(())
+}
+
 fn enqueue(db: &Connection, entry: &SpoolEntry, owner: Option<&str>) -> anyhow::Result<i64> {
-    let encoded = serde_json::to_string(entry)?;
+    let encoded = serde_json::to_string(&protect_entry(db, entry)?)?;
     db.execute(
         "INSERT INTO outbox(entry,state,owner,lease_until) VALUES (?1,?2,?3,?4)",
         params![
@@ -754,8 +1008,11 @@ fn claim(db: &Connection, owner: &str) -> anyhow::Result<Option<(i64, SpoolEntry
     let row: Option<(i64, String)> = db.query_row(
         "UPDATE outbox SET state='leased',owner=?1,lease_until=?2 WHERE id=(SELECT id FROM outbox WHERE state='pending' OR (state='leased' AND lease_until<=?3) ORDER BY id LIMIT 1) RETURNING id,entry",
         params![owner, now_seconds()+LEASE_SECONDS, now_seconds()], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-    row.map(|(id, entry)| Ok((id, serde_json::from_str(&entry)?)))
-        .transpose()
+    row.map(|(id, entry)| {
+        let entry: SpoolEntry = serde_json::from_str(&entry)?;
+        Ok((id, unprotect_entry(db, entry)?))
+    })
+    .transpose()
 }
 
 fn release(db: &Connection, id: i64, owner: &str) -> anyhow::Result<()> {
@@ -836,7 +1093,7 @@ fn import_legacy(db: &Connection, dir: &Path) -> anyhow::Result<()> {
     for item in fs::read_dir(dir)? {
         let item = item?;
         let name = item.file_name().to_string_lossy().into_owned();
-        if name != "pending.jsonl" && !name.starts_with("flushing-") {
+        if name != "pending.jsonl" && name != "rejected.jsonl" && !name.starts_with("flushing-") {
             continue;
         }
         let bytes = fs::read(item.path())?;
@@ -846,23 +1103,43 @@ fn import_legacy(db: &Connection, dir: &Path) -> anyhow::Result<()> {
                 continue;
             }
             let source = format!("{name}:{number}:{}", speedrun_core::hash::sha256_hex(line));
-            if let Ok(entry) = serde_json::from_slice::<SpoolEntry>(line) {
+            if name == "rejected.jsonl" {
+                let entry = SpoolEntry {
+                    path: "/legacy/rejected".into(),
+                    body: serde_json::json!({"sealed_legacy": seal(&read_outbox_key(&tx)?, line, source.as_bytes())?, "source": source}),
+                    credential: Credential::Full,
+                };
                 tx.execute(
-                    "INSERT OR IGNORE INTO outbox(entry,state,source) VALUES (?1,'pending',?2)",
+                    "INSERT OR IGNORE INTO outbox(entry,state,source) VALUES (?1,'rejected',?2)",
                     params![serde_json::to_string(&entry)?, source],
                 )?;
+            } else if let Ok(entry) = serde_json::from_slice::<SpoolEntry>(line) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO outbox(entry,state,source) VALUES (?1,'pending',?2)",
+                    params![serde_json::to_string(&protect_entry(&tx, &entry)?)?, source],
+                )?;
             } else {
-                // Legacy malformed records remain inspectable. The source is
-                // retained if writing this diagnostic fails.
-                RejectedLog::new(dir.join("rejected.jsonl")).try_append(line)?;
+                // Preserve an unreadable record without blocking later lines or
+                // copying potentially sensitive bytes into plaintext diagnostics.
+                let entry = SpoolEntry {
+                    path: "/legacy/rejected".into(),
+                    body: serde_json::json!({"sealed_legacy": seal(&read_outbox_key(&tx)?, line, source.as_bytes())?, "source": source}),
+                    credential: Credential::Full,
+                };
+                tx.execute(
+                    "INSERT OR IGNORE INTO outbox(entry,state,source) VALUES (?1,'rejected',?2)",
+                    params![serde_json::to_string(&entry)?, source],
+                )?;
             }
         }
         tx.commit()?;
         fs::remove_file(item.path())?;
+        fs::File::open(dir)?.sync_all()?;
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn append_line_result(file: &Path, line: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
@@ -907,22 +1184,16 @@ fn increment_spool_write_failures() -> std::io::Result<()> {
     fs::rename(&temp, &path)
 }
 
-/// Newest refused entries are kept for inspection, but the log must not grow
-/// without bound no matter how many the daemon refuses.
-const REJECTED_MAX_BYTES: u64 = 8 * 1024 * 1024;
-
 /// A capped log of refused spool entries. `append` is the only way to write
 /// to it, and it enforces the cap, so callers cannot leave the file unbounded.
+#[cfg(test)]
 struct RejectedLog {
     file: PathBuf,
     max_bytes: u64,
 }
 
+#[cfg(test)]
 impl RejectedLog {
-    fn new(file: PathBuf) -> Self {
-        Self::with_cap(file, REJECTED_MAX_BYTES)
-    }
-
     fn with_cap(file: PathBuf, max_bytes: u64) -> Self {
         Self { file, max_bytes }
     }
@@ -1106,6 +1377,194 @@ mod tests {
             body: serde_json::json!({"event_id":"event-1"}),
             credential: Credential::Agent,
         }
+    }
+
+    #[test]
+    fn encrypted_prompt_round_trips_and_rejects_tampering_or_missing_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = open_outbox_path(&path).unwrap();
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id":"event-1", "content":"private prompt"}),
+            credential: Credential::Full,
+        };
+        let id = enqueue(&db, &entry, None).unwrap();
+        let stored: String = db
+            .query_row("SELECT entry FROM outbox WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert!(!stored.contains("private prompt"));
+        assert!(
+            !fs::read(&path)
+                .unwrap()
+                .windows(b"private prompt".len())
+                .any(|w| w == b"private prompt")
+        );
+        let decoded = unprotect_entry(&db, serde_json::from_str(&stored).unwrap()).unwrap();
+        assert_eq!(decoded.body["content"], "private prompt");
+        let mut tampered: SpoolEntry = serde_json::from_str(&stored).unwrap();
+        tampered.body["event_id"] = serde_json::json!("another-event");
+        assert!(unprotect_entry(&db, tampered).is_err());
+        let mut tampered: SpoolEntry = serde_json::from_str(&stored).unwrap();
+        tampered.path = "/v1/other".into();
+        assert!(unprotect_entry(&db, tampered).is_err());
+        validate_existing_outbox(&path).unwrap();
+        let mut corrupted: SpoolEntry = serde_json::from_str(&stored).unwrap();
+        corrupted.body["content"]["outbox_ciphertext"] = serde_json::json!("00");
+        db.execute(
+            "UPDATE outbox SET entry=?1 WHERE id=?2",
+            params![serde_json::to_string(&corrupted).unwrap(), id],
+        )
+        .unwrap();
+        assert!(validate_existing_outbox(&path).is_err());
+        db.execute("UPDATE outbox SET entry=?1 WHERE id=?2", params![stored, id])
+            .unwrap();
+        fs::remove_file(dir.path().join("outbox.key")).unwrap();
+        assert!(validate_existing_outbox(&path).is_err());
+        assert!(open_outbox_path(&path).is_err());
+    }
+
+    #[test]
+    fn malformed_legacy_record_is_sealed_and_does_not_block_later_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_at(dir.path(), None).unwrap();
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id":"later", "content":"later prompt"}),
+            credential: Credential::Full,
+        };
+        let bad = b"unreadable secret \xff";
+        let mut bytes = bad.to_vec();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(serde_json::to_string(&entry).unwrap().as_bytes());
+        fs::write(dir.path().join("pending.jsonl"), bytes).unwrap();
+        import_legacy(&db, dir.path()).unwrap();
+        let stored: String = db
+            .query_row("SELECT entry FROM outbox WHERE state='rejected'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(!stored.contains("unreadable secret"));
+        let diagnostic: SpoolEntry = serde_json::from_str(&stored).unwrap();
+        let source = diagnostic.body["source"].as_str().unwrap();
+        assert_eq!(
+            open_sealed(
+                &read_outbox_key(&db).unwrap(),
+                &diagnostic.body["sealed_legacy"],
+                source.as_bytes()
+            )
+            .unwrap(),
+            bad
+        );
+        assert_eq!(
+            claim(&db, "owner").unwrap().unwrap().1.body["content"],
+            "later prompt"
+        );
+    }
+
+    #[test]
+    fn legacy_jsonl_import_encrypts_pending_and_rejected_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_at(dir.path(), None).unwrap();
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id":"legacy", "content":"pending secret"}),
+            credential: Credential::Full,
+        };
+        fs::write(
+            dir.path().join("pending.jsonl"),
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+        fs::write(dir.path().join("rejected.jsonl"), b"old rejected secret\n").unwrap();
+        import_legacy(&db, dir.path()).unwrap();
+        assert!(!dir.path().join("pending.jsonl").exists());
+        assert!(!dir.path().join("rejected.jsonl").exists());
+        let entries: Vec<String> = db
+            .prepare("SELECT entry FROM outbox ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            entries
+                .iter()
+                .all(|e| !e.contains("pending secret") && !e.contains("old rejected secret"))
+        );
+        assert_eq!(
+            claim(&db, "owner").unwrap().unwrap().1.body["content"],
+            "pending secret"
+        );
+    }
+
+    #[test]
+    fn recovery_validation_rejects_unrelated_and_uninitialized_databases() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = Connection::open(&path).unwrap();
+        assert!(validate_existing_outbox(&path).is_err());
+        db.execute_batch("CREATE TABLE outbox (id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease_until INTEGER, source TEXT UNIQUE)").unwrap();
+        assert!(validate_existing_outbox(&path).is_ok());
+        db.execute_batch("CREATE TABLE outbox_crypto (id INTEGER PRIMARY KEY, verifier TEXT NOT NULL)")
+            .unwrap();
+        assert!(validate_existing_outbox(&path).is_err());
+    }
+
+    #[test]
+    fn plaintext_legacy_sqlite_rows_are_migrated_before_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE outbox (id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease_until INTEGER, source TEXT UNIQUE)").unwrap();
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id":"legacy", "content":"legacy secret"}),
+            credential: Credential::Full,
+        };
+        db.execute(
+            "INSERT INTO outbox(entry,state) VALUES (?1,'pending')",
+            [serde_json::to_string(&entry).unwrap()],
+        )
+        .unwrap();
+        drop(db);
+        let db = open_outbox_path(&path).unwrap();
+        let stored: String = db
+            .query_row("SELECT entry FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert!(!stored.contains("legacy secret"));
+        assert_eq!(
+            claim(&db, "owner").unwrap().unwrap().1.body["content"],
+            "legacy secret"
+        );
+        assert!(
+            !fs::read(&path)
+                .unwrap()
+                .windows(b"legacy secret".len())
+                .any(|w| w == b"legacy secret")
+        );
+    }
+
+    #[test]
+    fn metadata_only_prompt_never_reaches_the_outbox_as_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_path(&dir.path().join("test.sqlite")).unwrap();
+        let raw = "private words that must not be persisted";
+        let (content, metadata) =
+            crate::ops::prompt_capture(raw, crate::preferences::CaptureMode::MetadataOnly);
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"content": content, "metadata_only": metadata}),
+            credential: Credential::Full,
+        };
+        let id = enqueue(&db, &entry, None).unwrap();
+        let stored: String = db
+            .query_row("SELECT entry FROM outbox WHERE id=?1", [id], |row| row.get(0))
+            .unwrap();
+        assert!(!stored.contains(raw));
+        let value: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(value["body"]["content"], "");
+        assert_eq!(value["body"]["metadata_only"]["length"], raw.chars().count());
     }
 
     #[test]

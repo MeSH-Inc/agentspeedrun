@@ -137,6 +137,7 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .route("/v1/device", get(device))
         .route("/v1/link-claims", post(link_claim))
         .route("/v1/prompts", post(record_prompt))
+        .route("/v1/prompts/{event_id}", get(prompt_content).delete(erase_prompt))
         .route("/v1/device/rotate", post(rotate_device))
         .route("/v1/shutdown", post(shutdown_daemon))
         .route("/v1/backup", post(backup))
@@ -477,6 +478,14 @@ async fn verification_status(State(s): State<AppState>, Path(id): Path<String>) 
 
 async fn local_test_attempts(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     call(&s, move |svc| svc.local_test_attempts(&id)).await
+}
+
+async fn prompt_content(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    call(&s, move |svc| svc.prompt_text(&id)).await
+}
+
+async fn erase_prompt(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    call(&s, move |svc| svc.erase_prompt(&id)).await
 }
 
 async fn project_history(State(s): State<AppState>, Path(project_id): Path<String>) -> impl IntoResponse {

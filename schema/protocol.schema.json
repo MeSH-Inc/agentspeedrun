@@ -244,7 +244,7 @@
               ]
             },
             "content_digest": {
-              "description": "HMAC-SHA256 (hex) of the redacted text under the device's prompt\nkey, which never leaves the machine.",
+              "description": "HMAC-SHA256 (hex) of the redacted text under the device's prompt\nkey, which never leaves the machine. Empty means metadata-only\ncapture: no text was kept or committed.",
               "type": "string"
             },
             "length": {
@@ -1142,6 +1142,17 @@
         "content": {
           "type": "string"
         },
+        "metadata_only": {
+          "description": "Metadata-only capture: content must be empty and no text commitment is created.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "occurred_at": {
           "type": [
             "string",
@@ -1162,6 +1173,24 @@
         "session_id",
         "host",
         "content"
+      ]
+    },
+    "PromptMetadata": {
+      "description": "Properties of the client-redacted prompt, without the prompt itself.",
+      "type": "object",
+      "properties": {
+        "length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "redacted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "length",
+        "redacted"
       ]
     },
     "PromptResponse": {

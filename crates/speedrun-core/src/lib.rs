@@ -13,6 +13,7 @@ pub mod hash;
 pub mod live;
 pub mod merkle;
 pub mod paths;
+pub mod preferences;
 pub mod projection;
 pub mod redact;
 pub mod sign;

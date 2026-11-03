@@ -213,8 +213,66 @@ impl Machine {
     fn files_containing(&self, text: &str) -> Vec<PathBuf> {
         self.stored_files()
             .into_iter()
+            .chain(self.decrypted_spool())
             .filter(|(_, bytes)| contains(bytes, text))
             .map(|(path, _)| path)
+            .collect()
+    }
+
+    /// Inspect the authenticated outbox representation as well as raw files.
+    fn decrypted_spool(&self) -> Vec<(PathBuf, Vec<u8>)> {
+        use chacha20poly1305::{
+            XChaCha20Poly1305, XNonce,
+            aead::{Aead, KeyInit, Payload},
+        };
+        let path = self.data_dir().join("spool/pending.sqlite3");
+        let Ok(key) = std::fs::read(self.data_dir().join("spool/outbox.key")) else {
+            return vec![];
+        };
+        let Ok(key): Result<[u8; 32], _> = key.try_into() else {
+            return vec![];
+        };
+        let Ok(db) = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
+            return vec![];
+        };
+        let Ok(mut query) = db.prepare("SELECT entry FROM outbox") else {
+            return vec![];
+        };
+        let Ok(rows) = query.query_map([], |row| Ok(row.get_ref(0)?.as_bytes()?.to_vec())) else {
+            return vec![];
+        };
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        rows.flatten()
+            .filter_map(|row| {
+                let entry: serde_json::Value = serde_json::from_slice(&row).ok()?;
+                let body = &entry["body"];
+                let (envelope, aad) = if body.get("sealed_legacy").is_some() {
+                    (
+                        &body["sealed_legacy"],
+                        body["source"].as_str()?.as_bytes().to_vec(),
+                    )
+                } else {
+                    let route = entry["path"].as_str()?;
+                    let id = body["event_id"].as_str()?;
+                    (&body["content"], serde_json::to_vec(&(route, id)).ok()?)
+                };
+                let ciphertext = hex::decode(envelope["outbox_ciphertext"].as_str()?).ok()?;
+                let nonce = hex::decode(envelope["nonce"].as_str()?).ok()?;
+                if nonce.len() != 24 {
+                    return None;
+                }
+                cipher
+                    .decrypt(
+                        XNonce::from_slice(&nonce),
+                        Payload {
+                            msg: &ciphertext,
+                            aad: &aad,
+                        },
+                    )
+                    .ok()
+                    .map(|value| (path.clone(), value))
+            })
             .collect()
     }
 }
@@ -235,6 +293,7 @@ struct Behaviour {
     /// Health proves the machine's token (`speedrun_core::digest::token_proof`); when
     /// false, it proves a different token, as a daemon serving another data dir would.
     proves_token: bool,
+    wrong_data_dir: bool,
     /// Status line for every request but health.
     status: &'static str,
     /// Time taken to answer a request to the project events route, where the spool's
@@ -266,6 +325,7 @@ impl RefusingDaemon {
             machine,
             Behaviour {
                 proves_token: true,
+                wrong_data_dir: false,
                 status: "400 Bad Request",
                 backlog_delay: Duration::ZERO,
             },
@@ -274,13 +334,16 @@ impl RefusingDaemon {
 
     fn behaving(machine: &Machine, behaviour: Behaviour) -> Self {
         let listener = machine.listener();
+        let dir = machine.data_dir().canonicalize().unwrap();
+        let data_dir_id = speedrun_core::hash::sha256_hex(dir.as_os_str().as_encoded_bytes());
         let received = Arc::new(Mutex::new(Vec::new()));
         let shown_token = Arc::new(Mutex::new(Vec::new()));
         let (record, shown) = (Arc::clone(&received), Arc::clone(&shown_token));
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let (record, shown) = (Arc::clone(&record), Arc::clone(&shown));
-                std::thread::spawn(move || answer(stream, &record, &shown, behaviour));
+                let data_dir_id = data_dir_id.clone();
+                std::thread::spawn(move || answer(stream, &record, &shown, behaviour, &data_dir_id));
             }
         });
         Self {
@@ -309,6 +372,7 @@ fn answer(
     received: &Mutex<Vec<Received>>,
     shown_token: &Mutex<Vec<String>>,
     behaviour: Behaviour,
+    data_dir_id: &str,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -374,7 +438,7 @@ fn answer(
             "ok": true,
             "version": env!("CARGO_PKG_VERSION"),
             "protocol_version": speedrun_core::api::PROTOCOL_VERSION,
-            "data_dir_id": "0".repeat(64),
+            "data_dir_id": if behaviour.wrong_data_dir { "wrong" } else { data_dir_id },
             "pid": std::process::id(),
         });
         if let Some(nonce) = nonce {
@@ -469,6 +533,13 @@ fn guard_spooled_prompt_without_secrets_is_kept_intact() {
     assert!(
         !machine.files_containing(text).is_empty(),
         "the prompt was not spooled"
+    );
+    assert!(
+        machine
+            .stored_files()
+            .iter()
+            .all(|(_, bytes)| !contains(bytes, text)),
+        "prompt appeared in plaintext at rest"
     );
 }
 
@@ -710,9 +781,11 @@ fn guard_an_unreadable_spool_line_loses_none_of_the_entries_after_it() {
         .into_string()
         .unwrap();
     assert!(events.contains("after-the-bad-line"), "{events}");
-    let kept = std::fs::read(spool.join("rejected.jsonl")).unwrap_or_default();
     assert!(
-        kept.windows(2).any(|w| w == b"\xff\xfe"),
+        machine
+            .decrypted_spool()
+            .iter()
+            .any(|(_, bytes)| bytes.windows(2).any(|w| w == b"\xff\xfe")),
         "the unreadable line must be kept for inspection"
     );
 }
@@ -769,6 +842,7 @@ fn audit_w9_c_speedrun_key_rotate_replaces_the_signing_key() {
 fn stand_in(proves_token: bool, status: &'static str, backlog_delay: Duration) -> Behaviour {
     Behaviour {
         proves_token,
+        wrong_data_dir: false,
         status,
         backlog_delay,
     }
@@ -864,6 +938,19 @@ fn audit_p0_b_client_never_shows_the_token_to_a_daemon_that_cannot_prove_it() {
         shown.is_empty(),
         "the token went to a daemon for another data dir in {shown:?}"
     );
+}
+
+#[test]
+fn client_rejects_matching_token_from_wrong_data_dir() {
+    let machine = Machine::new();
+    let mut behaviour = stand_in(true, "200 OK", Duration::ZERO);
+    behaviour.wrong_data_dir = true;
+    let daemon = RefusingDaemon::behaving(&machine, behaviour);
+    let text = "a prompt for the local data directory";
+    machine.prompt(text);
+    assert!(daemon.received().is_empty());
+    assert!(daemon.shown_token().is_empty());
+    assert!(!machine.spooled_containing(text).is_empty());
 }
 
 #[test]

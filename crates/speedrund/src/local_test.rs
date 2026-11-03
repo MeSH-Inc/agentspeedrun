@@ -194,12 +194,15 @@ pub async fn run(
         .try_acquire()
         .map_err(|_| Error::Conflict("local test execution limit reached".into()))?;
     let head = clean_head(&root).await?;
+    // The command is executed exactly as requested, but arguments may contain
+    // arbitrary secrets. Keep them out of observations and their history.
+    let argv = req.argv;
     let observation = TestObservation {
         id: speedrun_core::new_id(),
         run_id,
         project_id: view.project_id,
         head,
-        argv: req.argv,
+        argv: argv.iter().map(|_| "[argument omitted]".to_owned()).collect(),
         status: TestStatus::Running,
         observed_at: chrono::Utc::now(),
         observer: "speedrund/local-test@1".into(),
@@ -218,7 +221,7 @@ pub async fn run(
     };
     (guard.write)(&guard.observation)?;
     guard.finished = false;
-    let (mut status, output) = match execute(&root, &guard.observation.argv, TIMEOUT).await {
+    let (mut status, _output) = match execute(&root, &argv, TIMEOUT).await {
         Ok(result) => result,
         Err(error) => {
             guard.finish(TestStatus::Failed { exit_code: None })?;
@@ -237,9 +240,8 @@ pub async fn run(
         TestStatus::Running | TestStatus::Interrupted => unreachable!("terminal status expected"),
         TestStatus::Failed { .. } => {
             return Err(Error::BadRequest(format!(
-                "test command failed (attempt {}): {}",
-                observation.id,
-                String::from_utf8_lossy(&output)
+                "test command failed (attempt {}); command output is not retained",
+                observation.id
             )));
         }
         TestStatus::TimedOut => {

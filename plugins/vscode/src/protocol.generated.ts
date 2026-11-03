@@ -55,7 +55,8 @@ export type EventPayload =
       model?: string | null;
       /**
        * HMAC-SHA256 (hex) of the redacted text under the device's prompt
-       * key, which never leaves the machine.
+       * key, which never leaves the machine. Empty means metadata-only
+       * capture: no text was kept or committed.
        */
       content_digest: string;
       /**
@@ -502,11 +503,26 @@ export interface PromptRequest {
   host: string;
   model?: string | null;
   content: string;
+  /**
+   * Metadata-only capture: content must be empty and no text commitment is created.
+   */
+  metadata_only?: PromptMetadata | null;
   occurred_at?: string | null;
   /**
    * Also mark an agent turn as started for this session.
    */
   starts_turn?: boolean;
+  [k: string]: unknown;
+}
+/**
+ * Properties of the client-redacted prompt, without the prompt itself.
+ *
+ * This interface was referenced by `Protocol`'s JSON-Schema
+ * via the `definition` "PromptMetadata".
+ */
+export interface PromptMetadata {
+  length: number;
+  redacted: boolean;
   [k: string]: unknown;
 }
 /**

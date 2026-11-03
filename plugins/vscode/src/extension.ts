@@ -286,7 +286,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
           if (!out) return;
           try {
             const attempts = JSON.parse(out) as Array<{ id: string; argv: string[]; status: { kind: string }; observed_at: string }>;
-            const selected = await vscode.window.showQuickPick(attempts.map((a) => ({ label: a.argv.join(" "), description: a.status.kind, detail: a.observed_at, id: a.id })), { title: "Select a local test observation" });
+            const selected = await vscode.window.showQuickPick(attempts.map((a) => ({ label: `Local test (${a.argv.length} arguments hidden)`, description: a.status.kind, detail: a.observed_at, id: a.id })), { title: "Select a local test observation" });
             if (!selected) return;
             evidence.push(pick.flag, selected.id);
           } catch { void vscode.window.showErrorMessage("Could not read local test observations."); return; }

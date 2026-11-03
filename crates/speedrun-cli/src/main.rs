@@ -6,8 +6,11 @@ mod hook;
 mod link;
 mod mcp;
 mod ops;
+mod preferences;
 mod project;
+mod prompts;
 mod publish;
+mod recovery;
 mod redacted;
 mod secret;
 mod setup;
@@ -71,6 +74,35 @@ enum DaemonCmd {
 }
 
 #[derive(Subcommand)]
+enum PreferencesCmd {
+    /// Show the current capture preference.
+    Show,
+    /// Set prompt capture to content or metadata-only.
+    Capture { mode: preferences::CaptureArgument },
+    /// Set the number of days to retain prompt text, or forever.
+    Retention { days: String },
+}
+
+#[derive(Subcommand)]
+enum PromptsCmd {
+    /// Print the stored, redacted prompt text, if present.
+    Show { event_id: String },
+    /// Erase stored text for one prompt and print whether it was present.
+    Erase { event_id: String },
+}
+
+#[derive(Subcommand)]
+enum RecoveryCmd {
+    /// Create a private recovery bundle while the daemon is stopped.
+    Create { destination: std::path::PathBuf },
+    /// Restore a validated bundle into a new directory.
+    Restore {
+        bundle: std::path::PathBuf,
+        destination: std::path::PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Start tracking this repository. The run's timer starts at the next prompt.
     Init {
@@ -97,6 +129,16 @@ enum Cmd {
     },
     /// Show whether this project has captured a prompt.
     Capture,
+    /// Read or set how prompt text is captured on this device.
+    Preferences {
+        #[command(subcommand)]
+        command: PreferencesCmd,
+    },
+    /// Show or erase stored text for an individual prompt.
+    Prompts {
+        #[command(subcommand)]
+        command: PromptsCmd,
+    },
     /// List runs for the current project, newest first.
     History {
         #[arg(long)]
@@ -307,6 +349,11 @@ enum Cmd {
         #[command(subcommand)]
         action: KeyCmd,
     },
+    /// Create or restore an offline recovery directory.
+    Recovery {
+        #[command(subcommand)]
+        action: RecoveryCmd,
+    },
     /// Copy the whole event log to a new file while the daemon runs. The copy
     /// verifies with public keys alone; the device's keys stay where they are.
     Backup {
@@ -476,6 +523,36 @@ fn run(cmd: Cmd) -> Result<()> {
                 category
             );
         }
+        Cmd::Prompts { command } => match command {
+            PromptsCmd::Show { event_id } => prompts::show(&c, &event_id)?,
+            PromptsCmd::Erase { event_id } => prompts::erase(&c, &event_id)?,
+        },
+        Cmd::Preferences { command } => match command {
+            PreferencesCmd::Show => {
+                let prefs = preferences::read_all()?;
+                println!(
+                    "capture: {}",
+                    match prefs.capture {
+                        preferences::CaptureMode::Content => "content",
+                        preferences::CaptureMode::MetadataOnly => "metadata-only",
+                    }
+                );
+                println!(
+                    "retention: {}",
+                    prefs
+                        .retention_days
+                        .map_or_else(|| "forever".into(), |days| format!("{days} days"))
+                );
+            }
+            PreferencesCmd::Capture { mode } => {
+                preferences::set(mode.into())?;
+                println!("Prompt capture preference saved.");
+            }
+            PreferencesCmd::Retention { days } => {
+                preferences::set_retention(preferences::parse_retention(&days).map_err(anyhow::Error::msg)?)?;
+                println!("Prompt retention preference saved.");
+            }
+        },
         Cmd::Capture => {
             let p = Project::require(&cwd)?;
             match ops::active_run(&c, &p)? {
@@ -812,6 +889,16 @@ fn run(cmd: Cmd) -> Result<()> {
             KeyCmd::Rotate => {
                 let r: RotateResponse = c.post("/v1/device/rotate", &serde_json::json!({}))?;
                 println!("rotated: {} replaces {}", r.device_pubkey, r.previous_pubkey);
+            }
+        },
+        Cmd::Recovery { action } => match action {
+            RecoveryCmd::Create { destination } => {
+                recovery::create(&speedrun_core::paths::data_dir(), &cwd.join(&destination))?;
+                println!("recovery bundle created at {}", destination.display());
+            }
+            RecoveryCmd::Restore { bundle, destination } => {
+                recovery::restore(&cwd.join(bundle), &cwd.join(&destination))?;
+                println!("recovery restored to {}", destination.display());
             }
         },
         Cmd::Backup { file } => {
