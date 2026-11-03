@@ -208,10 +208,61 @@ struct Turn {
     provisional: bool,
 }
 
-impl Turn {
-    /// Whether an `AgentTurnEnded` at `t` can pair with this turn.
-    fn accepts_end(&self, t: DateTime<Utc>) -> bool {
-        self.start <= t && (self.end.is_none() || (self.provisional && self.end.is_some_and(|e| e <= t)))
+/// Per-session index over starts in fold order. Each tree leaf stores the
+/// earliest end timestamp that can claim the turn; a missing leaf is final.
+struct TurnIndex {
+    coordinates: Vec<(DateTime<Utc>, usize)>,
+    tree: Vec<Option<DateTime<Utc>>>,
+    open: BTreeSet<(DateTime<Utc>, usize)>,
+}
+
+impl TurnIndex {
+    fn new(mut coordinates: Vec<(DateTime<Utc>, usize)>) -> Self {
+        coordinates.sort_unstable();
+        let tree = vec![None; coordinates.len().max(1) * 4];
+        Self {
+            coordinates,
+            tree,
+            open: BTreeSet::new(),
+        }
+    }
+
+    fn set(&mut self, key: (DateTime<Utc>, usize), value: Option<DateTime<Utc>>) {
+        let position = self.coordinates.binary_search(&key).expect("known turn start");
+        self.set_node(1, 0, self.coordinates.len(), position, value);
+    }
+
+    fn set_node(&mut self, node: usize, lo: usize, hi: usize, position: usize, value: Option<DateTime<Utc>>) {
+        if hi - lo == 1 {
+            self.tree[node] = value;
+            return;
+        }
+        let mid = (lo + hi) / 2;
+        if position < mid {
+            self.set_node(node * 2, lo, mid, position, value);
+        } else {
+            self.set_node(node * 2 + 1, mid, hi, position, value);
+        }
+        self.tree[node] = match (self.tree[node * 2], self.tree[node * 2 + 1]) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+
+    fn candidate(&self, t: DateTime<Utc>) -> Option<usize> {
+        self.find(1, 0, self.coordinates.len(), t)
+    }
+
+    fn find(&self, node: usize, lo: usize, hi: usize, t: DateTime<Utc>) -> Option<usize> {
+        if lo == hi || self.coordinates[lo].0 > t || self.tree[node].is_none_or(|min| min > t) {
+            return None;
+        }
+        if hi - lo == 1 {
+            return Some(self.coordinates[lo].1);
+        }
+        let mid = (lo + hi) / 2;
+        self.find(node * 2 + 1, mid, hi, t)
+            .or_else(|| self.find(node * 2, lo, mid, t))
     }
 }
 
@@ -359,6 +410,19 @@ impl RunView {
     /// any open turn or pause. Returns `None` when the run has no
     /// `RunStarted`, wherever in the input it sits.
     pub fn fold(events: &[Event], now: DateTime<Utc>) -> Option<RunView> {
+        #[cfg(test)]
+        {
+            Self::fold_impl(events, now, false)
+        }
+        #[cfg(not(test))]
+        {
+            Self::fold_impl(events, now)
+        }
+    }
+
+    fn fold_impl(events: &[Event], now: DateTime<Utc>, #[cfg(test)] reference: bool) -> Option<RunView> {
+        #[cfg(not(test))]
+        let reference = false;
         let first = events
             .iter()
             .find(|e| matches!(e.payload, EventPayload::RunStarted { .. }))?;
@@ -395,7 +459,22 @@ impl RunView {
             last_seq: 0,
             head_hash: None,
         };
+        let ordered = fold_order(events);
+        let mut coordinates: BTreeMap<String, Vec<(DateTime<Utc>, usize)>> = BTreeMap::new();
+        for (ordinal, event) in ordered.iter().enumerate() {
+            if let EventPayload::AgentTurnStarted { session_id } = &event.payload {
+                coordinates
+                    .entry(session_id.clone())
+                    .or_default()
+                    .push((event.occurred_at.max(start), ordinal));
+            }
+        }
+        let mut indexes: BTreeMap<String, TurnIndex> = coordinates
+            .into_iter()
+            .map(|(session, starts)| (session, TurnIndex::new(starts)))
+            .collect();
         let mut turns: BTreeMap<String, Vec<Turn>> = BTreeMap::new();
+        let mut turn_positions: BTreeMap<usize, usize> = BTreeMap::new();
         // Latest activity seen per session, used to end a superseded turn.
         let mut last_seen: BTreeMap<String, DateTime<Utc>> = BTreeMap::new();
         let mut agent: Vec<Interval> = Vec::new();
@@ -404,7 +483,7 @@ impl RunView {
         // (milestone index, time it started counting); splits computed after timing is known.
         let mut index: BTreeMap<String, usize> = BTreeMap::new();
 
-        for e in fold_order(events) {
+        for (ordinal, e) in ordered.into_iter().enumerate() {
             view.last_seq = e.seq;
             view.head_hash = Some(e.hash.clone());
             view.last_event_at = view.last_event_at.max(e.recorded_at);
@@ -436,34 +515,73 @@ impl RunView {
                     // it at the last thing we saw, not at this (possibly much later)
                     // start, so a crashed turn cannot absorb the idle gap.
                     let seen = last_seen.get(session_id).copied();
-                    if let Some(list) = turns.get_mut(session_id) {
-                        for turn in list.iter_mut() {
-                            if turn.end.is_none() && turn.start <= t {
-                                turn.end = Some(seen.map_or(turn.start, |s| s.max(turn.start)));
-                                turn.provisional = true;
+                    if reference {
+                        if let Some(list) = turns.get_mut(session_id) {
+                            for turn in list.iter_mut() {
+                                if turn.end.is_none() && turn.start <= t {
+                                    turn.end = Some(seen.map_or(turn.start, |s| s.max(turn.start)));
+                                    turn.provisional = true;
+                                }
                             }
                         }
+                        turns.entry(session_id.clone()).or_default().push(Turn {
+                            start: t,
+                            end: None,
+                            provisional: false,
+                        });
+                    } else {
+                        let index = indexes.get_mut(session_id).expect("indexed start");
+                        while let Some(&(start_time, old_ordinal)) = index.open.first() {
+                            if start_time > t {
+                                break;
+                            }
+                            index.open.pop_first();
+                            let turn = &mut turns.get_mut(session_id).expect("open session")
+                                [turn_positions[&old_ordinal]];
+                            let end = seen.map_or(turn.start, |s| s.max(turn.start));
+                            turn.end = Some(end);
+                            turn.provisional = true;
+                            index.set((start_time, old_ordinal), Some(end));
+                        }
+                        let list = turns.entry(session_id.clone()).or_default();
+                        turn_positions.insert(ordinal, list.len());
+                        list.push(Turn {
+                            start: t,
+                            end: None,
+                            provisional: false,
+                        });
+                        index.open.insert((t, ordinal));
+                        index.set((t, ordinal), Some(t));
                     }
-                    let turn = Turn {
-                        start: t,
-                        end: None,
-                        provisional: false,
-                    };
-                    turns.entry(session_id.clone()).or_default().push(turn);
                     last_seen.insert(session_id.clone(), seen.map_or(t, |s| s.max(t)));
                 }
                 EventPayload::AgentTurnEnded { session_id } => {
                     // Pair by occurred_at: an end can belong to a start delivered
                     // after it, and an end before every known start is stale.
-                    if let Some(list) = turns.get_mut(session_id) {
-                        let candidate = list
-                            .iter_mut()
-                            .filter(|turn| turn.accepts_end(t))
-                            .max_by_key(|turn| turn.start);
-                        if let Some(turn) = candidate {
-                            turn.end = Some(t);
-                            turn.provisional = false;
+                    if reference {
+                        if let Some(list) = turns.get_mut(session_id) {
+                            let candidate = list
+                                .iter_mut()
+                                .filter(|turn| {
+                                    turn.start <= t
+                                        && (turn.end.is_none()
+                                            || (turn.provisional && turn.end.is_some_and(|end| end <= t)))
+                                })
+                                .max_by_key(|turn| turn.start);
+                            if let Some(turn) = candidate {
+                                turn.end = Some(t);
+                                turn.provisional = false;
+                            }
                         }
+                    } else if let Some(index) = indexes.get_mut(session_id)
+                        && let Some(candidate) = index.candidate(t)
+                    {
+                        let turn =
+                            &mut turns.get_mut(session_id).expect("indexed turn")[turn_positions[&candidate]];
+                        index.open.remove(&(turn.start, candidate));
+                        index.set((turn.start, candidate), None);
+                        turn.end = Some(t);
+                        turn.provisional = false;
                     }
                     let seen = last_seen.get(session_id).copied();
                     last_seen.insert(session_id.clone(), seen.map_or(t, |s| s.max(t)));
@@ -848,6 +966,83 @@ mod tests {
                 },
             ),
         ]
+    }
+
+    #[test]
+    fn indexed_turns_match_historical_replay() {
+        // Exhaustive short histories include duplicate timestamps, reversed times,
+        // missing starts/ends, two sessions, and provisional replacements.
+        let choices: Vec<_> = (0..2)
+            .flat_map(|session| (0..3).flat_map(move |time| (0..2).map(move |start| (session, time, start))))
+            .collect();
+        for mut code in 0..choices.len().pow(4) {
+            let mut items = Vec::new();
+            for _ in 0..4 {
+                let (session, time, start) = choices[code % choices.len()];
+                code /= choices.len();
+                let session_id = if session == 0 { "a" } else { "b" }.to_string();
+                let payload = if start == 0 {
+                    EventPayload::AgentTurnStarted { session_id }
+                } else {
+                    EventPayload::AgentTurnEnded { session_id }
+                };
+                items.push((time, payload));
+            }
+            let events = log(items);
+            assert_eq!(
+                RunView::fold(&events, t(5)),
+                RunView::fold_impl(&events, t(5), true),
+                "events: {events:?}"
+            );
+            let mut devices = events.clone();
+            for (i, event) in devices.iter_mut().enumerate().skip(1) {
+                event.device_id = if i % 2 == 0 { "d" } else { "other" }.into();
+            }
+            assert_eq!(
+                RunView::fold(&devices, t(5)),
+                RunView::fold_impl(&devices, t(5), true),
+                "events: {devices:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_turns_match_long_reordered_replays() {
+        let mut state = 42_u64;
+        for _ in 0..1000 {
+            let mut items = Vec::new();
+            for _ in 0..64 {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let time = ((state >> 24) % 16) as i64;
+                let session_id = format!("s{}", (state >> 32) % 3);
+                let payload = match (state >> 56) % 3 {
+                    0 => EventPayload::AgentTurnStarted { session_id },
+                    1 => EventPayload::AgentTurnEnded { session_id },
+                    _ => EventPayload::PromptSubmitted {
+                        session_id,
+                        host: "test".into(),
+                        model: None,
+                        content_digest: String::new(),
+                        length: 0,
+                        redacted: false,
+                    },
+                };
+                items.push((time, payload));
+            }
+            let mut events = log(items);
+            for (i, event) in events.iter_mut().enumerate().skip(1) {
+                if i % 3 == 0 {
+                    event.device_id = "other".into();
+                }
+            }
+            assert_eq!(
+                RunView::fold(&events, t(20)),
+                RunView::fold_impl(&events, t(20), true),
+                "events: {events:?}"
+            );
+        }
     }
 
     #[test]
