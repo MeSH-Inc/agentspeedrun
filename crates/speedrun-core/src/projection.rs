@@ -1046,6 +1046,19 @@ mod tests {
     }
 
     #[test]
+    fn stop_and_session_end_close_only_one_turn() {
+        let mut items = turn(1, 3, "a");
+        items.push((
+            5,
+            EventPayload::AgentTurnEnded {
+                session_id: "a".into(),
+            },
+        ));
+        let v = RunView::fold(&log(items), t(10)).unwrap();
+        assert_eq!(v.timing.agent_ms, 2 * 60_000);
+    }
+
+    #[test]
     fn concurrent_sessions_count_agent_time_once() {
         let mut items = turn(0, 10, "a");
         items.extend(turn(5, 20, "b"));

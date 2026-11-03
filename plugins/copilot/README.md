@@ -24,3 +24,10 @@ speedrun setup copilot            # ~/.copilot/hooks/ ($COPILOT_HOME/hooks/)
 
 For the milestone tools, the VS Code extension registers the MCP server
 automatically. For the Copilot CLI, add `speedrun mcp` as an MCP server.
+
+Copilot CLI runs project hooks only in a trusted workspace. Admit the project
+through Copilot’s workspace trust flow before testing capture; permitting tool
+paths alone does not enable project hooks. After sending a prompt, run
+`speedrun readiness` in the project and check that recording is `captured`.
+User-scope hooks and trusted project-scope hooks were exercised with Copilot
+CLI 1.0.93; see [host verification](../../docs/HOST_VERIFICATION.md).

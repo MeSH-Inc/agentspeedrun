@@ -118,7 +118,7 @@ Adapters only translate host events into CLI calls. They hold no logic of their 
 | Host | Prompt / turn start | Turn end | Agent tools | Run-start context |
 |---|---|---|---|---|
 | Claude Code | `UserPromptSubmit` hook | `Stop`, `SessionEnd` | MCP (`speedrun mcp`) | hook `additionalContext` |
-| opencode | `chat.message` | `session.status` idle | native `tool` → `speedrun tool` | system-prompt transform |
+| OpenCode v2 | session `prompt` hook | execution completion/failure/interruption events | tool transform → `speedrun tool` | session `context` hook |
 | pi / omp | `before_agent_start` | `agent_end` | `registerTool` → `speedrun tool` | injected hidden message |
 | Copilot agent (VS Code, CLI) | `UserPromptSubmit` hook | `Stop`, `SessionEnd` | MCP (registered by the VS Code extension) | `SessionStart` `additionalContext` |
 | Zed agent | — (no API) | — | MCP context server extension | — |
@@ -129,7 +129,7 @@ The VS Code extension is a display and control surface: a status bar timer and s
 
 Shared rules:
 - **Only human prompts are recorded.** Subagent sessions are skipped: opencode `parentID`, omp `ctx.agent.kind`.
-- **One turn-end per turn.** Adapters track which sessions are busy.
+- **One timed interval per turn.** SDK adapters track busy sessions. Hook-based hosts may report both `Stop` and `SessionEnd` for a turn; the projection ignores an end notification once its turn is closed.
 - **Adapters never throw into the host.**
 - **Install from the binary.** `speedrun setup <host>` installs the copy of the adapter embedded in the binary (`include_str!`), so adapter and CLI versions cannot drift.
 
