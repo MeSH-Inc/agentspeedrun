@@ -132,6 +132,28 @@ pub fn install(host: Host, base: &Path, force: bool) -> Result<Vec<Outcome>> {
     Ok(out)
 }
 
+/// Remove only an adapter bearing our marker. User configuration and dependencies remain.
+pub fn remove(host: Host, base: &Path) -> Result<Option<PathBuf>> {
+    let (subdir, name, marker) = match host {
+        Host::Opencode => ("plugins", "agentspeedrun.ts", MARKER),
+        Host::Pi | Host::Omp => ("extensions", "agentspeedrun.ts", MARKER),
+        Host::Copilot => ("hooks", "agentspeedrun.json", COPILOT_MARKER),
+    };
+    let file = base.join(subdir).join(name);
+    match std::fs::read_to_string(&file) {
+        Ok(existing) if existing.contains(marker) => {
+            std::fs::remove_file(&file).with_context(|| format!("removing {}", file.display()))?;
+            Ok(Some(file))
+        }
+        Ok(_) => bail!(
+            "{} was not written by speedrun; leaving it untouched",
+            file.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("reading {}", file.display())),
+    }
+}
+
 /// Add `dep` to package.json's dependencies unless already present. Keeps
 /// every other key and their order.
 fn ensure_dependency(path: &Path, (name, version): (&str, &str)) -> Result<Option<Outcome>> {
@@ -196,6 +218,19 @@ mod tests {
         assert!(install(Host::Pi, &base, false).is_err());
         assert!(install(Host::Pi, &base, true).is_ok());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), PI_EXTENSION);
+    }
+
+    #[test]
+    fn removal_preserves_foreign_files_and_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plugins/agentspeedrun.ts");
+        install(Host::Opencode, dir.path(), false).unwrap();
+        assert_eq!(remove(Host::Opencode, dir.path()).unwrap(), Some(file.clone()));
+        assert!(dir.path().join("package.json").exists());
+        assert_eq!(remove(Host::Opencode, dir.path()).unwrap(), None);
+        std::fs::write(&file, "foreign plugin").unwrap();
+        assert!(remove(Host::Opencode, dir.path()).is_err());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "foreign plugin");
     }
 
     #[test]

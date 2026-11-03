@@ -2,7 +2,7 @@
 
 One version covers everything shipped from this repo: the Rust crates, the
 VS Code extension, the Zed extension, the opencode and pi packages and the
-Claude Code plugin. `scripts/version.py check` (run in CI) fails if they drift.
+Claude Code plugin. `scripts/version.py check` fails if they drift.
 
 1. Bump every manifest and the lockfiles. This also pins the Claude Code
    plugin in `.claude-plugin/marketplace.json` to the new tag (a `git-subdir`
@@ -19,47 +19,41 @@ Claude Code plugin. `scripts/version.py check` (run in CI) fails if they drift.
    git commit -am "Release 0.2.0" && git tag v0.2.0 && git push origin main v0.2.0
    ```
 
-The `release` workflow then:
+Before publishing, verify locally:
 
-- checks the tag matches the manifests;
-- runs `cargo fmt --check`, clippy and `cargo test --all --locked`; nothing is
-  built or published from a commit whose tests fail;
-- builds `speedrun` and `speedrund` for `x86_64-unknown-linux-musl`,
-  `aarch64-unknown-linux-musl` (cross-built with zig), `aarch64-apple-darwin`
-  and `x86_64-apple-darwin`, and runs `scripts/smoke.sh` on each (the arm64
-  Linux build under QEMU): daemon autostart, a run, a verified split, the hash
-  chain, the embedded adapters;
-- packages each as `agentspeedrun-vX.Y.Z-<target>.tar.gz` (`scripts/package.sh`).
-  Archives are reproducible (`scripts/archive.py`): entries in name order,
-  owned by 0:0, dated by the tagged commit (`SOURCE_DATE_EPOCH`), and a gzip
-  header with no name or time, so packaging the same binaries twice gives the
-  same sha256. The toolchain is pinned in `rust-toolchain.toml`;
-- builds and tests the `.vsix` in a real VS Code, and builds the Zed extension;
-- writes `SHA256SUMS`, installs from those exact files with `install.sh` and
-  smoke-tests the result;
-- attests build provenance for every archive and the `.vsix`
-  (`actions/attest-build-provenance`), which `install.sh` checks with
-  `gh attestation verify` when an authenticated `gh` is present. Attestations
-  need a public repository on the organization's plan;
-- publishes a GitHub release with generated notes. Tags with a `-` (e.g.
-  `v0.2.0-rc.1`) become prereleases.
-
-Run the workflow by hand from the Actions tab (or `gh workflow run release.yml`)
-for a dry run that does everything except attest and publish.
-
-Every action in both workflows is pinned by commit, with the release named in
-a comment; update one by resolving its new tag with
-`gh api repos/<owner>/<action>/commits/<tag> --jq .sha`. On every push, CI also
-runs the hooks in `plugins/claude-code/hooks/hooks.json` against the last
-released binary (`scripts/hooks_against_release.sh`), since the plugin's
-hooks reach users from `main` before the binary they call does.
+- Run `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
+  `cargo test --all --locked`, and `scripts/version.py check`.
+- Build the binaries for each supported target and run `scripts/smoke.sh` on
+  each platform. Package each pair with `scripts/package.sh <target> <bindir>`.
+  Archives are reproducible: entries are sorted, owned by 0:0 and dated by
+  the tagged commit (or `SOURCE_DATE_EPOCH`).
+- Build and test the VS Code extension and Zed extension as described in
+  `CLAUDE.md`. Generate `SHA256SUMS` for the release assets and run the
+  packaged lifecycle verification below on each available platform.
+- Publish the verified assets and checksums. If build attestations are
+  available, `install.sh` verifies them when an authenticated `gh` is present.
 
 ## Distribution channels
 
 | Channel | State |
 |---------|-------|
-| GitHub release + `install.sh` | Automated. |
+| GitHub release + `install.sh` | Release archives and checksums. |
 | Claude Code plugin | This repo's marketplace (`.claude-plugin/marketplace.json`) serves the plugin from the release tag; `scripts/version.py set` moves the pin. A plugin from a tag is fetched only when it is enabled in user settings, not in a committed project `.claude/settings.json`. |
 | opencode, pi, oh-my-pi | Embedded in `speedrun` (`speedrun setup …`); pi also installs from git. |
 | VS Code | `.vsix` attached to each release. Marketplace/Open VSX publishing needs a publisher account and token (`VSCE_PAT`, `OVSX_PAT`). |
 | Zed | Not in the registry yet: submission is a PR to `zed-industries/extensions` and requires a public repo with an open-source license. |
+
+## Local packaged lifecycle verification
+
+After building the native binaries, run `scripts/packaged-lifecycle.sh target/debug`.
+It creates a release-shaped archive from those binaries, serves it over loopback
+HTTP and exercises installation, same-version replacement, capture, removal,
+reinstallation and checksum rejection under temporary HOME, XDG and data paths.
+Same-version replacement tests the installer and daemon restart, not compatibility
+between releases. Run the lifecycle test on each supported platform before a
+release; it does not exercise other architectures or build attestations.
+
+For the VS Code package, run `scripts/vsix-lifecycle.sh /path/to/code` with a
+local VS Code CLI. It builds a VSIX and installs, replaces, lists and removes
+it using isolated profile and extension directories. This checks package
+lifecycle separately from the real VS Code host integration tests.

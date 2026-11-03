@@ -43,7 +43,7 @@ Prebuilt binaries for Linux (x86_64, arm64; static) and macOS (Apple silicon, In
 curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/main/install.sh | sh
 ```
 
-The installer checks the release's `SHA256SUMS`, and with an authenticated GitHub CLI also the archive's build attestation (`gh attestation verify`). It puts `speedrun` and `speedrund` in `~/.local/bin` (`SPEEDRUN_INSTALL_DIR` to change, `SPEEDRUN_VERSION=v0.2.0` to pin) and restarts a running daemon on the new version. Or build from source, in a clone:
+The installer checks the release's `SHA256SUMS`, and with an authenticated GitHub CLI also the archive's build attestation (`gh attestation verify`). It puts `speedrun` and `speedrund` in `~/.local/bin` (`SPEEDRUN_INSTALL_DIR` to change, `SPEEDRUN_VERSION=v0.2.0` to pin) and restarts the daemon authenticated by the current data directory only when it was launched from that installation. Or build from source, in a clone:
 
 ```bash
 cargo install --locked --path crates/speedrund && cargo install --locked --path crates/speedrun-cli
@@ -68,6 +68,22 @@ speedrun setup --host pi --scope project --capture metadata-only --yes
 ```
 
 A new project defaults to `any-percent`; use `--category` to choose another.
+To remove an installed adapter, run `speedrun setup opencode --remove` (or
+`pi`, `omp`, or `copilot`); add `--project` if it was installed for a project.
+This preserves other host configuration and dependencies. Remove the binaries
+installed by the script with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/main/install.sh | sh -s -- --uninstall
+```
+
+Use the same `SPEEDRUN_INSTALL_DIR` as installation. The uninstaller stops a
+matching daemon and removes only binaries whose contents still match its
+installation record. Without that record, including for older or manually
+installed binaries, it leaves the binaries untouched. Project settings, run
+history, adapters, their dependencies and other configuration remain. Remove adapters before uninstalling the CLI. Extensions
+installed through a host's own marketplace must be removed there.
+
 The explicit adapter-only commands below remain available. Claude Code uses a
 plugin; VS Code's extension adds a display and tools while Copilot hooks capture
 prompts. Zed's extension provides tools but does not capture its own agent prompts.

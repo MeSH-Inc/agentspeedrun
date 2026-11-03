@@ -360,6 +360,9 @@ enum Cmd {
         /// Replace an existing file speedrun did not write.
         #[arg(long)]
         force: bool,
+        /// Remove the adapter without changing user configuration.
+        #[arg(long, conflicts_with = "force")]
+        remove: bool,
         /// Host for guided setup.
         #[arg(long = "host", value_name = "HOST")]
         guided_host: Option<onboarding::Host>,
@@ -915,6 +918,7 @@ fn run(cmd: Cmd) -> Result<()> {
             host,
             project,
             force,
+            remove,
             guided_host,
             scope,
             category,
@@ -922,6 +926,9 @@ fn run(cmd: Cmd) -> Result<()> {
             yes,
         } => {
             let Some(host) = host else {
+                if remove {
+                    bail!("--remove requires a positional host");
+                }
                 if project {
                     bail!("--project requires a positional host; use --scope project for guided setup");
                 }
@@ -954,6 +961,14 @@ fn run(cmd: Cmd) -> Result<()> {
                 copilot_home: copilot.as_deref(),
             };
             let base = setup::target_dir(host, root.as_deref(), &dirs);
+            if remove {
+                match setup::remove(host, &base)? {
+                    Some(path) => println!("removed {}", path.display()),
+                    None => println!("adapter already absent"),
+                }
+                println!("Restart the host to unload it. Project data and configuration were preserved.");
+                return Ok(());
+            }
             for outcome in setup::install(host, &base, force)? {
                 match outcome {
                     setup::Outcome::Installed(p) => println!("installed {}", p.display()),

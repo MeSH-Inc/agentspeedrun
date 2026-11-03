@@ -23,6 +23,45 @@ dest="${SPEEDRUN_INSTALL_DIR:-$HOME/.local/bin}"
 say() { printf 'speedrun-install: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
 
+# Only act on the daemon authenticated by this data directory and launched
+# from this installation. An unrelated daemon may share its executable name.
+matching_daemon() {
+  [ -x "$dest/speedrun" ] && [ -d "$dest" ] || return 1
+  canonical_dest=$(cd "$dest" && pwd -P)
+  logical_dest=$(cd "$dest" && pwd -L)
+  status=$("$dest/speedrun" daemon status 2>/dev/null) || return 1
+  pid=$(printf '%s\n' "$status" | sed -n 's/.* pid \([0-9][0-9]*\) at .*/\1/p')
+  [ -n "$pid" ] || return 1
+  command=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+  [ "$command" = "$canonical_dest/speedrund" ] || [ "$command" = "$logical_dest/speedrund" ]
+}
+
+if [ "${1:-}" = "--uninstall" ]; then
+  [ "$#" -eq 1 ] || die "usage: install.sh --uninstall"
+  manifest="$dest/.agentspeedrun-installed"
+  [ -f "$manifest" ] || die "no installation record at $manifest; binaries left untouched"
+  if matching_daemon; then
+    "$dest/speedrun" daemon stop || die "could not stop the installed daemon; binaries left untouched"
+  fi
+  for b in speedrun speedrund; do
+    [ -f "$dest/$b" ] || continue
+    expected=$(grep " $b\$" "$manifest" || true)
+    actual=$(cd "$dest" && {
+      if command -v sha256sum >/dev/null 2>&1; then sha256sum "$b"; else shasum -a 256 "$b"; fi
+    })
+    if [ -n "$expected" ] && [ "$actual" = "$expected" ]; then
+      rm "$dest/$b"
+      say "removed $dest/$b"
+    else
+      say "left modified $dest/$b untouched"
+    fi
+  done
+  rm "$manifest"
+  say "project data, host adapters and configuration were preserved; remove adapters with speedrun setup HOST --remove before uninstalling"
+  exit 0
+fi
+[ "$#" -eq 0 ] || die "usage: install.sh [--uninstall]"
+
 case "$(uname -s)/$(uname -m)" in
   MINGW*/* | MSYS*/* | CYGWIN*/*) die "Windows is not supported; install inside WSL" ;;
   Linux/x86_64 | Linux/amd64) target="x86_64-unknown-linux-musl" ;;
@@ -80,11 +119,19 @@ if [ -z "${SPEEDRUN_SKIP_ATTESTATION:-}" ] && command -v gh >/dev/null 2>&1 && g
 fi
 
 tar -xzf "$tmp/$archive" -C "$tmp"
-mkdir -p "$dest"
+restart=0
+if matching_daemon; then restart=1; fi
 for b in speedrun speedrund; do
-  # Replace by rename so a running daemon keeps its old inode.
+  [ -f "$tmp/agentspeedrun-$version-$target/$b" ] && [ -x "$tmp/agentspeedrun-$version-$target/$b" ] || die "archive is missing executable $b"
+done
+mkdir -p "$dest"
+# Stage the complete pair before replacing either executable.
+for b in speedrun speedrund; do
   cp "$tmp/agentspeedrun-$version-$target/$b" "$dest/.$b.new"
   chmod 755 "$dest/.$b.new"
+done
+for b in speedrun speedrund; do
+  # Rename so a running daemon keeps its old inode.
   mv -f "$dest/.$b.new" "$dest/$b"
 done
 
@@ -93,7 +140,11 @@ case ":$PATH:" in
   *":$dest:"*) ;;
   *) say "add $dest to your PATH, e.g. echo 'export PATH=\"$dest:\$PATH\"' >> ~/.profile" ;;
 esac
-if pgrep -x speedrund >/dev/null 2>&1; then
+# Record exact installed bytes so uninstall does not remove a later replacement.
+(cd "$dest" && {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum speedrun speedrund; else shasum -a 256 speedrun speedrund; fi
+} >.agentspeedrun-installed)
+if [ "$restart" -eq 1 ]; then
   # Replace the running daemon with the new one, waiting for the old to exit.
   if "$dest/speedrun" daemon restart >/dev/null 2>&1; then
     say "restarted speedrund on the new version"
@@ -101,4 +152,4 @@ if pgrep -x speedrund >/dev/null 2>&1; then
     say "a speedrund is running; restart it to use the new version: speedrun daemon restart"
   fi
 fi
-say "next: cd into a project and run: speedrun init"
+say "next: cd into a project and run: speedrun setup"
