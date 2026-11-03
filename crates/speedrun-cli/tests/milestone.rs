@@ -26,6 +26,23 @@ fn terminal_selection_retries_cancels_and_records_a_claim() {
             .unwrap()
             .success()
     );
+    assert!(
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial"
+            ])
+            .current_dir(&project)
+            .status()
+            .unwrap()
+            .success()
+    );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     drop(listener);
@@ -54,7 +71,37 @@ fn terminal_selection_retries_cancels_and_records_a_claim() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(base().arg("init").status().unwrap().success());
+    assert!(
+        base()
+            .args(["init", "--category", "hundred-percent"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["add", ".speedrun/project.json"])
+            .current_dir(&project)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "configure"
+            ])
+            .current_dir(&project)
+            .status()
+            .unwrap()
+            .success()
+    );
     let mut prompt = base()
         .args(["ingest", "prompt", "--host", "test", "--session", "s"])
         .stdin(Stdio::piped())
@@ -66,7 +113,7 @@ fn terminal_selection_retries_cancels_and_records_a_claim() {
     let script = r#"
 import os, pty, select, subprocess, sys, time
 master, slave = pty.openpty()
-p = subprocess.Popen([sys.argv[1], 'milestone', 'scaffold-runs'], stdin=slave, stdout=slave, stderr=slave)
+p = subprocess.Popen([sys.argv[1], 'milestone', sys.argv[3]], stdin=slave, stdout=slave, stderr=slave)
 os.close(slave)
 os.write(master, sys.argv[2].encode())
 out = b''
@@ -79,7 +126,7 @@ if p.poll() is None: p.kill(); raise SystemExit('milestone timed out')
 sys.stdout.buffer.write(out)
 raise SystemExit(p.wait())
 "#;
-    let terminal = |input: &str| {
+    let terminal = |milestone: &str, input: &str| {
         base()
             .get_envs()
             .fold(Command::new("python3"), |mut command, (k, v)| {
@@ -89,11 +136,11 @@ raise SystemExit(p.wait())
                 command
             })
             .current_dir(&project)
-            .args(["-c", script, binary.to_str().unwrap(), input])
+            .args(["-c", script, binary.to_str().unwrap(), input, milestone])
             .output()
             .unwrap()
     };
-    let cancelled = terminal("0\nq\n");
+    let cancelled = terminal("scaffold-runs", "0\nq\n");
     assert!(
         cancelled.status.success(),
         "{}",
@@ -111,11 +158,51 @@ raise SystemExit(p.wait())
         .unwrap()
     };
     assert_eq!(state()["milestones"][0]["state"], "accepted");
-    let recorded = terminal("1\n");
+    let recorded = terminal("scaffold-runs", "1\n");
     assert!(
         recorded.status.success(),
         "{}",
         String::from_utf8_lossy(&recorded.stdout)
     );
     assert_eq!(state()["milestones"][0]["counts"], true);
+
+    let empty = terminal("tests-green", "1\n1\n");
+    assert!(empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stdout).contains("No local test observations"));
+    let test_state = || {
+        serde_json::from_slice::<serde_json::Value>(
+            &base()
+                .args(["milestone", "tests-green", "--json"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+    };
+    assert_eq!(test_state()["milestones"][0]["state"], "accepted");
+    let observation = base()
+        .args(["local-test", "--", "sh", "-c", "exit 0 # secret-argument"])
+        .output()
+        .unwrap();
+    assert!(
+        observation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&observation.stderr)
+    );
+    let cancelled = terminal("tests-green", "1\n1\nq\n");
+    let output = String::from_utf8_lossy(&cancelled.stdout);
+    assert!(cancelled.status.success(), "{output}");
+    assert!(
+        output.contains("passed") && output.contains("current HEAD"),
+        "{output}"
+    );
+    assert!(!output.contains("secret-argument"));
+    assert_eq!(test_state()["milestones"][0]["state"], "accepted");
+    let recorded = terminal("tests-green", "1\n1\n1\n");
+    assert!(
+        recorded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recorded.stdout)
+    );
+    assert_eq!(test_state()["milestones"][0]["state"], "verified");
 }

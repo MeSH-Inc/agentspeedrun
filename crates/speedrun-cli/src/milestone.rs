@@ -5,6 +5,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 use speedrun_core::{
     Claimant, EventPayload, MilestoneState, RunView, Trust,
+    api::{TestObservation, TestStatus},
     category::{self, VerificationPolicy},
 };
 
@@ -174,7 +175,7 @@ fn items(run: &RunView) -> Result<Vec<Item>> {
                 Some(VerificationPolicy::LocalTestsOrCi) => vec![
                     EvidenceChoice {
                         flag: "--local-test",
-                        label: "Local test observation ID",
+                        label: "Local test observation",
                     },
                     EvidenceChoice {
                         flag: "--ci",
@@ -231,6 +232,47 @@ fn pick(prompt: &str, labels: &[String]) -> Result<Option<usize>> {
         }
         println!("Enter a number from 1 to {}, or q to cancel.", labels.len());
     }
+}
+
+fn observation_label(observation: &TestObservation, head: Option<&str>) -> String {
+    let status = match &observation.status {
+        TestStatus::Running => "running".to_owned(),
+        TestStatus::Interrupted => "interrupted".to_owned(),
+        TestStatus::Success => "passed".to_owned(),
+        TestStatus::Failed {
+            exit_code: Some(code),
+        } => format!("failed (exit {code})"),
+        TestStatus::Failed { exit_code: None } => "failed".to_owned(),
+        TestStatus::TimedOut => "timed out".to_owned(),
+        TestStatus::ContextChanged => "context changed".to_owned(),
+    };
+    let relevance = match head {
+        Some(head) if head == observation.head => "current HEAD",
+        Some(_) => "different HEAD",
+        None => "current HEAD unavailable",
+    };
+    format!(
+        "{status} — {} — {relevance}",
+        observation.observed_at.to_rfc3339()
+    )
+}
+
+fn pick_observation(c: &Client, p: &Project, run: &RunView) -> Result<Option<String>> {
+    let observations: Vec<TestObservation> = c
+        .get(&format!("/v1/runs/{}/local-tests", run.run_id))
+        .map_err(|error| anyhow::anyhow!("could not load local test history: {error}"))?;
+    if observations.is_empty() {
+        println!(
+            "No local test observations for this run. Run `speedrun local-test -- <command> [args...]` first; no claim was recorded."
+        );
+        return Ok(None);
+    }
+    let head = p.resolve_commit("HEAD").ok();
+    let labels = observations
+        .iter()
+        .map(|o| observation_label(o, head.as_deref()))
+        .collect::<Vec<_>>();
+    Ok(pick("Local test (number, or q to cancel): ", &labels)?.map(|index| observations[index].id.clone()))
 }
 
 pub fn run(c: &Client, p: &Project, id: Option<&str>, json: bool) -> Result<()> {
@@ -359,6 +401,13 @@ pub fn run(c: &Client, p: &Project, id: Option<&str>, json: bool) -> Result<()> 
                     m.evidence.iter().collect()
                 };
                 for choice in selected {
+                    if choice.flag == "--local-test" {
+                        let Some(id) = pick_observation(c, p, &run)? else {
+                            return Ok(());
+                        };
+                        local_test = Some(id);
+                        continue;
+                    }
                     let value = read(&format!("{}: ", choice.label))?;
                     if value.is_empty() {
                         continue;
@@ -367,7 +416,6 @@ pub fn run(c: &Client, p: &Project, id: Option<&str>, json: bool) -> Result<()> 
                         "--url" => claim.urls.push(value),
                         "--ci" => claim.ci = Some(value),
                         "--stripe" => claim.stripe = Some(value),
-                        "--local-test" => local_test = Some(value),
                         _ => {}
                     }
                 }
@@ -415,6 +463,23 @@ mod tests {
                 "required_trust":"self_declared", "state":state, "trust":null, "evidence":[], "reached_at":null,
                 "counted_at":null, "split":null, "pending_confirmation":pending}]
         })).unwrap()
+    }
+
+    #[test]
+    fn observation_labels_report_failure_and_head_without_arguments() {
+        let observation: TestObservation = serde_json::from_value(json!({
+            "id": "observation", "run_id": "run", "project_id": "project",
+            "head": "abc", "argv": ["secret-argument"],
+            "status": {"kind": "failed", "exit_code": 2},
+            "observed_at": "2026-01-01T00:00:00Z", "observer": "test", "scope": "local"
+        }))
+        .unwrap();
+        let current = observation_label(&observation, Some("abc"));
+        assert!(current.contains("failed (exit 2)") && current.contains("current HEAD"));
+        assert!(current.contains("2026-01-01"));
+        assert!(!current.contains("secret-argument"));
+        assert!(observation_label(&observation, Some("def")).contains("different HEAD"));
+        assert!(observation_label(&observation, None).contains("current HEAD unavailable"));
     }
 
     #[test]

@@ -103,8 +103,10 @@ current state. `speedrun milestone <id>` opens one milestone; `--json` lists the
 same actions for integrations. The VS Code **Milestone Actions** command uses
 the same choices. The explicit `split`, `accept`, `reject`, `confirm`,
 `invalidate`, evidence and verification commands remain available for direct use.
-Evidence checks may fail or be unavailable; attaching evidence does not itself
-guarantee verification.
+For local test evidence, the terminal action lists recent observations with their
+status, time, and whether they match the current Git HEAD. Run
+`speedrun local-test -- <command> [args...]` to create an observation. Evidence checks may
+fail or be unavailable; attaching evidence does not itself guarantee verification.
 
 ```bash
 speedrun status                              # timer and splits
