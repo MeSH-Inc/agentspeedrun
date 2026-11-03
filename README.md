@@ -18,7 +18,7 @@ capture metadata-only` to record timing without prompt text or text commitments.
 
 ## Quick start
 
-This guide describes the 0.3.0 preview. If its assets are not yet available on
+This guide describes the 0.3.1 preview. If its assets are not yet available on
 the Releases page, build this checkout to use the guided setup and milestone
 commands below:
 
@@ -41,10 +41,10 @@ available, the build attestation. It installs to `~/.local/bin` (override with
 `speedrun init`, the explicit host setup commands below, and `speedrun status`;
 run `speedrun --help` for the commands available in that release.
 
-When the 0.3.0 preview assets are available, install that exact version with:
+When the 0.3.1 preview assets are available, install that exact version with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/v0.3.0/install.sh | SPEEDRUN_VERSION=v0.3.0 SPEEDRUN_SKIP_ATTESTATION=1 sh
+curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/v0.3.1/install.sh | SPEEDRUN_VERSION=v0.3.1 SPEEDRUN_SKIP_ATTESTATION=1 sh
 ```
 
 The preview assets are locally built and have no build provenance attestations.

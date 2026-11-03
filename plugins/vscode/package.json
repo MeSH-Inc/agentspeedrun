@@ -2,7 +2,7 @@
   "name": "agentspeedrun",
   "displayName": "agentspeedrun",
   "description": "Speedrun timing for agentic coding: a live split timer, milestones, and milestone tools for VS Code's agent.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "mesh-inc",
   "private": true,
   "license": "(MIT OR Apache-2.0)",

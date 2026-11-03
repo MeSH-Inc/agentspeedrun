@@ -11,7 +11,7 @@ Local verification requires the pinned Rust toolchain, Python 3.11 or newer
    lockfiles, and the Claude Code marketplace pin to `vX.Y.Z`.
 2. Commit the candidate and run the local checks below. Record their results and
    asset hashes before creating a tag or publishing.
-3. For the prepared 0.3.0 preview, use tag `v0.3.0`, mark the GitHub release
+3. For the prepared 0.3.1 preview, use tag `v0.3.1`, mark the GitHub release
    as a prerelease explicitly, and package the VS Code extension with
    `vsce package --pre-release`. A numeric version keeps the extension
    manifests compatible; the tag alone does not identify it as a preview.
@@ -43,26 +43,15 @@ existing in a release is not evidence that the current checkout was tested on
 that platform. Record the commit, archive checksum, operating system and whether
 execution was native or emulated for each release candidate.
 
-| OS and CPU | Archive target | Latest local runtime coverage |
-|------------|----------------|-------------------------------|
-| macOS Apple silicon | `aarch64-apple-darwin` | Native lifecycle passed with the current installer; broader runtime checks passed in an earlier development round. Repeat on the release candidate. |
-| macOS Intel | `x86_64-apple-darwin` | Development binaries under Rosetta: smoke, lifecycle, v0.2.0 upgrade and extracted clean flow. Native Intel hardware remains unverified. |
-| Linux arm64 | `aarch64-unknown-linux-musl` | Native architecture in a Linux VM in an earlier development round; repeat on the release candidate. |
-| Linux x86_64 | `x86_64-unknown-linux-musl` | Development static binaries under emulation: smoke, lifecycle, v0.2.0 upgrade and extracted clean flow. Native x86_64 hardware remains unverified. |
+| OS and CPU | Archive target |
+|------------|----------------|
+| macOS Apple silicon | `aarch64-apple-darwin` |
+| macOS Intel | `x86_64-apple-darwin` |
+| Linux arm64 | `aarch64-unknown-linux-musl` |
+| Linux x86_64 | `x86_64-unknown-linux-musl` |
 
-The x86 binaries above were built from the Rust source at `7868620`; the
-installer and lifecycle script also include the subsequent working-tree
-portability fix. These checks were run on 2026-11-02. Development binary
-SHA-256 values (`speedrun`, then `speedrund`) were:
-
-- macOS x86_64: `95c238dca14c2d2d2e9aa4640ebba4f65813b53a52616ae5b59c09c81ffd12cd`, `eab328a62fde9a2dcc13109448d7b168a67cfbc0779b01e9f8e9101a3012628f`.
-- Linux x86_64: `dd37a50e963f820ca2f112d2d8675bc15fb08a72356f526b05ee7e48d0fe9900`, `e5b1a304ee4647332d498ab370f0fb9fa23279dcb60f9599a13a8812569e7ab4`.
-
-The published v0.2.0 baseline archive SHA-256 values were
-`d0527faf82f64f307d53416bb761e688c1a420691aae61e82a9388dbeff2d954`
-(macOS x86_64) and
-`44d91366b83a8b1e3de308bc6aaadcb151dbd2095d9ca8e61d276950153efc4a`
-(Linux x86_64). These are development checks, not a release-candidate signoff.
+Record candidate-specific runtime coverage and limitations in the release's
+`VERIFICATION.md`, alongside the commit and asset checksums.
 
 Cross-compilation alone does not exercise the installer, daemon, or host process
 handling. When a required runtime is unavailable, record that gap with the
