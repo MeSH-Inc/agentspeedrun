@@ -1954,6 +1954,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rpassword",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "speedrun-core",

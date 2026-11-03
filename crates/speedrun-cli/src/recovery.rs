@@ -306,7 +306,70 @@ fn validate(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+// Sync all staged data before publishing the directory entry. A process killed
+// before publication can leave an identifiable sibling staging directory.
+fn sync_tree(dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            sync_tree(&entry.path())?;
+        } else {
+            fs::File::open(entry.path())?.sync_all()?;
+        }
+    }
+    fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
+fn publish(
+    destination: &Path,
+    checkpoint: &mut impl FnMut(&str) -> Result<()>,
+    operation: &str,
+    build: impl FnOnce(&Path, &mut dyn FnMut(&str) -> Result<()>) -> Result<()>,
+) -> Result<()> {
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let stage = tempfile::Builder::new()
+        .prefix(".speedrun-recovery-")
+        .tempdir_in(parent)?;
+    let payload = stage.path().join("data");
+    build(&payload, checkpoint)?;
+    sync_tree(&payload)?;
+    fs::File::open(stage.path())?.sync_all()?;
+    checkpoint(&format!("{operation}.ready"))?;
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        &payload,
+        rustix::fs::CWD,
+        destination,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )?;
+    fs::File::open(parent)?.sync_all()?;
+    checkpoint(&format!("{operation}.published"))?;
+    Ok(())
+}
+
 pub fn create(source: &Path, destination: &Path) -> Result<()> {
+    create_with_checkpoints(source, destination, &mut |_| Ok(()))
+}
+
+fn create_with_checkpoints(
+    source: &Path,
+    destination: &Path,
+    checkpoint: &mut impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    publish(destination, checkpoint, "create", |dest, checkpoint| {
+        create_in_place(source, dest, checkpoint)
+    })
+}
+
+fn create_in_place(
+    source: &Path,
+    destination: &Path,
+    checkpoint: &mut dyn FnMut(&str) -> Result<()>,
+) -> Result<()> {
     check_dir(source)?;
     let lock_path = source.join("speedrund.lock");
     if present(&lock_path)? {
@@ -336,10 +399,12 @@ pub fn create(source: &Path, destination: &Path) -> Result<()> {
     };
     private_dir(destination)?;
     let result = (|| -> Result<()> {
+        checkpoint("create.directory")?;
         snapshot(
             &source.join("speedrun.sqlite"),
             &destination.join("speedrun.sqlite"),
         )?;
+        checkpoint("create.database")?;
         for name in [
             "device.key",
             "device.key.next",
@@ -349,6 +414,7 @@ pub fn create(source: &Path, destination: &Path) -> Result<()> {
             "preferences.json",
         ] {
             copy_optional(&source.join(name), &destination.join(name))?;
+            checkpoint(&format!("create.file.{name}"))?;
         }
         let disclosure = source.join("disclosure");
         if present(&disclosure)? {
@@ -360,13 +426,16 @@ pub fn create(source: &Path, destination: &Path) -> Result<()> {
                     &item.path(),
                     &destination.join("disclosure").join(item.file_name()),
                 )?;
+                checkpoint("create.disclosure.file")?;
             }
         }
+        checkpoint("create.disclosure")?;
         if import_lock.is_some() {
             private_dir(&destination.join("spool"))?;
             let outbox = spool.join("pending.sqlite3");
             if present(&outbox)? {
                 snapshot(&outbox, &destination.join("spool/pending.sqlite3"))?;
+                checkpoint("create.outbox")?;
             }
             for item in fs::read_dir(&spool)? {
                 let item = item?;
@@ -377,17 +446,21 @@ pub fn create(source: &Path, destination: &Path) -> Result<()> {
                     || n == "rejected.jsonl"
                     || n.starts_with("flushing-")
                 {
-                    copy_file(&item.path(), &destination.join("spool").join(name))?;
+                    copy_file(&item.path(), &destination.join("spool").join(&name))?;
+                    checkpoint(&format!("create.spool.{n}"))?;
                 }
             }
         }
+        checkpoint("create.spool")?;
         let mut files = BTreeMap::new();
         inventory(destination, Path::new(""), &mut files)?;
         write_private(
             &destination.join(MANIFEST),
             &serde_json::to_vec_pretty(&Manifest { version: 1, files })?,
         )?;
-        validate(destination)
+        checkpoint("create.manifest")?;
+        validate(destination)?;
+        checkpoint("create.validated")
     })();
     if result.is_err() {
         let _ = fs::remove_dir_all(destination);
@@ -396,9 +469,29 @@ pub fn create(source: &Path, destination: &Path) -> Result<()> {
 }
 
 pub fn restore(bundle: &Path, destination: &Path) -> Result<()> {
+    restore_with_checkpoints(bundle, destination, &mut |_| Ok(()))
+}
+
+fn restore_with_checkpoints(
+    bundle: &Path,
+    destination: &Path,
+    checkpoint: &mut impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    publish(destination, checkpoint, "restore", |dest, checkpoint| {
+        restore_in_place(bundle, dest, checkpoint)
+    })
+}
+
+fn restore_in_place(
+    bundle: &Path,
+    destination: &Path,
+    checkpoint: &mut dyn FnMut(&str) -> Result<()>,
+) -> Result<()> {
     validate(bundle)?;
+    checkpoint("restore.source_validated")?;
     private_dir(destination)?;
     let result = (|| -> Result<()> {
+        checkpoint("restore.directory")?;
         let mut files = BTreeMap::new();
         inventory(bundle, Path::new(""), &mut files)?;
         for rel in files.keys() {
@@ -409,11 +502,15 @@ pub fn restore(bundle: &Path, destination: &Path) -> Result<()> {
                 fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
             }
             copy_file(&bundle.join(path), &dst)?;
+            checkpoint(&format!("restore.file.{rel}"))?;
         }
         // Validate the copy as well as the source, including checksums.
         copy_file(&bundle.join(MANIFEST), &destination.join(MANIFEST))?;
+        checkpoint("restore.manifest")?;
         validate(destination)?;
+        checkpoint("restore.validated")?;
         fs::remove_file(destination.join(MANIFEST))?;
+        checkpoint("restore.finished")?;
         Ok(())
     })();
     if result.is_err() {
@@ -447,6 +544,36 @@ mod tests {
             .execute_batch(r#"CREATE TABLE outbox (id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease_until INTEGER, source TEXT UNIQUE); INSERT INTO outbox(entry,state) VALUES ('{"path":"/v1/prompts","body":{"event_id":"pending-1","content":"legacy"}}','pending');"#)
             .unwrap();
         write_private(&dir.join("spool/outbox.key"), b"outbox key").unwrap();
+        dir
+    }
+
+    fn fault_source(root: &Path) -> PathBuf {
+        let dir = source(root);
+        write_private(
+            &dir.join("device.key.next"),
+            sign::seed_hex(&sign::generate()).as_bytes(),
+        )
+        .unwrap();
+        write_private(&dir.join("trusted-projects.json"), b"{}").unwrap();
+        write_private(
+            &dir.join("preferences.json"),
+            &serde_json::to_vec(&speedrun_core::preferences::Preferences::default()).unwrap(),
+        )
+        .unwrap();
+        private_dir(&dir.join("disclosure")).unwrap();
+        let disclosure_key = sign::generate();
+        write_private(
+            &dir.join("disclosure/run"),
+            sign::seed_hex(&disclosure_key).as_bytes(),
+        )
+        .unwrap();
+        start(
+            &dir,
+            Some(speedrun_core::digest::key_commitment(&disclosure_key.to_bytes())),
+        );
+        for name in ["pending.jsonl", "rejected.jsonl", "flushing-fixture"] {
+            write_private(&dir.join("spool").join(name), b"fixture").unwrap();
+        }
         dir
     }
 
@@ -603,5 +730,391 @@ mod tests {
         fs::remove_file(bundle.join("device.key")).unwrap();
         std::os::unix::fs::symlink(source.join("device.key"), bundle.join("device.key")).unwrap();
         assert!(restore(&bundle, &root.path().join("link")).is_err());
+    }
+    #[test]
+    fn interruption_at_every_checkpoint_preserves_inputs_and_allows_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let source = fault_source(root.path());
+        let bundle = root.path().join("bundle");
+        let mut create_points = Vec::new();
+        create_with_checkpoints(&source, &bundle, &mut |p| {
+            create_points.push(p.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        let mut restore_points = Vec::new();
+        let restored = root.path().join("restored");
+        restore_with_checkpoints(&bundle, &restored, &mut |p| {
+            restore_points.push(p.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        for (i, point) in create_points.iter().enumerate() {
+            let target = root.path().join(format!("create-{i}"));
+            assert!(
+                create_with_checkpoints(&source, &target, &mut |p| {
+                    if p == point {
+                        bail!("injected failure at {p}");
+                    }
+                    Ok(())
+                })
+                .is_err(),
+                "{point}"
+            );
+            if point == "create.published" {
+                validate(&target).unwrap();
+                fs::remove_dir_all(&target).unwrap();
+            }
+            assert!(!target.exists(), "failed create left {point}");
+            create(&source, &target).unwrap();
+            validate(&target).unwrap();
+        }
+        for (i, point) in restore_points.iter().enumerate() {
+            let target = root.path().join(format!("restore-{i}"));
+            assert!(
+                restore_with_checkpoints(&bundle, &target, &mut |p| {
+                    if p == point {
+                        bail!("injected failure at {p}");
+                    }
+                    Ok(())
+                })
+                .is_err(),
+                "{point}"
+            );
+            if point == "restore.published" {
+                assert!(target.join("speedrun.sqlite").exists());
+                fs::remove_dir_all(&target).unwrap();
+            }
+            assert!(!target.exists(), "failed restore left {point}");
+            validate(&bundle).unwrap();
+            restore(&bundle, &target).unwrap();
+        }
+        validate(&bundle).unwrap();
+        assert!(source.join("speedrun.sqlite").exists());
+    }
+
+    // A killed process cannot run cleanup. Only a fully built destination is
+    // published; abandoned sibling staging directories do not block retry.
+    #[test]
+    fn process_death_at_every_checkpoint_preserves_inputs_and_never_clobbers() {
+        if let Ok(spec) = std::env::var("SPEEDRUN_RECOVERY_TEST_CHILD") {
+            let mut parts = spec.splitn(4, '|');
+            let mode = parts.next().unwrap();
+            let input = PathBuf::from(parts.next().unwrap());
+            let output = PathBuf::from(parts.next().unwrap());
+            let point = parts.next().unwrap();
+            let mut kill = |p: &str| -> Result<()> {
+                if p == point {
+                    std::process::Command::new("kill")
+                        .args(["-KILL", &std::process::id().to_string()])
+                        .status()
+                        .unwrap();
+                    unreachable!();
+                }
+                Ok(())
+            };
+            if mode == "create" {
+                create_with_checkpoints(&input, &output, &mut kill).unwrap();
+            } else {
+                restore_with_checkpoints(&input, &output, &mut kill).unwrap();
+            }
+            panic!("checkpoint not reached");
+        }
+        let root = tempfile::tempdir().unwrap();
+        let source = fault_source(root.path());
+        fs::remove_file(source.join("spool/outbox.key")).unwrap();
+        crate::client::test_enqueue_prompt(&source.join("spool"), "before-crashes").unwrap();
+        let project = root.path().join("project");
+        fs::create_dir_all(project.join(".speedrun")).unwrap();
+        fs::write(project.join(".speedrun/project.json"), r#"{"project_id":"01KAUDITPROJECT0000000000","category_id":"any-percent","category_version":1,"created_at":"2026-11-01T00:00:00Z"}"#).unwrap();
+        fs::write(source.join("trusted-projects.json"), serde_json::json!([{"project_id":"01KAUDITPROJECT0000000000","root":project.canonicalize().unwrap()}]).to_string()).unwrap();
+        fs::write(source.join("token"), "fixture-token").unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_source = source.clone();
+        let (ready, wait_ready) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            use std::io::Write;
+            use std::sync::atomic::Ordering;
+            let mut count = 0;
+            while !worker_stop.load(Ordering::SeqCst) {
+                let mut hook = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "recovery::tests::real_hook_processes_enqueue_during_recovery",
+                        "--quiet",
+                    ])
+                    .env("SPEEDRUN_RECOVERY_HOOK_CHILD", "1")
+                    .env("SPEEDRUN_HOME", &worker_source)
+                    .env("HOME", &worker_source)
+                    .env("SPEEDRUN_NO_AUTOSTART", "1")
+                    .env("SPEEDRUN_ADDR", "127.0.0.1:1")
+                    .current_dir(&project)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap();
+                write!(
+                    hook.stdin.take().unwrap(),
+                    "{{\"prompt\":\"crash-{}\",\"session_id\":\"session\"}}",
+                    count
+                )
+                .unwrap();
+                assert!(hook.wait().unwrap().success());
+                count += 1;
+                if count == 1 {
+                    ready.send(()).unwrap();
+                }
+            }
+            count
+        });
+        wait_ready.recv().unwrap();
+        let bundle = root.path().join("bundle");
+        let mut creates = Vec::new();
+        create_with_checkpoints(&source, &bundle, &mut |p| {
+            creates.push(p.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        let mut restores = Vec::new();
+        restore_with_checkpoints(&bundle, &root.path().join("initial"), &mut |p| {
+            restores.push(p.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(creates.len(), 20);
+        assert_eq!(restores.len(), 20);
+        for (mode, input, points) in [("create", &source, creates), ("restore", &bundle, restores)] {
+            for (i, point) in points.iter().enumerate() {
+                let output = root.path().join(format!("killed-{mode}-{i}"));
+                let spec = format!("{mode}|{}|{}|{point}", input.display(), output.display());
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "recovery::tests::process_death_at_every_checkpoint_preserves_inputs_and_never_clobbers", "--quiet"])
+                    .env("SPEEDRUN_RECOVERY_TEST_CHILD", spec).status().unwrap();
+                use std::os::unix::process::ExitStatusExt;
+                assert_eq!(status.signal(), Some(9), "{mode} {point}");
+                if point.ends_with(".published") {
+                    assert!(output.exists(), "published destination missing at {point}");
+                    if mode == "create" {
+                        validate(&output).unwrap();
+                    } else {
+                        assert!(output.join("speedrun.sqlite").is_file());
+                    }
+                } else {
+                    assert!(!output.exists(), "partial destination visible at {point}");
+                }
+                if output.exists() {
+                    let sentinel = output.join("sentinel");
+                    fs::write(&sentinel, b"keep").unwrap();
+                    assert!(
+                        if mode == "create" {
+                            create(input, &output)
+                        } else {
+                            restore(input, &output)
+                        }
+                        .is_err()
+                    );
+                    assert_eq!(fs::read(sentinel).unwrap(), b"keep");
+                    fs::remove_dir_all(&output).unwrap();
+                }
+                if mode == "create" {
+                    create(input, &output).unwrap();
+                    validate(&output).unwrap();
+                } else {
+                    validate(input).unwrap();
+                    restore(input, &output).unwrap();
+                }
+            }
+        }
+        validate(&bundle).unwrap();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let hooks = worker.join().unwrap();
+        let db = Connection::open(source.join("spool/pending.sqlite3")).unwrap();
+        let count: i64 = db
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, hooks + 2); // fixture row and the pre-crash encrypted enqueue
+        crate::client::validate_existing_outbox(&source.join("spool/pending.sqlite3")).unwrap();
+    }
+
+    #[test]
+    fn concurrent_enqueues_have_a_sqlite_snapshot_cutoff() {
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        let spool = source.join("spool");
+        fs::remove_file(spool.join("outbox.key")).unwrap();
+        crate::client::test_enqueue_prompt(&spool, "initial").unwrap();
+        let bundle = root.path().join("bundle");
+        let mut accepted = 1_i64;
+        let mut cutoff = None;
+        create_with_checkpoints(&source, &bundle, &mut |p| {
+            if p == "create.outbox" {
+                cutoff = Some(accepted);
+            }
+            let dir = spool.clone();
+            let id = format!("concurrent-{accepted}");
+            std::thread::spawn(move || crate::client::test_enqueue_prompt(&dir, &id).unwrap())
+                .join()
+                .unwrap();
+            accepted += 1;
+            Ok(())
+        })
+        .unwrap();
+        validate(&bundle).unwrap();
+        let snapshot = Connection::open(bundle.join("spool/pending.sqlite3")).unwrap();
+        // One legacy row predates the encrypted enqueues.
+        let count: i64 = snapshot
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, cutoff.unwrap() + 1);
+        let live = Connection::open(spool.join("pending.sqlite3")).unwrap();
+        let count: i64 = live
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, accepted + 1);
+        restore(&bundle, &root.path().join("restored-concurrent")).unwrap();
+    }
+
+    #[test]
+    fn first_enqueue_after_absent_spool_check_is_after_cutoff() {
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        fs::remove_dir_all(source.join("spool")).unwrap();
+        let bundle = root.path().join("bundle");
+        let mut queued = false;
+        create_with_checkpoints(&source, &bundle, &mut |p| {
+            if p == "create.database" {
+                let spool = source.join("spool");
+                std::thread::spawn(move || crate::client::test_enqueue_prompt(&spool, "first").unwrap())
+                    .join()
+                    .unwrap();
+                queued = true;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(queued);
+        assert!(!bundle.join("spool/pending.sqlite3").exists());
+        crate::client::validate_existing_outbox(&source.join("spool/pending.sqlite3")).unwrap();
+    }
+    #[test]
+    fn writer_runs_during_outbox_snapshot() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        let spool = source.join("spool");
+        fs::remove_file(spool.join("outbox.key")).unwrap();
+        crate::client::test_enqueue_prompt(&spool, "before").unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_spool = spool.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut count = 0;
+            while !worker_stop.load(Ordering::SeqCst) {
+                crate::client::test_enqueue_prompt(&worker_spool, &format!("overlap-{count}")).unwrap();
+                count += 1;
+                if count == 1 {
+                    ready_tx.send(()).unwrap();
+                }
+            }
+            count
+        });
+        ready_rx.recv().unwrap();
+        let bundle = root.path().join("overlap");
+        create(&source, &bundle).unwrap();
+        stop.store(true, Ordering::SeqCst);
+        let writes = worker.join().unwrap();
+        crate::client::test_enqueue_prompt(&spool, "after").unwrap();
+        validate(&bundle).unwrap();
+        let snapshot = Connection::open(bundle.join("spool/pending.sqlite3")).unwrap();
+        let snapshot_count: i64 = snapshot
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        let live = Connection::open(spool.join("pending.sqlite3")).unwrap();
+        let live_count: i64 = live
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert!(snapshot_count >= 3 && snapshot_count < live_count);
+        assert_eq!(live_count, writes + 3);
+    }
+    #[test]
+    fn real_hook_processes_enqueue_during_recovery() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        if std::env::var_os("SPEEDRUN_RECOVERY_HOOK_CHILD").is_some() {
+            crate::hook::claude_code("user-prompt-submit");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        fs::remove_dir_all(source.join("spool")).unwrap();
+        let project = root.path().join("project");
+        fs::create_dir_all(project.join(".speedrun")).unwrap();
+        fs::write(project.join(".speedrun/project.json"), r#"{"project_id":"01KAUDITPROJECT0000000000","category_id":"any-percent","category_version":1,"created_at":"2026-11-01T00:00:00Z"}"#).unwrap();
+        fs::write(source.join("trusted-projects.json"), serde_json::json!([{"project_id":"01KAUDITPROJECT0000000000","root":project.canonicalize().unwrap()}]).to_string()).unwrap();
+        fs::write(source.join("token"), "fixture-token").unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_source = source.clone();
+        let worker_project = project.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut count = 0;
+            while !worker_stop.load(Ordering::SeqCst) {
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "recovery::tests::real_hook_processes_enqueue_during_recovery",
+                        "--quiet",
+                    ])
+                    .env("SPEEDRUN_RECOVERY_HOOK_CHILD", "1")
+                    .env("SPEEDRUN_HOME", &worker_source)
+                    .env("HOME", &worker_source)
+                    .env("SPEEDRUN_NO_AUTOSTART", "1")
+                    .env("SPEEDRUN_ADDR", "127.0.0.1:1")
+                    .current_dir(&worker_project)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                write!(
+                    child.stdin.take().unwrap(),
+                    "{{\"prompt\":\"fixture-{}\",\"session_id\":\"session\"}}",
+                    count
+                )
+                .unwrap();
+                assert!(child.wait().unwrap().success());
+                count += 1;
+                if count == 1 {
+                    tx.send(()).unwrap();
+                }
+            }
+            count
+        });
+        rx.recv().unwrap();
+        let bundle = root.path().join("hook-bundle");
+        create(&source, &bundle).unwrap();
+        stop.store(true, Ordering::SeqCst);
+        let count = worker.join().unwrap();
+        validate(&bundle).unwrap();
+        let snapshot = Connection::open(bundle.join("spool/pending.sqlite3")).unwrap();
+        let included: i64 = snapshot
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert!(included >= 1 && included <= count);
+        let live = Connection::open(source.join("spool/pending.sqlite3")).unwrap();
+        let live_count: i64 = live
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(live_count, count);
+        restore(&bundle, &root.path().join("hook-restored")).unwrap();
     }
 }

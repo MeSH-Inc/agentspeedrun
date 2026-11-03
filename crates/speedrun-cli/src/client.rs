@@ -692,6 +692,19 @@ fn now_seconds() -> i64 {
         .as_secs() as i64
 }
 
+#[cfg(test)]
+pub(crate) fn test_enqueue_prompt(spool: &Path, id: &str) -> anyhow::Result<()> {
+    let db = open_outbox_at(spool, None)?;
+    let entry = SpoolEntry {
+        path: "/v1/prompts".into(),
+        body: serde_json::json!({"event_id": id, "content": "recovery fixture"}),
+        credential: Credential::Full,
+    };
+    enqueue(&db, &entry, None)?;
+    Ok(())
+}
+
+
 fn open_outbox() -> anyhow::Result<Connection> {
     open_outbox_at(&spool_dir(), None)
 }
