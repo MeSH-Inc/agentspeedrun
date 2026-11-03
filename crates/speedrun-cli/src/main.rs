@@ -604,7 +604,7 @@ fn run(cmd: Cmd) -> Result<()> {
         },
         Cmd::Flush => {
             c.ready()?; // Starts the daemon and proves its token.
-            println!("delivered {} spooled events", c.flush_spool(None));
+            println!("delivered {} spooled events", c.flush_spool(None)?);
         }
         Cmd::Ingest {
             kind,

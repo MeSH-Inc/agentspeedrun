@@ -18,7 +18,7 @@ host (Claude Code, opencode, pi/omp, Copilot, VS Code, Zed)
 speedrun (CLI)
   ├─ finds the project: nearest .speedrun/project.json (untracked dirs record nothing)
   ├─ HTTP client → speedrund, autostarting it if needed
-  └─ spool: $SPEEDRUN_HOME/spool/pending.jsonl when the daemon is unreachable
+  └─ outbox: $SPEEDRUN_HOME/spool/pending.sqlite3 holds writes until acknowledged or rejected
 displays (widgets, PiP, `speedrun watch`)
   └─ /v1/live + /v1/live/stream (SSE) with the read-only display token — see LIVE_DISPLAY.md
 speedrund (daemon, 127.0.0.1:7477)
@@ -28,6 +28,13 @@ speedrund (daemon, 127.0.0.1:7477)
 ```
 
 `$SPEEDRUN_HOME` defaults to `$XDG_DATA_HOME/agentspeedrun` or `~/.local/share/agentspeedrun`.
+
+The CLI commits each durable request to its SQLite outbox before sending it.
+A flusher leases pending rows transactionally and retries expired leases after a
+crash. Unknown outcomes are retried with the original event ID and credential;
+acknowledged rows are removed and rejected rows are retained within a size cap.
+Storage failures are reported through the spool failure counter. Legacy JSONL
+spools are imported transactionally on flush.
 
 ## Event log
 

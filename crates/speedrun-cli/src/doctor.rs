@@ -44,7 +44,10 @@ pub(crate) fn daemon_failure(error: &CallError, addr: &str) -> String {
         CallError::WrongDataDir { .. } => {
             format!("daemon: answers for another data directory ({addr})")
         }
-        CallError::Unreachable(_) | CallError::Api { .. } | CallError::DeliveryUnknown(_) => {
+        CallError::Unreachable(_)
+        | CallError::Api { .. }
+        | CallError::DeliveryUnknown(_)
+        | CallError::Storage(_) => {
             format!("daemon: not reachable at {addr}")
         }
     }

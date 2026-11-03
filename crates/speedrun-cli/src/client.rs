@@ -9,7 +9,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use rusqlite::{Connection, OptionalExtension, params};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -26,6 +28,8 @@ pub enum CallError {
     /// A daemon answered, but not for this data directory: it could not
     /// prove this data dir's token, or proved a different one.
     WrongDataDir { addr: String },
+    /// The local outbox could not durably record or update a request.
+    Storage(String),
     /// The daemon answered with an error status.
     Api { status: u16, message: String },
     /// The request went out, but no answer came back in time (V0.2 M8): the
@@ -41,6 +45,7 @@ impl std::fmt::Display for CallError {
             Self::WrongDataDir { addr } => {
                 write!(f, "daemon answers for another data directory ({addr})")
             }
+            Self::Storage(message) => write!(f, "outbox storage error: {message}"),
             Self::Api { status, message } => write!(f, "speedrund error {status}: {message}"),
             Self::DeliveryUnknown(m) => {
                 write!(
@@ -64,6 +69,7 @@ impl CallError {
         match self {
             Self::Unreachable(_) | Self::WrongDataDir { .. } | Self::DeliveryUnknown(_) => true,
             Self::Api { status, .. } => *status == 401 || *status >= 500,
+            Self::Storage(_) => false,
         }
     }
 }
@@ -89,9 +95,10 @@ impl SpoolReason {
     fn of(error: &CallError) -> Self {
         match error {
             CallError::DeliveryUnknown(_) => Self::DeliveryUnknown,
-            CallError::Unreachable(_) | CallError::WrongDataDir { .. } | CallError::Api { .. } => {
-                Self::Undelivered
-            }
+            CallError::Unreachable(_)
+            | CallError::WrongDataDir { .. }
+            | CallError::Api { .. }
+            | CallError::Storage(_) => Self::Undelivered,
         }
     }
 }
@@ -220,9 +227,20 @@ pub(crate) fn spool_stats() -> std::io::Result<SpoolStats> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    let mut rejected = count_lines(&dir.join("rejected.jsonl"))?;
+    let db_path = dir.join("pending.sqlite3");
+    if db_path.exists() {
+        let db = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(std::io::Error::other)?;
+        let (pending, refused): (i64, i64) = db.query_row(
+            "SELECT COUNT(*) FILTER (WHERE state != 'rejected'), COUNT(*) FILTER (WHERE state = 'rejected') FROM outbox",
+            [], |row| Ok((row.get(0)?, row.get(1)?))).map_err(std::io::Error::other)?;
+        spooled = spooled.saturating_add(pending as u64);
+        rejected = rejected.saturating_add(refused as u64);
+    }
     Ok(SpoolStats {
         spooled,
-        rejected: count_lines(&dir.join("rejected.jsonl"))?,
+        rejected,
         write_failures: read_count(&spool_write_failures_path())?,
     })
 }
@@ -366,10 +384,9 @@ impl Client {
             None => req.call(),
         };
         match res {
-            Ok(r) => r.into_json().map_err(|e| CallError::Api {
-                status: 200,
-                message: format!("unreadable response: {e}"),
-            }),
+            Ok(r) => r
+                .into_json()
+                .map_err(|e| CallError::DeliveryUnknown(format!("unreadable response: {e}"))),
             Err(ureq::Error::Status(status, r)) => {
                 let message = match r.into_json::<ErrorBody>() {
                     Ok(body) => body.error,
@@ -444,29 +461,40 @@ impl Client {
         path: &str,
         body: &Value,
     ) -> Result<Durable<T>, CallError> {
-        let credential = self.credential;
+        // Commit before sending: a crash or an unreadable response can never
+        // leave an accepted request without a durable retry record.
+        let owner = speedrun_core::new_id();
+        let entry = SpoolEntry {
+            path: path.to_string(),
+            body: body.clone(),
+            credential: self.credential,
+        };
+        let db = open_outbox().map_err(storage_error)?;
+        let id = enqueue(&db, &entry, Some(&owner)).map_err(storage_error)?;
         let outcome = match self.ready() {
-            Ok(()) => {
-                let outcome = self.send("POST", path, Some(body), Delivery::Fresh, credential);
-                // The fresh write has been attempted; only now touch the backlog.
-                self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
-                outcome
-            }
-            // Unproven daemon: keep the event; a later invocation that can
-            // prove the token will deliver it with the backlog.
-            Err(e) if e.should_spool() => {
-                spool(path, body, credential);
-                return Ok(Durable::Spooled(SpoolReason::of(&e)));
-            }
-            Err(e) => return Err(e),
+            Ok(()) => self.send("POST", path, Some(body), Delivery::Fresh, self.credential),
+            Err(error) => Err(error),
         };
         match outcome {
-            Ok(value) => Ok(Durable::Recorded(value)),
-            Err(e) if e.should_spool() => {
-                spool(path, body, credential);
-                Ok(Durable::Spooled(SpoolReason::of(&e)))
+            Ok(value) => {
+                if let Err(error) = finish(&db, id, &owner, false) {
+                    report_storage_error(&error);
+                }
+                let _ = self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
+                Ok(Durable::Recorded(value))
             }
-            Err(e) => Err(e),
+            Err(error) if error.should_spool() => {
+                if let Err(storage) = release(&db, id, &owner) {
+                    report_storage_error(&storage);
+                }
+                Ok(Durable::Spooled(SpoolReason::of(&error)))
+            }
+            Err(error) => {
+                if let Err(storage) = finish(&db, id, &owner, true) {
+                    report_storage_error(&storage);
+                }
+                Err(error)
+            }
         }
     }
 
@@ -567,134 +595,40 @@ impl Client {
         }
     }
 
-    /// Deliver spooled requests (call `ready` first to start the daemon). Claims the spool by renaming it, so
-    /// concurrent hook processes never deliver the same file twice.
-    ///
-    /// `deadline` bounds the wall clock spent here. Once it passes, the entry
-    /// in hand and every entry after it go back to the pending spool in their
-    /// original order, for a later flush. `None` means no bound.
-    pub fn flush_spool(&self, deadline: Option<Instant>) -> usize {
-        let dir = spool_dir();
-        let live = dir.join("pending.jsonl");
-        let claimed = dir.join(format!("flushing-{}.jsonl", speedrun_core::new_id()));
-        let mut files = Vec::new();
-        match fs::rename(&live, &claimed) {
-            Ok(()) => files.push(claimed),
-            // Nothing is pending.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => report_io_error("claim spool file", &live, &e),
-        }
-        // Pick up files abandoned by a process that died mid-flush.
-        match fs::read_dir(&dir) {
-            Ok(entries) => {
-                let stale = SystemTime::now() - Duration::from_secs(120);
-                for e in entries.flatten() {
-                    let p = e.path();
-                    let flushing = p
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("flushing-"));
-                    let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < stale);
-                    if flushing && old && !files.contains(&p) {
-                        files.push(p);
-                    }
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => report_io_error("list spool directory", &dir, &e),
-        }
-        let rejected = RejectedLog::new(dir.join("rejected.jsonl"));
+    /// Claim one outbox row at a time. Expired leases are recoverable after
+    /// crashes; event IDs make an uncertain delivery safe to replay.
+    pub fn flush_spool(&self, deadline: Option<Instant>) -> Result<usize, CallError> {
+        let db = open_outbox().map_err(storage_error)?;
+        import_legacy(&db).map_err(storage_error)?;
+        let owner = speedrun_core::new_id();
         let mut delivered = 0;
-        let mut out_of_time = false;
-        for file in files {
-            let f = match fs::File::open(&file) {
-                Ok(f) => f,
-                // Another flush claimed it first.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => {
-                    report_io_error("read spool file", &file, &e);
-                    continue;
-                }
-            };
-            let mut lines = BufReader::new(f).split(b'\n');
-            let mut keep_file = false;
-            while let Some(read) = lines.next() {
-                let bytes = match read {
-                    Ok(bytes) => bytes,
-                    // Keep the file: a later flush retries it once it is stale, and every
-                    // entry carries an event_id, so the ones already delivered are not doubled.
-                    Err(e) => {
-                        report_io_error("read spool file", &file, &e);
-                        keep_file = true;
-                        break;
-                    }
-                };
-                if deadline.is_some_and(|d| Instant::now() >= d) {
-                    // Out of time: put this entry and the rest back, in order, so a
-                    // later flush reaches them instead of spending a hook's budget.
-                    out_of_time = true;
-                    append_line(&live, &bytes);
-                    for rest in lines.by_ref() {
-                        match rest {
-                            Ok(rest) => append_line(&live, &rest),
-                            Err(e) => {
-                                report_io_error("read spool file", &file, &e);
-                                keep_file = true;
-                                break;
-                            }
-                        }
-                    }
-                    break;
-                }
-                // A line that is not text or not an entry can never be delivered; keep it
-                // for inspection and go on with the rest of the file.
-                let entry = match serde_json::from_slice::<SpoolEntry>(&bytes) {
-                    Ok(entry) => entry,
-                    Err(e) => {
-                        report_unreadable_entry(&file, &e);
-                        rejected.append(&bytes);
-                        continue;
-                    }
-                };
-                match self.send::<Value>(
-                    "POST",
-                    &entry.path,
-                    Some(&entry.body),
-                    Delivery::Replay { deadline },
-                    entry.credential,
-                ) {
-                    Ok(_) => delivered += 1,
-                    Err(e) => {
-                        if e.should_spool() {
-                            // Still ours to deliver: put it back and break so a later
-                            // flush reaches it. Already-delivered entries are not
-                            // doubled, because every one carries an event_id.
-                            append_line(&live, &bytes);
-                            for rest in lines.by_ref() {
-                                match rest {
-                                    Ok(rest) => append_line(&live, &rest),
-                                    Err(e) => {
-                                        report_io_error("read spool file", &file, &e);
-                                        keep_file = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                        // The daemon refused it; keep it for inspection rather than retrying forever.
-                        rejected.append(&bytes);
-                    }
-                }
-            }
-            if !keep_file && let Err(e) = fs::remove_file(&file) {
-                report_io_error("remove spool file", &file, &e);
-            }
-            if out_of_time {
+        loop {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
                 break;
             }
+            let Some((id, entry)) = claim(&db, &owner).map_err(storage_error)? else {
+                break;
+            };
+            let outcome = self.send::<Value>(
+                "POST",
+                &entry.path,
+                Some(&entry.body),
+                Delivery::Replay { deadline },
+                entry.credential,
+            );
+            match outcome {
+                Ok(_) => {
+                    finish(&db, id, &owner, false).map_err(storage_error)?;
+                    delivered += 1;
+                }
+                Err(error) if error.should_spool() => {
+                    release(&db, id, &owner).map_err(storage_error)?;
+                    break;
+                }
+                Err(_) => finish(&db, id, &owner, true).map_err(storage_error)?,
+            }
         }
-        delivered
+        Ok(delivered)
     }
 }
 
@@ -721,27 +655,153 @@ fn transport_error(t: &ureq::Transport) -> CallError {
     }
 }
 
-fn spool(path: &str, body: &Value, credential: Credential) {
-    let file = spool_dir().join("pending.jsonl");
-    let entry = SpoolEntry {
-        path: path.to_string(),
-        body: body.clone(),
-        credential,
-    };
-    match serde_json::to_string(&entry) {
-        Ok(line) => append_line(&file, line.as_bytes()),
-        // The event is lost, so it counts as a failed spool write.
-        Err(e) => report_spool_write_error("encode spool entry", &file, &std::io::Error::other(e)),
-    }
+// SQLite holds the only live copy until acknowledgement or durable rejection.
+// FULL synchronous mode and a transaction around each state transition protect
+// against process and power failure. A lease is longer than any request timeout.
+const LEASE_SECONDS: i64 = 300;
+const REJECTED_LIMIT: i64 = 4 * 1024 * 1024;
+
+fn now_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
-fn append_line(file: &Path, line: &[u8]) {
-    if let Err(e) = append_line_result(file, line) {
-        report_spool_write_error("write spool file", file, &e);
-    }
+fn open_outbox() -> anyhow::Result<Connection> {
+    let dir = spool_dir();
+    fs::create_dir_all(&dir)?;
+    let path = dir.join("pending.sqlite3");
+    // Create with private permissions before SQLite opens the file.
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)?;
+    open_outbox_path(&path)
 }
 
-/// One write per line with O_APPEND keeps concurrent writers from interleaving.
+fn open_outbox_path(path: &Path) -> anyhow::Result<Connection> {
+    let db = Connection::open(path)?;
+    db.busy_timeout(Duration::from_secs(2))?;
+    db.execute_batch(
+        "PRAGMA synchronous=FULL; PRAGMA auto_vacuum=FULL; PRAGMA secure_delete=ON;
+        CREATE TABLE IF NOT EXISTS outbox (
+            id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL,
+            owner TEXT, lease_until INTEGER, source TEXT UNIQUE
+        );",
+    )?;
+    Ok(db)
+}
+
+fn enqueue(db: &Connection, entry: &SpoolEntry, owner: Option<&str>) -> anyhow::Result<i64> {
+    let encoded = serde_json::to_string(entry)?;
+    db.execute(
+        "INSERT INTO outbox(entry,state,owner,lease_until) VALUES (?1,?2,?3,?4)",
+        params![
+            encoded,
+            if owner.is_some() { "leased" } else { "pending" },
+            owner,
+            owner.map(|_| now_seconds() + LEASE_SECONDS)
+        ],
+    )?;
+    Ok(db.last_insert_rowid())
+}
+
+fn claim(db: &Connection, owner: &str) -> anyhow::Result<Option<(i64, SpoolEntry)>> {
+    // UPDATE ... RETURNING makes selection and ownership indivisible across processes.
+    let row: Option<(i64, String)> = db.query_row(
+        "UPDATE outbox SET state='leased',owner=?1,lease_until=?2 WHERE id=(SELECT id FROM outbox WHERE state='pending' OR (state='leased' AND lease_until<=?3) ORDER BY id LIMIT 1) RETURNING id,entry",
+        params![owner, now_seconds()+LEASE_SECONDS, now_seconds()], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    row.map(|(id, entry)| Ok((id, serde_json::from_str(&entry)?)))
+        .transpose()
+}
+
+fn release(db: &Connection, id: i64, owner: &str) -> anyhow::Result<()> {
+    let changed = db.execute(
+        "UPDATE outbox SET state='pending',owner=NULL,lease_until=NULL WHERE id=?1 AND owner=?2 AND state='leased'",
+        params![id, owner],
+    )?;
+    anyhow::ensure!(changed == 1, "outbox lease was lost");
+    Ok(())
+}
+
+fn finish(db: &Connection, id: i64, owner: &str, rejected: bool) -> anyhow::Result<()> {
+    let tx = db.unchecked_transaction()?;
+    if rejected {
+        let changed = tx.execute(
+            "UPDATE outbox SET state='rejected',entry=substr(CAST(entry AS BLOB),1,4194304),owner=NULL,lease_until=NULL WHERE id=?1 AND owner=?2 AND state='leased'",
+            params![id, owner],
+        )?;
+        anyhow::ensure!(changed == 1, "outbox lease was lost");
+        // Keep the newest bounded diagnostic records, including at most one oversized entry.
+        tx.execute("DELETE FROM outbox WHERE state='rejected' AND id NOT IN (SELECT id FROM (SELECT id, SUM(length(CAST(entry AS BLOB))) OVER (ORDER BY id DESC) AS total, ROW_NUMBER() OVER (ORDER BY id DESC) AS n FROM outbox WHERE state='rejected') WHERE total<=?1 OR n=1)", [REJECTED_LIMIT])?;
+    } else {
+        let changed = tx.execute(
+            "DELETE FROM outbox WHERE id=?1 AND owner=?2 AND state='leased'",
+            params![id, owner],
+        )?;
+        anyhow::ensure!(changed == 1, "outbox lease was lost");
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn report_storage_error(error: &anyhow::Error) {
+    report_spool_write_error(
+        "update outbox",
+        &spool_dir().join("pending.sqlite3"),
+        &std::io::Error::other(error.to_string()),
+    );
+}
+
+fn storage_error(error: anyhow::Error) -> CallError {
+    report_storage_error(&error);
+    CallError::Storage(error.to_string())
+}
+
+/// Import old files transactionally. A source/line identity prevents duplicates
+/// if a process dies after commit but before removing the source file.
+fn import_legacy(db: &Connection) -> anyhow::Result<()> {
+    let dir = spool_dir();
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(dir.join("import.lock"))?;
+    lock.lock()?;
+    for item in fs::read_dir(&dir)? {
+        let item = item?;
+        let name = item.file_name().to_string_lossy().into_owned();
+        if name != "pending.jsonl" && !name.starts_with("flushing-") {
+            continue;
+        }
+        let bytes = fs::read(item.path())?;
+        let tx = db.unchecked_transaction()?;
+        for (number, line) in bytes.split(|b| *b == b'\n').enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let source = format!("{name}:{number}:{}", speedrun_core::hash::sha256_hex(line));
+            if let Ok(entry) = serde_json::from_slice::<SpoolEntry>(line) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO outbox(entry,state,source) VALUES (?1,'pending',?2)",
+                    params![serde_json::to_string(&entry)?, source],
+                )?;
+            } else {
+                // Legacy malformed records remain inspectable. The source is
+                // retained if writing this diagnostic fails.
+                RejectedLog::new(dir.join("rejected.jsonl")).try_append(line)?;
+            }
+        }
+        tx.commit()?;
+        fs::remove_file(item.path())?;
+    }
+    Ok(())
+}
+
 fn append_line_result(file: &Path, line: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
@@ -751,16 +811,8 @@ fn append_line_result(file: &Path, line: &[u8]) -> std::io::Result<()> {
         .append(true)
         .mode(0o600)
         .open(file)?;
-    let mut record = Vec::with_capacity(line.len() + 1);
-    record.extend_from_slice(line);
-    record.push(b'\n');
-    f.write_all(&record)
-}
-
-fn report_unreadable_entry(file: &Path, e: &serde_json::Error) {
-    if std::env::var_os("SPEEDRUN_DEBUG").is_some() {
-        eprintln!("speedrun: refused an unreadable entry in {}: {e}", file.display());
-    }
+    f.write_all(line)?;
+    f.write_all(b"\n")
 }
 
 fn report_io_error(action: &str, file: &Path, e: &std::io::Error) {
@@ -814,12 +866,6 @@ impl RejectedLog {
         Self { file, max_bytes }
     }
 
-    fn append(&self, line: &[u8]) {
-        if let Err(e) = self.try_append(line) {
-            report_spool_write_error("write refused-event log", &self.file, &e);
-        }
-    }
-
     /// Append and trim under one exclusive lock, so a trim never writes back
     /// a copy that lacks a line another process appended after its read.
     fn try_append(&self, line: &[u8]) -> std::io::Result<()> {
@@ -829,8 +875,19 @@ impl RejectedLog {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
             Err(e) => return Err(e),
         };
+        let max_line = self.max_bytes.saturating_sub(1) as usize;
+        let line = &line[..line.len().min(max_line)];
         if current.saturating_add(line.len() as u64 + 1) > self.max_bytes {
             self.trim_to_newest()?;
+            if fs::metadata(&self.file)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                .saturating_add(line.len() as u64 + 1)
+                > self.max_bytes
+            {
+                // The new line uses the whole budget: drop the previous diagnostic copy.
+                fs::write(&self.file, [])?;
+            }
         }
         append_line_result(&self.file, line)
     }
@@ -981,6 +1038,77 @@ fn daemon_executable() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_entry() -> SpoolEntry {
+        SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id":"event-1"}),
+            credential: Credential::Agent,
+        }
+    }
+
+    #[test]
+    fn failed_acknowledgement_keeps_the_original_and_expired_lease_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_path(&dir.path().join("test.sqlite")).unwrap();
+        let id = enqueue(&db, &sample_entry(), Some("crashed")).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER fail_ack BEFORE DELETE ON outbox BEGIN SELECT RAISE(ABORT, 'disk failure'); END;",
+        )
+        .unwrap();
+        assert!(finish(&db, id, "crashed", false).is_err());
+        db.execute_batch("DROP TRIGGER fail_ack; UPDATE outbox SET lease_until=0;")
+            .unwrap();
+        let (recovered_id, recovered) = claim(&db, "recovery").unwrap().unwrap();
+        assert_eq!(id, recovered_id);
+        assert_eq!(recovered.body["event_id"], "event-1");
+        assert!(matches!(recovered.credential, Credential::Agent));
+        finish(&db, id, "recovery", false).unwrap();
+        assert!(claim(&db, "other").unwrap().is_none());
+    }
+
+    #[test]
+    fn concurrent_flushers_claim_distinct_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.sqlite");
+        let db = open_outbox_path(&path).unwrap();
+        for _ in 0..100 {
+            enqueue(&db, &sample_entry(), None).unwrap();
+        }
+        let ids = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for n in 0..4 {
+                let path = &path;
+                let ids = &ids;
+                scope.spawn(move || {
+                    let db = open_outbox_path(path).unwrap();
+                    let owner = format!("worker-{n}");
+                    while let Some((id, _)) = claim(&db, &owner).unwrap() {
+                        ids.lock().unwrap().push(id);
+                        finish(&db, id, &owner, false).unwrap();
+                    }
+                });
+            }
+        });
+        let mut ids = ids.into_inner().unwrap();
+        assert_eq!(ids.len(), 100);
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 100);
+    }
+
+    #[test]
+    fn failed_rejection_does_not_discard_the_leased_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_path(&dir.path().join("test.sqlite")).unwrap();
+        let id = enqueue(&db, &sample_entry(), Some("worker")).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_reject BEFORE UPDATE ON outbox WHEN NEW.state='rejected' BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
+        assert!(finish(&db, id, "worker", true).is_err());
+        let state: String = db
+            .query_row("SELECT state FROM outbox WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "leased");
+    }
 
     /// M7.d: writers refused at the same moment, with the log trimming under
     /// them. Trimming drops the oldest lines, so each writer's surviving lines

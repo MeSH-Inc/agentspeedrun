@@ -1878,6 +1878,7 @@ dependencies = [
  "chrono",
  "clap",
  "rpassword",
+ "rusqlite",
  "serde",
  "serde_json",
  "speedrun-core",
