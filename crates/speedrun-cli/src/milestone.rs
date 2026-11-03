@@ -443,7 +443,24 @@ pub fn run(c: &Client, p: &Project, id: Option<&str>, json: bool) -> Result<()> 
             job.state, job.cause_event_id
         );
     }
-    print!("{}", ops::format_status(&ops::require_run(c, p)?));
+    let updated = ops::require_run(c, p)?;
+    if let Some(milestone) = updated.milestone(&m.id) {
+        println!(
+            "Milestone: {:?}; {}{}.",
+            milestone.state,
+            if milestone.counts() {
+                "counted"
+            } else {
+                "not counted"
+            },
+            if milestone.pending_confirmation {
+                "; awaiting confirmation"
+            } else {
+                ""
+            }
+        );
+    }
+    print!("{}", ops::format_status(&updated));
     Ok(())
 }
 

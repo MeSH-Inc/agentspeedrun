@@ -147,7 +147,7 @@ async fn git(root: &FsPath, args: &[&str]) -> Result<String, Error> {
 async fn clean_head(root: &FsPath) -> Result<String, Error> {
     let status = git(root, &["status", "--porcelain", "--untracked-files=all"]).await?;
     if !status.is_empty() {
-        return Err(Error::BadRequest("working tree must be clean".into()));
+        return Err(Error::BadRequest("working tree must be clean; run `git status`, commit code changes, and ignore generated files before retrying".into()));
     }
     Ok(git(root, &["rev-parse", "--verify", "HEAD^{commit}"])
         .await?

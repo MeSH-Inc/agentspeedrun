@@ -22,6 +22,7 @@ fn readiness_is_read_only_and_distinguishes_project_trust() {
     assert!(output.status.success());
     let state: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(state["project"], "untracked");
+    assert_eq!(state["next_action_id"], "setup");
     assert_eq!(state["daemon"], "offline");
     assert_eq!(state["recording"], "unknown");
     assert!(
@@ -37,6 +38,7 @@ fn readiness_is_read_only_and_distinguishes_project_trust() {
     let output = run(&["readiness", "--json"]);
     let state: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(state["project"], "untrusted");
+    assert_eq!(state["next_action_id"], "trust_project");
 }
 
 #[test]
@@ -106,12 +108,14 @@ fn readiness_reports_capture_offline_queue_rejections_and_query_failure() {
     let output = command(&["readiness", "--json"], false, "");
     let state: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(state["recording"], "captured");
+    assert_eq!(state["next_action_id"], "none");
     assert_eq!(state["last_host"], "fixture");
     assert!(!String::from_utf8_lossy(&output.stdout).contains("secret fixture prompt"));
     assert!(command(&["reset", "--yes"], false, "").status.success());
     let output = command(&["readiness", "--json"], false, "");
     let state: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(state["recording"], "awaiting_prompt");
+    assert_eq!(state["next_action_id"], "setup");
     assert!(
         command(
             &["ingest", "prompt", "--host", "new-host", "--session", "s2"],
@@ -138,6 +142,7 @@ fn readiness_reports_capture_offline_queue_rejections_and_query_failure() {
     let output = command(&["readiness", "--json"], false, "");
     let state: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(state["recording"], "unknown");
+    assert_eq!(state["next_action_id"], "doctor");
     assert!(command(&["daemon", "stop"], false, "").status.success());
     command(
         &["ingest", "prompt", "--host", "fixture", "--session", "s"],
@@ -154,6 +159,7 @@ fn readiness_reports_capture_offline_queue_rejections_and_query_failure() {
     let output = command(&["readiness", "--json"], true, "");
     let state: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(state["daemon"], "offline");
+    assert_eq!(state["next_action_id"], "flush");
     assert_eq!(state["recording"], "unknown");
     assert_eq!(state["queue_scope"], "device");
     assert_eq!(state["queued"], 1);

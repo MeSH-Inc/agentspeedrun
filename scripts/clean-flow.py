@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -34,7 +35,8 @@ def main():
             sock.bind(("127.0.0.1", 0))
             addr = "127.0.0.1:" + str(sock.getsockname()[1])
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith("SPEEDRUN_") and key != "COPILOT_HOME"}
+               if not key.startswith("SPEEDRUN_") and key not in
+               {"COPILOT_HOME", "PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX"}}
         env.update(HOME=str(home), SPEEDRUN_HOME=str(root / "data"),
                    XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "xdg-data"),
                    SPEEDRUN_ADDR=addr, GIT_CONFIG_NOSYSTEM="1",
@@ -111,6 +113,10 @@ def main():
             assert result.returncode == 0, result.stderr
             after = readiness()
             assert after["recording"] == "captured" and after["last_host"] == "copilot", after
+            hook.unlink()
+            missing_after_capture = readiness()
+            assert missing_after_capture["recording"] == "captured" and missing_after_capture["next_action_id"] == "setup", missing_after_capture
+            hook.write_text(json.dumps(config))
             interactive(["milestone", "scaffold-runs"], "1\n")
             interactive(["milestone", "happy-path-demo"], "1\n")
             status = json.loads(run("status", "--json").stdout)
@@ -120,13 +126,58 @@ def main():
             run("daemon", "restart")
             assert json.loads(run("history", "--json").stdout) == history
             assert json.loads(run("status", "--json").stdout)["status"] == "completed"
+            # A second project performs a real edit and local verification. The
+            # hundred-percent category permits local test evidence, while still
+            # requiring deployment for the full product run.
+            project = root / "small calculator"
+            project.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=project, env=env, check=True)
+            (project / "calculator.py").write_text("def add(a, b):\n    return a - b\n")
+            (project / "test_calculator.py").write_text(
+                "import unittest\nfrom calculator import add\n"
+                "class CalculatorTest(unittest.TestCase):\n"
+                "    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n"
+            )
+            run("setup", "--host", "copilot", "--scope", "project", "--category",
+                "hundred-percent", "--capture", "metadata-only", "--yes")
+            subprocess.run(["git", "add", "."], cwd=project, env=env, check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                            "commit", "-qm", "add calculator"], cwd=project, env=env, check=True)
+            run("ingest", "prompt", "--host", "copilot", "--session", "calculator",
+                input="Fix calculator addition and test it.")
+            failed = run("local-test", "--", "python3", "-m", "unittest", check=False)
+            assert failed.returncode != 0 and "test command failed" in failed.stderr, (failed.stdout, failed.stderr)
+            dirty = run("local-test", "--", "python3", "-m", "unittest", check=False)
+            assert dirty.returncode != 0 and "git status" in dirty.stderr, dirty.stderr
+            shutil.rmtree(project / "__pycache__")
+            (project / ".gitignore").write_text("__pycache__/\n")
+            (project / "calculator.py").write_text("def add(a, b):\n    return a + b\n")
+            subprocess.run(["git", "add", "calculator.py", ".gitignore"], cwd=project, env=env, check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                            "commit", "-qm", "fix addition"], cwd=project, env=env, check=True)
+            passed = run("local-test", "--", "python3", "-m", "unittest")
+            assert "success" in passed.stdout.lower(), passed.stdout
+            run("ingest", "turn-end", "--host", "copilot", "--session", "calculator")
+            run("pause")
+            run("daemon", "restart")
+            paused = json.loads(run("status", "--json").stdout)
+            assert paused["status"] == "paused", paused
+            run("resume")
+            result = interactive(["milestone", "tests-green"], "1\n1\n1\n")
+            assert "passed" in result and "current HEAD" in result, result
+            assert "verified" in result.lower(), result
+            verified = json.loads(run("milestone", "tests-green", "--json").stdout)
+            assert verified["milestones"][0]["counts"], verified
+            run("verify")
+            # Return to the completed project for the reset/removal check.
+            project = root / "project with spaces"
             # Start a new run with no prompt, and check guidance after removal.
             run("reset", "--yes")
             hook.unlink()
             missing = readiness()
             assert missing["recording"] == "awaiting_prompt" and missing["integration_state"] == "missing", missing
             assert missing["next_action"] == "Install an integration with speedrun setup.", missing
-            print("clean flow: ok (guided setup, installed Copilot hook, completion and restart)")
+            print("clean flow: ok (guided setup, real code edit, local verification, pause/restart/resume and completion)")
         finally:
             run("daemon", "stop", check=False)
 

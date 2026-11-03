@@ -27,6 +27,7 @@ pub struct Readiness {
     pub rejected: u64,
     pub write_failures: u64,
     pub next_action: &'static str,
+    pub next_action_id: &'static str,
 }
 
 pub fn inspect(client: &Client, cwd: &Path) -> Result<Readiness> {
@@ -82,28 +83,45 @@ pub fn inspect(client: &Client, cwd: &Path) -> Result<Readiness> {
             last_host = summary.last_host;
         }
     }
-    let next_action = if project_state == "untracked" {
-        "Run speedrun setup in this project."
+    let (next_action_id, next_action) = if project_state == "untracked" {
+        ("setup", "Run speedrun setup in this project.")
     } else if project_state == "untrusted" {
-        "Run speedrun init --trust in this project."
+        ("trust_project", "Run speedrun init --trust in this project.")
     } else if daemon == "wrong_data_dir" {
-        "Check the daemon address and data directory with speedrun doctor."
+        (
+            "doctor",
+            "Check the daemon address and data directory with speedrun doctor.",
+        )
     } else if daemon == "offline" {
-        "Run speedrun flush to start the daemon and deliver queued requests."
+        (
+            "flush",
+            "Run speedrun flush to start the daemon and deliver queued requests.",
+        )
     } else if stats.rejected > 0 {
-        "Inspect rejected requests with speedrun outbox rejected."
+        (
+            "inspect_rejected",
+            "Inspect rejected requests with speedrun outbox rejected.",
+        )
     } else if stats.write_failures > 0 {
-        "Inspect spool write failures with speedrun doctor."
+        ("doctor", "Inspect spool write failures with speedrun doctor.")
     } else if stats.spooled > 0 {
-        "Run speedrun flush to deliver queued requests."
+        ("flush", "Run speedrun flush to deliver queued requests.")
     } else if recording == "unknown" {
-        "Check speedrun doctor and retry readiness."
+        ("doctor", "Check speedrun doctor and retry readiness.")
+    } else if integration_state == "missing" && selected_integration.is_some() && recording == "captured" {
+        (
+            "setup",
+            "The selected integration is missing; run speedrun setup to reinstall it. Past capture remains recorded.",
+        )
     } else if recording == "captured" {
-        "Capture has been observed in this current run."
+        ("none", "Capture has been observed in this current run.")
     } else if integration_state == "missing" {
-        "Install an integration with speedrun setup."
+        ("setup", "Install an integration with speedrun setup.")
     } else {
-        "Send an agent prompt in this project to verify capture."
+        (
+            "send_prompt",
+            "Send an agent prompt in this project to verify capture.",
+        )
     };
     Ok(Readiness {
         version: 1,
@@ -120,6 +138,7 @@ pub fn inspect(client: &Client, cwd: &Path) -> Result<Readiness> {
         rejected: stats.rejected,
         write_failures: stats.write_failures,
         next_action,
+        next_action_id,
     })
 }
 
