@@ -59,8 +59,46 @@ pub enum Outcome {
     Unchanged(PathBuf),
 }
 
+/// Check deterministic conflicts before making any setup changes.
+pub fn validate(host: Host, base: &Path, force: bool) -> Result<()> {
+    let (subdir, name, marker) = match host {
+        Host::Opencode => ("plugins", "agentspeedrun.ts", MARKER),
+        Host::Pi | Host::Omp => ("extensions", "agentspeedrun.ts", MARKER),
+        Host::Copilot => ("hooks", "agentspeedrun.json", COPILOT_MARKER),
+    };
+    let file = base.join(subdir).join(name);
+    match std::fs::read_to_string(&file) {
+        Ok(existing) if !existing.contains(marker) && !force => bail!(
+            "{} exists and was not written by speedrun; use --force to replace it",
+            file.display()
+        ),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("reading {}", file.display())),
+    }
+    if host == Host::Opencode {
+        let path = base.join("package.json");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let value: Value =
+                    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+                let object = value
+                    .as_object()
+                    .with_context(|| format!("{} is not a JSON object", path.display()))?;
+                if object.get("dependencies").is_some_and(|deps| !deps.is_object()) {
+                    bail!("{}: dependencies is not an object", path.display());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+    Ok(())
+}
+
 /// Install the adapter for `host` under its config dir `base`.
 pub fn install(host: Host, base: &Path, force: bool) -> Result<Vec<Outcome>> {
+    validate(host, base, force)?;
     let (subdir, file_name, source, marker) = match host {
         Host::Opencode => ("plugins", "agentspeedrun.ts", OPENCODE_PLUGIN, MARKER),
         Host::Pi | Host::Omp => ("extensions", "agentspeedrun.ts", PI_EXTENSION, MARKER),
@@ -76,7 +114,8 @@ pub fn install(host: Host, base: &Path, force: bool) -> Result<Vec<Outcome>> {
             )
         }
         Ok(_) => Outcome::Upgraded(file.clone()),
-        Err(_) => Outcome::Installed(file.clone()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Outcome::Installed(file.clone()),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", file.display())),
     };
     if !matches!(outcome, Outcome::Unchanged(_)) {
         std::fs::create_dir_all(file.parent().expect("has parent"))?;
@@ -98,7 +137,8 @@ pub fn install(host: Host, base: &Path, force: bool) -> Result<Vec<Outcome>> {
 fn ensure_dependency(path: &Path, (name, version): (&str, &str)) -> Result<Option<Outcome>> {
     let mut pkg: Value = match std::fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?,
-        Err(_) => json!({}),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
     };
     let Some(obj) = pkg.as_object_mut() else {
         bail!("{} is not a JSON object", path.display());

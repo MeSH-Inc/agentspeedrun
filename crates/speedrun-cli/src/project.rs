@@ -113,9 +113,12 @@ impl Project {
         trust::allow(&self.config.project_id, &self.root)
     }
 
+    pub fn init_root(start: &Path) -> PathBuf {
+        git(start, &["rev-parse", "--show-toplevel"]).map_or_else(|| start.to_path_buf(), PathBuf::from)
+    }
+
     pub fn init(start: &Path, category_id: &str, force: bool) -> Result<Project> {
-        let root =
-            git(start, &["rev-parse", "--show-toplevel"]).map_or_else(|| start.to_path_buf(), PathBuf::from);
+        let root = Self::init_root(start);
         let file = root.join(PROJECT_FILE);
         if file.exists() && !force {
             bail!("{} already exists (use --force to replace it)", file.display());

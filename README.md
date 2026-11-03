@@ -52,10 +52,25 @@ cargo install --locked --path crates/speedrund && cargo install --locked --path 
 In the repo you want to time:
 
 ```bash
-speedrun init --category any-percent
+speedrun setup
 ```
 
-Then connect your agent and start prompting. The daemon starts automatically on first use.
+Guided setup selects your host, adapter scope, project category, and device-wide
+prompt capture preference. It initializes or trusts the current project without
+replacing an existing project. Restart the capture host, send a real prompt in
+this repo, then run `speedrun capture` to check whether it arrived. The daemon
+starts automatically on first use.
+
+For scripts, specify the choices explicitly, for example:
+
+```bash
+speedrun setup --host pi --scope project --capture metadata-only --yes
+```
+
+A new project defaults to `any-percent`; use `--category` to choose another.
+The explicit adapter-only commands below remain available. Claude Code uses a
+plugin; VS Code's extension adds a display and tools while Copilot hooks capture
+prompts. Zed's extension provides tools but does not capture its own agent prompts.
 
 | Host | Install |
 |------|---------|

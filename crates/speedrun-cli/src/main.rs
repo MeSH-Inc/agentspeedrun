@@ -5,6 +5,7 @@ mod doctor;
 mod hook;
 mod link;
 mod mcp;
+mod onboarding;
 mod ops;
 mod preferences;
 mod project;
@@ -338,12 +339,27 @@ enum Cmd {
     /// (VS Code agent, Copilot CLI): user-wide, or for this project with
     /// --project. Claude Code uses its plugin marketplace.
     Setup {
-        host: setup::Host,
+        host: Option<setup::Host>,
         #[arg(long)]
         project: bool,
         /// Replace an existing file speedrun did not write.
         #[arg(long)]
         force: bool,
+        /// Host for guided setup.
+        #[arg(long = "host", value_name = "HOST")]
+        guided_host: Option<onboarding::Host>,
+        /// Adapter scope for guided setup.
+        #[arg(long)]
+        scope: Option<onboarding::Scope>,
+        /// Category for a new project.
+        #[arg(long)]
+        category: Option<String>,
+        /// Device-wide prompt capture preference.
+        #[arg(long)]
+        capture: Option<preferences::CaptureArgument>,
+        /// Confirm initialization or trust without prompting.
+        #[arg(long)]
+        yes: bool,
     },
     /// Run the MCP server on stdio.
     Mcp {
@@ -872,7 +888,35 @@ fn run(cmd: Cmd) -> Result<()> {
             println!("auth:     Authorization: Bearer <token>, or ?token=<token> for EventSource");
             println!("browser pages need SPEEDRUN_CORS_ORIGINS=<origin> set for speedrund");
         }
-        Cmd::Setup { host, project, force } => {
+        Cmd::Setup {
+            host,
+            project,
+            force,
+            guided_host,
+            scope,
+            category,
+            capture,
+            yes,
+        } => {
+            let Some(host) = host else {
+                if project {
+                    bail!("--project requires a positional host; use --scope project for guided setup");
+                }
+                return onboarding::run(
+                    &cwd,
+                    onboarding::Options {
+                        host: guided_host,
+                        scope,
+                        category,
+                        capture,
+                        yes,
+                        force,
+                    },
+                );
+            };
+            if guided_host.is_some() || scope.is_some() || category.is_some() || capture.is_some() || yes {
+                bail!("guided setup options cannot be combined with a positional host");
+            }
             let root = if project {
                 Some(Project::find(&cwd)?.map_or_else(|| cwd.clone(), |p| p.root))
             } else {
