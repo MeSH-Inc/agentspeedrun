@@ -144,7 +144,7 @@
       },
       {
         "view": "agentspeedrun.splits",
-        "contents": "The run starts with the first agent prompt.\nTo time Copilot's agent, install its hooks:\n[Time Copilot Agent Prompts](command:agentspeedrun.setupCopilotHooks)",
+        "contents": "The run starts with the first agent prompt.\n[Check recording status](command:agentspeedrun.capture)",
         "when": "agentspeedrun.tracked"
       }
     ],
@@ -157,28 +157,15 @@
         },
         {
           "command": "agentspeedrun.pause",
-          "when": "view == agentspeedrun.splits && agentspeedrun.tracked",
+          "when": "view == agentspeedrun.splits && agentspeedrun.tracked && agentspeedrun.running",
           "group": "navigation@2"
         },
         {
-          "command": "agentspeedrun.watch",
-          "when": "view == agentspeedrun.splits && agentspeedrun.tracked",
-          "group": "navigation@3"
-        },
-        {
           "command": "agentspeedrun.resume",
-          "when": "view == agentspeedrun.splits && agentspeedrun.tracked"
-        },
-        {
-          "command": "agentspeedrun.setupCopilotHooks",
-          "when": "view == agentspeedrun.splits && agentspeedrun.tracked"
+          "when": "view == agentspeedrun.splits && agentspeedrun.tracked && agentspeedrun.paused"
         },
         {
           "command": "agentspeedrun.reset",
-          "when": "view == agentspeedrun.splits && agentspeedrun.tracked"
-        },
-        {
-          "command": "agentspeedrun.capture",
           "when": "view == agentspeedrun.splits && agentspeedrun.tracked"
         },
         {
@@ -186,15 +173,7 @@
           "when": "view == agentspeedrun.splits && agentspeedrun.tracked"
         },
         {
-          "command": "agentspeedrun.publish",
-          "when": "view == agentspeedrun.splits && agentspeedrun.tracked"
-        },
-        {
           "command": "agentspeedrun.localTest",
-          "when": "view == agentspeedrun.splits && agentspeedrun.tracked"
-        },
-        {
-          "command": "agentspeedrun.trust",
           "when": "view == agentspeedrun.splits && agentspeedrun.tracked"
         }
       ],
@@ -203,29 +182,6 @@
           "command": "agentspeedrun.milestone",
           "when": "view == agentspeedrun.splits",
           "group": "inline@1"
-        },
-        {
-          "command": "agentspeedrun.accept",
-          "when": "view == agentspeedrun.splits && viewItem == proposed",
-          "group": "inline@1"
-        },
-        {
-          "command": "agentspeedrun.reject",
-          "when": "view == agentspeedrun.splits && viewItem == proposed",
-          "group": "inline@2"
-        },
-        {
-          "command": "agentspeedrun.split",
-          "when": "view == agentspeedrun.splits && viewItem =~ /^(accepted|reached)$/",
-          "group": "inline"
-        },
-        {
-          "command": "agentspeedrun.confirm",
-          "when": "view == agentspeedrun.splits && viewItem == reached"
-        },
-        {
-          "command": "agentspeedrun.invalidate",
-          "when": "view == agentspeedrun.splits && viewItem =~ /^(reached|verified)$/"
         },
         {
           "command": "agentspeedrun.verification",

@@ -129,7 +129,7 @@ test("capture and history expose the captured run without prompt text", async ()
 
 test("readiness rejects partial and incompatible CLI responses", async () => {
   const { parseReadiness } = await import("../../src/cli");
-  const valid: import("../../src/cli").Readiness = { version: 1, project: "trusted", daemon: "online", integrations: [], integration_state: "missing", selected_integration: null, recording: "captured", last_activity: "2026-01-01T00:00:00Z", last_host: "test", queue_scope: "device", queued: 0, rejected: 0, write_failures: 0, next_action: "Observed" };
+  const valid: import("../../src/cli").Readiness = { version: 1, project: "trusted", daemon: "online", integrations: [], integration_state: "missing", selected_integration: null, recording: "captured", last_activity: "2026-01-01T00:00:00Z", last_host: "test", queue_scope: "device", queued: 0, rejected: 0, write_failures: 0, next_action_id: "none", next_action: "Observed" };
   expect(parseReadiness(valid)).toEqual(valid);
   expect(parseReadiness({ ...valid, version: 2 })).toBeUndefined();
   expect(parseReadiness({ ...valid, queued: -1 })).toBeUndefined();
@@ -138,7 +138,7 @@ test("readiness rejects partial and incompatible CLI responses", async () => {
 
 test("readiness label uses the CLI integration state", async () => {
   const { parseReadiness, readinessLabel } = await import("../../src/cli");
-  const base: import("../../src/cli").Readiness = { version: 1, project: "trusted", daemon: "online", integrations: ["pi"], selected_integration: ["copilot", "project"], integration_state: "missing", recording: "awaiting_prompt", last_activity: null, last_host: null, queue_scope: "device", queued: 0, rejected: 0, write_failures: 0, next_action: "Install an integration." };
+  const base: import("../../src/cli").Readiness = { version: 1, project: "trusted", daemon: "online", integrations: ["pi"], selected_integration: ["copilot", "project"], integration_state: "missing", recording: "awaiting_prompt", last_activity: null, last_host: null, queue_scope: "device", queued: 0, rejected: 0, write_failures: 0, next_action_id: "none", next_action: "Install an integration." };
   expect(readinessLabel(base)).toBe("integration needed");
   expect(readinessLabel({ ...base, integration_state: "external" })).toBe("waiting for first prompt");
   expect(readinessLabel({ ...base, recording: "captured" })).toBe("capture observed");

@@ -1,5 +1,8 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as vscode from "vscode";
 import type { Api } from "../../extension";
 
@@ -27,6 +30,61 @@ describe("agentspeedrun in VS Code", () => {
   it("reports that a tracked workspace needs an integration", async () => {
     await until("integration status", () => /integration needed/.test(api.statusText() ?? ""));
     assert.match(api.statusText()!, /integration needed/);
+  });
+
+  it("offers the recording setup action only when requested", async () => {
+    const window = vscode.window as unknown as { showInformationMessage: typeof vscode.window.showInformationMessage };
+    const original = window.showInformationMessage;
+    let message = "";
+    let options: unknown[] = [];
+    try {
+      window.showInformationMessage = (async (text: string, ...items: unknown[]) => {
+        message = text;
+        options = items;
+        return undefined;
+      }) as typeof vscode.window.showInformationMessage;
+      await vscode.commands.executeCommand("agentspeedrun.capture");
+      assert.match(message, /integration/i);
+      assert.ok(options.includes("Open setup"));
+    } finally {
+      window.showInformationMessage = original;
+    }
+  });
+
+  it("offers CLI-directed recovery without running it automatically", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "speedrun-readiness-"));
+    const binary = join(directory, "speedrun");
+    const config = vscode.workspace.getConfiguration("agentspeedrun");
+    const previous = config.inspect<string>("speedrunPath")?.workspaceValue;
+    const window = vscode.window as unknown as { showInformationMessage: typeof vscode.window.showInformationMessage };
+    const original = window.showInformationMessage;
+    const base = { version: 1, project: "trusted", daemon: "online", integrations: [], integration_state: "missing", selected_integration: null, recording: "unknown", last_activity: null, last_host: null, queue_scope: "device", queued: 0, rejected: 0, write_failures: 0 };
+    try {
+      await config.update("speedrunPath", binary, vscode.ConfigurationTarget.Workspace);
+      for (const [id, expected] of [["setup", "Open setup"], ["flush", "Start service and deliver queued requests"], ["doctor", "Check diagnostics"], ["inspect_rejected", "Inspect rejected requests"], ["send_prompt", undefined], ["none", undefined]] as const) {
+        const payload = JSON.stringify({ ...base, next_action: `Guidance for ${id}`, next_action_id: id });
+        writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' '${payload}'\n`);
+        chmodSync(binary, 0o755);
+        let choices: unknown[] = [];
+        window.showInformationMessage = (async (_message: string, ...items: unknown[]) => { choices = items; return undefined; }) as typeof vscode.window.showInformationMessage;
+        await vscode.commands.executeCommand("agentspeedrun.capture");
+        assert.deepEqual(choices, expected ? [expected] : [], id);
+      }
+      for (const [id, label, command] of [["doctor", "Check diagnostics", "doctor"], ["inspect_rejected", "Inspect rejected requests", "outbox rejected"]] as const) {
+        const log = join(directory, "calls");
+        const payload = JSON.stringify({ ...base, next_action: `Guidance for ${id}`, next_action_id: id });
+        writeFileSync(binary, `#!/bin/sh\nif [ "$1" = readiness ]; then printf '%s\\n' '${payload}'; else printf '%s\\n' "$*" > '${log}'; printf 'Details for %s\\n' "$*"; fi\n`);
+        chmodSync(binary, 0o755);
+        window.showInformationMessage = (async () => label) as typeof vscode.window.showInformationMessage;
+        await vscode.commands.executeCommand("agentspeedrun.capture");
+        assert.equal(readFileSync(log, "utf8").trim(), command);
+        assert.match(vscode.window.activeTextEditor?.document.getText() ?? "", new RegExp(`Details for ${command}`));
+      }
+    } finally {
+      window.showInformationMessage = original;
+      await config.update("speedrunPath", previous, vscode.ConfigurationTarget.Workspace);
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("contributes its commands", async () => {

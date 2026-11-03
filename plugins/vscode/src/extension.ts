@@ -50,8 +50,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
   status.command = "agentspeedrun.splits.focus";
   context.subscriptions.push(status);
 
+  let previousRunStatus: string | undefined;
   const render = () => {
     const run = currentRun();
+    const runStatus = run?.status ?? "none";
+    if (runStatus !== previousRunStatus) {
+      previousRunStatus = runStatus;
+      void vscode.commands.executeCommand("setContext", "agentspeedrun.running", runStatus === "running");
+      void vscode.commands.executeCommand("setContext", "agentspeedrun.paused", runStatus === "paused");
+    }
+    status.command = (!readiness || (readiness.next_action_id !== "none" && (readiness.next_action_id !== "send_prompt" || !run))) ? "agentspeedrun.capture" : "agentspeedrun.splits.focus";
     if (!readinessFolder) return status.hide();
     if (!readiness) {
       status.text = "$(warning) Speedrun: status unavailable";
@@ -448,8 +456,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     if (out) { const result = JSON.parse(out); void vscode.window.showInformationMessage(`Local test: ${result.status.kind}. Select this observation when attaching evidence.`); }
   });
   register("agentspeedrun.capture", async () => {
-    const out = await speedrun(["capture"]);
-    if (out) void vscode.window.showInformationMessage(out.trim());
+    await refreshReadiness(true);
+    if (!readiness) {
+      const choice = await vscode.window.showWarningMessage("Could not read recording status. Check the speedrun CLI path and try again.", "Set CLI path");
+      if (choice) void vscode.commands.executeCommand("workbench.action.openSettings", "agentspeedrun.speedrunPath");
+      return;
+    }
+    const currentReadiness = readiness;
+    const folder = readinessFolder;
+    const actions = new Map([
+      ["setup", "Open setup"], ["trust_project", "Trust project…"], ["doctor", "Check diagnostics"],
+      ["flush", "Start service and deliver queued requests"], ["inspect_rejected", "Inspect rejected requests"],
+    ]);
+    const label = actions.get(currentReadiness.next_action_id);
+    const choice = await vscode.window.showInformationMessage(currentReadiness.next_action, ...(label ? [label] : []));
+    if (!label || choice !== label) return;
+    if (folder !== readinessFolder) return;
+    switch (currentReadiness.next_action_id) {
+      case "setup": {
+        const terminal = vscode.window.createTerminal({ name: "Speedrun setup", cwd: folder, shellPath: bin(), shellArgs: ["setup"] });
+        terminal.show();
+        break;
+      }
+      case "trust_project": {
+        const confirm = await vscode.window.showWarningMessage(`Trust ${folder} for recording on this device?`, { modal: true }, "Trust project");
+        if (confirm && folder === readinessFolder) { await speedrun(["init", "--trust"], folder); await refreshReadiness(true); }
+        break;
+      }
+      case "flush": {
+        await speedrun(["flush"], folder);
+        await refreshReadiness(true);
+        break;
+      }
+      case "doctor":
+      case "inspect_rejected": {
+        const out = await speedrun(currentReadiness.next_action_id === "doctor" ? ["doctor"] : ["outbox", "rejected"], folder);
+        if (out) await showText("Recording details", out);
+        break;
+      }
+    }
   });
   async function chooseRun(): Promise<string | undefined> {
     const out = await speedrun(["history", "--json"]);
