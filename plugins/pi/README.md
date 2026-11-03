@@ -2,7 +2,10 @@
 
 One extension for both [pi](https://github.com/badlogic/pi-mono) and its
 fork [oh-my-pi](https://github.com/can1357/oh-my-pi). Every behavior lives in
-the `speedrun` CLI, which this file calls. Tested against pi 0.73 and omp 18.14.
+the `speedrun` CLI, which this file calls. Live checks on pi 0.87.1 and
+omp 18.16.0 used `openai-codex/gpt-6-luna` to call status and propose
+milestones. Both checks recorded signed prompts, turns and proposals, and
+closed their turns.
 
 | Event | Effect |
 |---|---|

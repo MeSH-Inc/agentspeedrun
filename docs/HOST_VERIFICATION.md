@@ -22,8 +22,33 @@ the model requests before producing a response (`model_not_available_for_integra
 or `model_not_supported`). These checks cover capture and turn closure on
 provider failure, not successful model completion or real model tool calls.
 The adapter TypeScript check and eight Bun tests also passed; their tool calls
-are fixtures. Retest with a model available to each host integrator before
-claiming end-to-end model/tool coverage.
+are fixtures. The successful provider-specific checks below supersede the
+initial model/tool coverage gap.
+
+A subsequent check resolved the oh-my-pi blocker by using its existing
+`openai-codex` provider login rather than assuming Copilot CLI access implied
+access from every integrator. Oh-my-pi 18.16.0 with `openai-codex/gpt-6-luna`
+completed a real model turn, called `speedrun_status` and
+`speedrun_propose_milestones`, and received status and successful proposal
+results. The log contained a prompt, turn start, three agent milestone proposals,
+and turn end; all 11 events verified as signed, with zero open turns.
+The host's supported credential export/import was confined to temporary private
+storage and removed afterward.
+
+For Pi 0.87.1, refreshing an isolated copy of its Copilot credentials succeeded,
+but actual requests still received `model_not_supported`, including models
+listed in the provider catalog. A catalog entry alone is not evidence of model
+access for a particular integrator. Pi did not discover oh-my-pi's separate
+Codex login and has no documented import path for those credentials; its own
+interactive `/login` was used with browser authorization to establish a
+separate test login. After authorization, Pi 0.87.1 using
+`openai-codex/gpt-6-luna` completed a real turn, invoked `speedrun_status` and
+`speedrun_propose_milestones`, and proposed the requested Example milestone.
+Its prompt, turn start, agent milestone proposal, and turn end were recorded;
+all nine events verified as signed, and `open_turns` was zero. The private
+login profile and test data were removed after verification. This successful
+check does not establish Copilot integrator access or configure the user's
+normal Pi profile.
 
 ## pi startup
 
@@ -112,4 +137,4 @@ own authentication profile.
 
 ## Hardware and remaining coverage
 
-The local Mac is arm64. The reachable Linux x86-64 machine and Windows x64 machine have AMD processors; neither is native Intel macOS. No native Intel Mac was available for this round. A native Intel macOS build and packaged binary smoke test remain necessary before claiming that platform was tested. Native Zed agent prompt capture is unsupported by design. Its installed GUI has no headless agent invocation in the available CLI; a real Zed model/tool session was not exercised. Successful model responses and model-invoked tools still need verification in pi and oh-my-pi with working host authentication and supported model access.
+The local Mac is arm64. The reachable Linux x86-64 machine and Windows x64 machine have AMD processors; neither is native Intel macOS. No native Intel Mac was available for this round. A native Intel macOS build and packaged binary smoke test remain necessary before claiming that platform was tested. Native Zed agent prompt capture is unsupported by design. Its installed GUI has no headless agent invocation in the available CLI; a real Zed model/tool session was not exercised. Claude Code, Pi and oh-my-pi now have successful real model/tool coverage in the versions and provider configurations recorded above. Other provider configurations are not implied by those results.
