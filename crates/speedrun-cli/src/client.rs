@@ -203,6 +203,172 @@ pub(crate) fn resolve_addr() -> String {
     paths::DEFAULT_ADDR.to_string()
 }
 
+/// Safe, read-only diagnostics. Stored request bodies and server messages are never exposed.
+#[derive(Serialize)]
+pub(crate) struct RejectedEntry {
+    id: i64,
+    reason: &'static str,
+    status: Option<u16>,
+    rejected_at_unix: Option<i64>,
+    entry_format: &'static str,
+    request_kind: &'static str,
+    event_id: Option<String>,
+    suggested_action: &'static str,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RejectedPage {
+    entries: Vec<RejectedEntry>,
+    next_after: Option<i64>,
+    legacy_unimported: u64,
+}
+
+pub(crate) fn rejected_page(dir: &Path, after: i64, limit: usize) -> anyhow::Result<RejectedPage> {
+    anyhow::ensure!((1..=1000).contains(&limit), "limit must be between 1 and 1000");
+    anyhow::ensure!(after >= 0, "after must be non-negative");
+    let legacy = dir.join("rejected.jsonl");
+    let legacy_unimported = match fs::File::open(legacy) {
+        Ok(file) => BufReader::new(file)
+            .split(b'\n')
+            .try_fold(0u64, |n, line| line.map(|line| n + u64::from(!line.is_empty())))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e.into()),
+    };
+    let path = dir.join("pending.sqlite3");
+    if !path.exists() {
+        return Ok(RejectedPage {
+            entries: vec![],
+            next_after: None,
+            legacy_unimported,
+        });
+    }
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let has_metadata: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='outbox_rejections')",
+        [],
+        |r| r.get(0),
+    )?;
+    let sql = if has_metadata {
+        "SELECT o.id, CAST(o.entry AS BLOB), r.status, r.rejected_at FROM outbox o LEFT JOIN outbox_rejections r ON o.id=r.id WHERE o.state='rejected' AND o.id>?1 ORDER BY o.id LIMIT ?2"
+    } else {
+        "SELECT id, CAST(entry AS BLOB), NULL, NULL FROM outbox WHERE state='rejected' AND id>?1 ORDER BY id LIMIT ?2"
+    };
+    let mut stmt = db.prepare(sql)?;
+    let mut entries = stmt
+        .query_map(params![after, (limit + 1) as i64], |row| {
+            let bytes: Vec<u8> = row.get(1)?;
+            let value: Option<Value> = serde_json::from_slice(&bytes).ok();
+            let entry_format = match value {
+                Some(ref value) if value.get("path").and_then(Value::as_str) == Some("/legacy/rejected") => {
+                    "sealed_legacy"
+                }
+                Some(ref value)
+                    if value.get("path").and_then(Value::as_str).is_some() && value.get("body").is_some() =>
+                {
+                    "request"
+                }
+                Some(_) => "unrecognized",
+                None => "malformed_or_truncated",
+            };
+            let request_kind = match value.as_ref().and_then(|v| v.get("path")).and_then(Value::as_str) {
+                Some("/v1/prompts") => "prompt",
+                Some(path)
+                    if path
+                        .strip_prefix("/v1/projects/")
+                        .and_then(|p| p.strip_suffix("/events"))
+                        .is_some_and(|p| !p.is_empty() && !p.contains('/')) =>
+                {
+                    "project_event"
+                }
+                _ => "unknown",
+            };
+            let event_id = value
+                .as_ref()
+                .and_then(|v| v.get("body"))
+                .and_then(|v| v.get("event_id"))
+                .and_then(Value::as_str)
+                .filter(|id| {
+                    id.len() == 26
+                        && id.as_bytes()[0] <= b'7'
+                        && id
+                            .bytes()
+                            .all(|c| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&c))
+                })
+                .map(str::to_owned);
+            let suggested_action = match row.get::<_, Option<u16>>(2)? {
+                Some(400 | 422) => "review_request",
+                Some(403) => "check_permissions",
+                Some(404) => "check_target",
+                Some(409) => "check_conflict",
+                Some(_) => "inspect_status",
+                None => "unknown",
+            };
+            let status: Option<u16> = row.get(2)?;
+            Ok(RejectedEntry {
+                id: row.get(0)?,
+                reason: if status.is_some() {
+                    "http_rejection"
+                } else {
+                    "unknown"
+                },
+                status,
+                rejected_at_unix: row.get(3)?,
+                entry_format,
+                request_kind,
+                event_id,
+                suggested_action,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let next_after = if entries.len() > limit {
+        entries.truncate(limit);
+        entries.last().map(|e| e.id)
+    } else {
+        None
+    };
+    Ok(RejectedPage {
+        entries,
+        next_after,
+        legacy_unimported,
+    })
+}
+
+pub(crate) fn print_rejected(after: i64, limit: usize, json: bool) -> anyhow::Result<()> {
+    let page = rejected_page(&spool_dir(), after, limit)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&page)?);
+    } else {
+        for entry in &page.entries {
+            println!(
+                "{}: {} status={} rejected_at_unix={} format={} kind={} event_id={} action={}",
+                entry.id,
+                entry.reason,
+                entry.status.map_or_else(|| "unknown".into(), |v| v.to_string()),
+                entry
+                    .rejected_at_unix
+                    .map_or_else(|| "unknown".into(), |v| v.to_string()),
+                entry.entry_format,
+                entry.request_kind,
+                entry.event_id.as_deref().unwrap_or("unknown"),
+                entry.suggested_action
+            );
+        }
+        if page.entries.is_empty() {
+            println!("No rejected outbox entries.");
+        }
+        if let Some(id) = page.next_after {
+            println!("Next page: --after {id}");
+        }
+        if page.legacy_unimported > 0 {
+            println!(
+                "Legacy rejected records awaiting import: {}",
+                page.legacy_unimported
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The numbers `doctor` reports from the spool directory and the failure
 /// counter. Their layout is this module's business, not the caller's.
 pub(crate) struct SpoolStats {
@@ -511,7 +677,7 @@ impl Client {
                 Ok(Durable::Spooled(SpoolReason::of(&error)))
             }
             Err(error) => {
-                if let Err(storage) = finish(&db, id, &owner, true) {
+                if let Err(storage) = finish_rejected(&db, id, &owner, &error, None) {
                     report_storage_error(&storage);
                 }
                 Err(error)
@@ -649,7 +815,7 @@ impl Client {
                     release(&db, id, &owner).map_err(storage_error)?;
                     break;
                 }
-                Err(_) => finish_with_deadline(&db, id, &owner, true, deadline).map_err(storage_error)?,
+                Err(error) => finish_rejected(&db, id, &owner, &error, deadline).map_err(storage_error)?,
             }
         }
         Ok(delivered)
@@ -704,7 +870,6 @@ pub(crate) fn test_enqueue_prompt(spool: &Path, id: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
-
 fn open_outbox() -> anyhow::Result<Connection> {
     open_outbox_at(&spool_dir(), None)
 }
@@ -755,6 +920,9 @@ fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> any
         "PRAGMA auto_vacuum=FULL;",
         "PRAGMA secure_delete=ON;",
         "CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease_until INTEGER, source TEXT UNIQUE);",
+        "CREATE TABLE IF NOT EXISTS outbox_rejections (id INTEGER PRIMARY KEY, status INTEGER, rejected_at INTEGER NOT NULL);",
+        "CREATE TABLE IF NOT EXISTS outbox_ids (id INTEGER PRIMARY KEY CHECK(id=1), highwater INTEGER NOT NULL); INSERT OR IGNORE INTO outbox_ids SELECT 1, COALESCE(MAX(id),0) FROM outbox;",
+        "CREATE TRIGGER IF NOT EXISTS outbox_track_id AFTER INSERT ON outbox BEGIN UPDATE outbox_ids SET highwater=MAX(highwater,NEW.id) WHERE id=1; END;",
     ] {
         set_busy_deadline(&db, deadline)?;
         db.execute_batch(statement)?;
@@ -1005,7 +1173,7 @@ fn scrub_migrated_outbox(db: &Connection) -> anyhow::Result<()> {
 fn enqueue(db: &Connection, entry: &SpoolEntry, owner: Option<&str>) -> anyhow::Result<i64> {
     let encoded = serde_json::to_string(&protect_entry(db, entry)?)?;
     db.execute(
-        "INSERT INTO outbox(entry,state,owner,lease_until) VALUES (?1,?2,?3,?4)",
+        "INSERT INTO outbox(id,entry,state,owner,lease_until) VALUES ((SELECT highwater+1 FROM outbox_ids WHERE id=1),?1,?2,?3,?4)",
         params![
             encoded,
             if owner.is_some() { "leased" } else { "pending" },
@@ -1048,6 +1216,31 @@ fn finish_with_deadline(
     rejected: bool,
     deadline: Option<Instant>,
 ) -> anyhow::Result<()> {
+    finish_outbox(db, id, owner, rejected, None, deadline)
+}
+
+fn finish_rejected(
+    db: &Connection,
+    id: i64,
+    owner: &str,
+    error: &CallError,
+    deadline: Option<Instant>,
+) -> anyhow::Result<()> {
+    let status = match error {
+        CallError::Api { status, .. } => Some(*status),
+        _ => None,
+    };
+    finish_outbox(db, id, owner, true, status, deadline)
+}
+
+fn finish_outbox(
+    db: &Connection,
+    id: i64,
+    owner: &str,
+    rejected: bool,
+    status: Option<u16>,
+    deadline: Option<Instant>,
+) -> anyhow::Result<()> {
     set_busy_deadline(db, deadline)?;
     let tx = db.unchecked_transaction()?;
     if rejected {
@@ -1056,9 +1249,18 @@ fn finish_with_deadline(
             params![id, owner],
         )?;
         anyhow::ensure!(changed == 1, "outbox lease was lost");
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+        tx.execute(
+            "INSERT OR REPLACE INTO outbox_rejections(id,status,rejected_at) VALUES (?1,?2,?3)",
+            params![id, status, now],
+        )?;
         // Keep the newest bounded diagnostic records, including at most one oversized entry.
         set_busy_deadline(&tx, deadline)?;
         tx.execute("DELETE FROM outbox WHERE state='rejected' AND id NOT IN (SELECT id FROM (SELECT id, SUM(length(CAST(entry AS BLOB))) OVER (ORDER BY id DESC) AS total, ROW_NUMBER() OVER (ORDER BY id DESC) AS n FROM outbox WHERE state='rejected') WHERE total<=?1 OR n=1)", [REJECTED_LIMIT])?;
+        tx.execute(
+            "DELETE FROM outbox_rejections WHERE id NOT IN (SELECT id FROM outbox WHERE state='rejected')",
+            [],
+        )?;
     } else {
         let changed = tx.execute(
             "DELETE FROM outbox WHERE id=?1 AND owner=?2 AND state='leased'",
@@ -1123,12 +1325,12 @@ fn import_legacy(db: &Connection, dir: &Path) -> anyhow::Result<()> {
                     credential: Credential::Full,
                 };
                 tx.execute(
-                    "INSERT OR IGNORE INTO outbox(entry,state,source) VALUES (?1,'rejected',?2)",
+                    "INSERT OR IGNORE INTO outbox(id,entry,state,source) VALUES ((SELECT highwater+1 FROM outbox_ids WHERE id=1),?1,'rejected',?2)",
                     params![serde_json::to_string(&entry)?, source],
                 )?;
             } else if let Ok(entry) = serde_json::from_slice::<SpoolEntry>(line) {
                 tx.execute(
-                    "INSERT OR IGNORE INTO outbox(entry,state,source) VALUES (?1,'pending',?2)",
+                    "INSERT OR IGNORE INTO outbox(id,entry,state,source) VALUES ((SELECT highwater+1 FROM outbox_ids WHERE id=1),?1,'pending',?2)",
                     params![serde_json::to_string(&protect_entry(&tx, &entry)?)?, source],
                 )?;
             } else {
@@ -1140,7 +1342,7 @@ fn import_legacy(db: &Connection, dir: &Path) -> anyhow::Result<()> {
                     credential: Credential::Full,
                 };
                 tx.execute(
-                    "INSERT OR IGNORE INTO outbox(entry,state,source) VALUES (?1,'rejected',?2)",
+                    "INSERT OR IGNORE INTO outbox(id,entry,state,source) VALUES ((SELECT highwater+1 FROM outbox_ids WHERE id=1),?1,'rejected',?2)",
                     params![serde_json::to_string(&entry)?, source],
                 )?;
             }
@@ -1382,6 +1584,131 @@ fn daemon_executable() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejected_diagnostics_are_private_paginated_and_key_independent() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_at(dir.path(), None).unwrap();
+        let event_id = speedrun_core::new_id();
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id":event_id, "content":"private prompt", "token":"bearer-secret"}),
+            credential: Credential::Agent,
+        };
+        let id = enqueue(&db, &entry, Some("owner")).unwrap();
+        finish_rejected(
+            &db,
+            id,
+            "owner",
+            &CallError::Api {
+                status: 422,
+                message: "private server message".into(),
+            },
+            None,
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO outbox(entry,state) VALUES (?1,'rejected')",
+            ["{truncated bearer-secret"],
+        )
+        .unwrap();
+        drop(db);
+        fs::remove_file(dir.path().join("outbox.key")).unwrap();
+        let first = rejected_page(dir.path(), 0, 1).unwrap();
+        assert_eq!(first.entries[0].status, Some(422));
+        assert_eq!(first.entries[0].reason, "http_rejection");
+        assert_eq!(first.entries[0].request_kind, "prompt");
+        assert_eq!(first.entries[0].event_id.as_deref(), Some(event_id.as_str()));
+        assert!(first.entries[0].rejected_at_unix.is_some());
+        let json = serde_json::to_string(&first).unwrap();
+        for secret in [
+            "private prompt",
+            "bearer-secret",
+            "private server message",
+            "event-1",
+        ] {
+            assert!(!json.contains(secret));
+        }
+        let second = rejected_page(dir.path(), first.next_after.unwrap(), 1).unwrap();
+        assert_eq!(second.entries[0].entry_format, "malformed_or_truncated");
+        assert_eq!(second.entries[0].reason, "unknown");
+    }
+
+    #[test]
+    fn paging_browses_current_rejections_not_a_rejection_stream() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_at(dir.path(), None).unwrap();
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id": speedrun_core::new_id(), "content": ""}),
+            credential: Credential::Full,
+        };
+        let earlier = enqueue(&db, &entry, Some("a")).unwrap();
+        let later = enqueue(&db, &entry, Some("b")).unwrap();
+        let error = CallError::Api {
+            status: 409,
+            message: String::new(),
+        };
+        finish_rejected(&db, later, "b", &error, None).unwrap();
+        assert_eq!(rejected_page(dir.path(), 0, 10).unwrap().entries[0].id, later);
+        finish_rejected(&db, earlier, "a", &error, None).unwrap();
+        assert!(rejected_page(dir.path(), later, 10).unwrap().entries.is_empty());
+        assert_eq!(rejected_page(dir.path(), 0, 10).unwrap().entries.len(), 2);
+    }
+
+    #[test]
+    fn metadata_only_rejection_is_inspectable_without_its_key() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_at(dir.path(), None).unwrap();
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id": speedrun_core::new_id(), "content":"", "metadata_only":{"length":42}}),
+            credential: Credential::Full,
+        };
+        let id = enqueue(&db, &entry, Some("owner")).unwrap();
+        finish_rejected(
+            &db,
+            id,
+            "owner",
+            &CallError::Api {
+                status: 409,
+                message: "secret".into(),
+            },
+            None,
+        )
+        .unwrap();
+        drop(db);
+        fs::remove_file(dir.path().join("outbox.key")).unwrap();
+        let page = rejected_page(dir.path(), 0, 5).unwrap();
+        assert_eq!(page.entries[0].suggested_action, "check_conflict");
+        assert_eq!(page.entries[0].request_kind, "prompt");
+        assert!(!serde_json::to_string(&page).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn legacy_diagnostics_and_cursor_survive_migration_and_deletion() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE outbox (id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease_until INTEGER, source TEXT UNIQUE); INSERT INTO outbox(id,entry,state) VALUES (9,'{\"path\":\"/legacy/rejected\",\"body\":{}}','rejected');").unwrap();
+        drop(db);
+        fs::write(dir.path().join("rejected.jsonl"), b"legacy secret\n").unwrap();
+        let page = rejected_page(dir.path(), 0, 10).unwrap();
+        assert_eq!(page.legacy_unimported, 1);
+        assert_eq!(page.entries[0].reason, "unknown");
+        let db = open_outbox_at(dir.path(), None).unwrap();
+        db.execute("DELETE FROM outbox", []).unwrap();
+        let entry = SpoolEntry {
+            path: "/v1/prompts".into(),
+            body: serde_json::json!({"event_id":"x","content":""}),
+            credential: Credential::Full,
+        };
+        assert!(enqueue(&db, &entry, None).unwrap() > 9);
+    }
+
     use super::*;
 
     fn sample_entry() -> SpoolEntry {

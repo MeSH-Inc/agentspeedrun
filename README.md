@@ -112,6 +112,17 @@ with public keys alone. The secret keys are not in it: `device.key` (signs as
 this device), `prompt.key`, `content.key`, and the per-run keys in `disclosure/` (needed to
 export a run's prompt commitments). Keep those with your other secrets.
 
+Inspect requests that the daemon permanently rejected with `speedrun outbox rejected`.
+Use `--json` for machine-readable output, `--limit` to set the page size, and
+`--after <id>` to continue from the returned cursor. Pages browse the records
+currently retained in enqueue order; they are not a snapshot or a watch cursor.
+A pending older request may be rejected after a later page was read, so restart
+from the beginning to see all current rejections. The output contains the
+HTTP status and rejection time when recorded, but never request bodies or daemon
+error messages. Older records can have an unknown reason; unimported legacy
+records are reported as a count. Rejected records are retained within a bounded
+size and may be pruned as newer rejections arrive.
+
 This database-only archive is not a complete recovery bundle: it omits keys
 and pending writes. Use the recovery commands below to preserve those together.
 

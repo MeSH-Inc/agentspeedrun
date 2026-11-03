@@ -103,7 +103,25 @@ enum RecoveryCmd {
 }
 
 #[derive(Subcommand)]
+enum OutboxCmd {
+    /// Browse currently retained rejections in enqueue order (not a watch cursor).
+    Rejected {
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum Cmd {
+    /// Inspect rejected outbox requests without exposing their contents.
+    Outbox {
+        #[command(subcommand)]
+        command: OutboxCmd,
+    },
     /// Start tracking this repository. The run's timer starts at the next prompt.
     Init {
         #[arg(long, default_value = DEFAULT_CATEGORY)]
@@ -800,6 +818,9 @@ fn run(cmd: Cmd) -> Result<()> {
                 println!("{:<16} v{}  {} — {}", k.id, k.version, k.name, k.description);
             }
         }
+        Cmd::Outbox {
+            command: OutboxCmd::Rejected { after, limit, json },
+        } => client::print_rejected(after, limit, json)?,
         Cmd::Doctor => doctor::print(&c)?,
         Cmd::Daemon { action } => match action {
             DaemonCmd::Status => daemon_status(&c)?,
