@@ -443,6 +443,10 @@ mod invocation {
         }
         match Cli::try_parse_from(relaxed(&args)) {
             Ok(cli) => Some(cli),
+            Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {
+                let _ = err.print();
+                None
+            }
             Err(err) => {
                 report(&err);
                 // `ingest` adapters parse stdout, so it still prints its one JSON object.
@@ -468,19 +472,28 @@ mod invocation {
     fn relaxed(args: &[OsString]) -> Vec<OsString> {
         match args.get(1).and_then(|arg| arg.to_str()) {
             // `hook <host> <event>`: whatever follows the event is optional for speedrun.
-            Some("hook") => args.iter().take(4).cloned().collect(),
+            Some("hook") => args
+                .iter()
+                .enumerate()
+                .filter(|(index, arg)| *index < 4 || arg.to_str().is_some_and(is_help_flag))
+                .map(|(_, arg)| arg.clone())
+                .collect(),
             // `ingest <kind> --host .. --session .. [--model ..]`: keep the fields we know
             // and discard unknown flags instead of failing the adapter.
             Some("ingest") => args
                 .iter()
                 .filter(|arg| match arg.to_str() {
-                    Some(arg) => !arg.starts_with('-') || is_ingest_flag(arg),
+                    Some(arg) => !arg.starts_with('-') || is_ingest_flag(arg) || is_help_flag(arg),
                     None => true,
                 })
                 .cloned()
                 .collect(),
             _ => args.to_vec(),
         }
+    }
+
+    fn is_help_flag(arg: &str) -> bool {
+        matches!(arg, "--help" | "-h")
     }
 
     fn is_ingest_flag(arg: &str) -> bool {
