@@ -296,6 +296,11 @@ pub fn run(cwd: &Path, options: Options) -> Result<()> {
         ),
         _ => {}
     }
+    if matches!(host, Host::Copilot | Host::Vscode) {
+        println!(
+            "In VS Code 1.144, select Local in the agent harness picker before sending a prompt. The newer Copilot SDK harness did not record a prompt in our test; check `speedrun readiness` after sending one."
+        );
+    }
     if !setup::on_path() {
         println!(
             "warning: `speedrun` is not on PATH; adapters may not find it. Add it or configure the host's binary path."

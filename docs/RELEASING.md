@@ -137,9 +137,11 @@ Use `scripts/live-host.py` for repeatable CLI-host checks and
 `docs/FIRST_USE_TESTING.md` for the limits of the agent-led first-use sessions.
 Before promoting the next candidate:
 
-- Exercise a real VS Code Copilot agent prompt, completed turn, and milestone
-  tool call with the installed extension/hooks. CLI Copilot success and VS Code
-  extension-host tests do not establish that GUI integration.
+- Check the supported VS Code Local agent path with the installed candidate
+  extension/hooks: real prompt, completed turn, and milestone tool call. The
+  v0.3.3 work verified this path; see `docs/VS_CODE_LIVE_VERIFICATION.md` for
+  the exact artifact coverage. The newer Copilot SDK Agent Host did not capture
+  a prompt in that test configuration and must not be advertised as verified.
 - Observe a fresh user completing setup, capture, a milestone, and a recovery
   action without coaching. Agent-led and synthetic-hook sessions are separate
   evidence, not a substitute for that usability observation.

@@ -86,6 +86,34 @@ fn positional_setup_remains_adapter_only() {
 }
 
 #[test]
+fn copilot_and_vscode_setup_explain_the_verified_harness() {
+    for host in ["copilot", "vscode"] {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run(
+            dir.path(),
+            &[
+                "setup",
+                "--host",
+                host,
+                "--scope",
+                "project",
+                "--capture",
+                "metadata-only",
+                "--yes",
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let output = String::from_utf8_lossy(&result.stdout);
+        assert!(output.contains("select Local in the agent harness picker"));
+        assert!(output.contains("Copilot SDK harness did not record a prompt"));
+    }
+}
+
+#[test]
 fn conflicts_are_rejected_before_preferences_or_project_change() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
