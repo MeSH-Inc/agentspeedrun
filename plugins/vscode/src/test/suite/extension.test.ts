@@ -24,9 +24,9 @@ describe("agentspeedrun in VS Code", () => {
     api = await ext.activate();
   });
 
-  it("activates for a tracked workspace and waits for the first prompt", async () => {
-    await until("connected status", () => /waiting for first prompt/.test(api.statusText() ?? ""));
-    assert.match(api.statusText()!, /waiting for first prompt/);
+  it("reports that a tracked workspace needs an integration", async () => {
+    await until("integration status", () => /integration needed/.test(api.statusText() ?? ""));
+    assert.match(api.statusText()!, /integration needed/);
   });
 
   it("contributes its commands", async () => {

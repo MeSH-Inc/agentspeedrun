@@ -318,6 +318,7 @@ export interface Protocol {
   prompt_request: PromptRequest;
   prompt_response: PromptResponse;
   active_run_response: ActiveRunResponse;
+  capture_summary: CaptureSummary;
   categories_response: CategoriesResponse;
   chain_report: ChainReport;
   export_response: ExportResponse;
@@ -663,6 +664,17 @@ export interface Timing1 {
    * Time between agent turns, each gap capped at the idle threshold, minus pauses.
    */
   human_ms: number;
+  [k: string]: unknown;
+}
+/**
+ * Bounded, content-free capture observation for a project's current run.
+ *
+ * This interface was referenced by `Protocol`'s JSON-Schema
+ * via the `definition` "CaptureSummary".
+ */
+export interface CaptureSummary {
+  last_prompt_at?: string | null;
+  last_host?: string | null;
   [k: string]: unknown;
 }
 /**

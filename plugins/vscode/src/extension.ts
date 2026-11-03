@@ -5,7 +5,7 @@
 // observe chat prompts. Source: plugins/vscode in mesh-inc/agentspeedrun.
 
 import * as vscode from "vscode";
-import { Cli, PROJECT_FILE, projectId } from "./cli";
+import { Cli, PROJECT_FILE, projectId, type Readiness } from "./cli";
 import { fmtDelta, fmtMs, type LiveMilestone, type LiveRun, LiveClient, type LiveSnapshot, type LiveState, statusText } from "./live";
 
 type Project = { folder: vscode.WorkspaceFolder; id: string };
@@ -36,6 +36,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
   let liveState: LiveState = "disconnected";
   let frozenAt = Date.now();
   let warnedMissing = false;
+  let readiness: Readiness | undefined;
+  let readinessFolder: string | undefined;
 
   const currentRun = () => snapshot?.runs.find((r) => r.project_id === project?.id);
   const asOf = () => (snapshot ? new Date(Date.parse(snapshot.as_of)) : new Date());
@@ -49,15 +51,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
 
   const render = () => {
     const run = currentRun();
-    if (!project) return status.hide();
+    if (!readinessFolder) return status.hide();
+    if (!readiness) {
+      status.text = "$(warning) Speedrun: status unavailable";
+      status.tooltip = "Could not read capture readiness from the speedrun CLI.";
+      return status.show();
+    }
+    const details = `Project: ${readiness.project} · Daemon: ${readiness.daemon} · Recording: ${readiness.recording}\nLast activity: ${readiness.last_activity ?? "none observed"} by ${readiness.last_host ?? "unknown host"}\nDevice queue: ${readiness.queued} · Rejected: ${readiness.rejected} · Write failures: ${readiness.write_failures}\n${readiness.next_action}`;
+    if (readiness.project !== "trusted" || readiness.daemon !== "online" || readiness.recording === "unknown" || readiness.rejected > 0 || readiness.write_failures > 0 || readiness.queued > 0) {
+      status.text = `$(warning) Speedrun: ${readiness.project !== "trusted" ? readiness.project : readiness.daemon !== "online" ? readiness.daemon : "attention needed"}`;
+      status.tooltip = details;
+      return status.show();
+    }
     if (liveState !== "connected") {
       status.text = `$(warning) Speedrun: ${liveState}`;
-      status.tooltip = "Live data is unavailable or cannot be trusted. The last timer is frozen.";
+      status.tooltip = `Live data is unavailable or cannot be trusted. The last timer is frozen.\n${details}`;
       return status.show();
     }
     if (!run) {
-      status.text = "$(watch) Speedrun: waiting for first prompt";
-      status.tooltip = "The run's timer starts with the first agent prompt in this project.";
+      status.text = `$(watch) Speedrun: ${readiness.recording === "captured" ? "capture observed" : (readiness.integrations.length || readiness.selected_integration) ? "waiting for first prompt" : "integration needed"}`;
+      status.tooltip = details;
       return status.show();
     }
     status.text = statusText(run, asOf(), now());
@@ -68,10 +81,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
         "",
         `timed ${fmtMs(t.timed_ms)} · agent ${fmtMs(t.agent_ms)} · human ${fmtMs(t.human_ms)}`,
         run.pb ? `PB ${fmtMs(run.pb.timing.timed_ms)}` : "",
+        "", details,
       ].join("\n"),
     );
     status.show();
   };
+  let readinessRequest: Promise<void> | undefined;
+  let readinessRequestFolder: string | undefined;
+  let readinessRequestedAt = 0;
+  async function refreshReadiness(force = false) {
+    const folder = readinessFolder;
+    if (!folder) return;
+    if (readinessRequest) {
+      if (readinessRequestFolder === folder) return readinessRequest;
+      await readinessRequest;
+      if (folder !== readinessFolder) return;
+    }
+    if (!force && Date.now() - readinessRequestedAt < 10_000) return;
+    readinessRequestedAt = Date.now();
+    const request = (async () => {
+      const result = await cli.readiness(folder);
+      if (folder === readinessFolder) { readiness = result; render(); }
+    })();
+    readinessRequest = request;
+    readinessRequestFolder = folder;
+    try { await request; } finally { if (readinessRequest === request) { readinessRequest = undefined; readinessRequestFolder = undefined; } }
+  }
+  const readinessTicker = setInterval(() => { void refreshReadiness(); }, 10_000);
+  context.subscriptions.push({ dispose: () => clearInterval(readinessTicker) });
   const ticker = setInterval(render, 1000);
   context.subscriptions.push({ dispose: () => clearInterval(ticker) });
 
@@ -113,12 +150,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
         });
       }
       receivedAt = new Date();
+      void refreshReadiness();
       render();
       changed.fire();
     },
     (state) => {
       if (liveState === "connected" && state !== "connected") frozenAt = Date.now();
       liveState = state;
+      if (state === "connected") void refreshReadiness(true);
       render();
       changed.fire();
     },
@@ -166,6 +205,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     }
     const changedProject = found?.id !== project?.id;
     project = found;
+    const folder = found?.folder.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (folder !== readinessFolder) { readinessFolder = folder; readiness = undefined; }
+    await refreshReadiness(true);
     await vscode.commands.executeCommand("setContext", "agentspeedrun.tracked", Boolean(project));
     if (changedProject) {
       mcpChanged.fire();

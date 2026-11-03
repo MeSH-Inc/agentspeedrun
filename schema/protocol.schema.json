@@ -40,6 +40,9 @@
     "active_run_response": {
       "$ref": "#/$defs/ActiveRunResponse"
     },
+    "capture_summary": {
+      "$ref": "#/$defs/CaptureSummary"
+    },
     "categories_response": {
       "$ref": "#/$defs/CategoriesResponse"
     },
@@ -74,6 +77,7 @@
     "prompt_request",
     "prompt_response",
     "active_run_response",
+    "capture_summary",
     "categories_response",
     "chain_report",
     "export_response",
@@ -1492,6 +1496,25 @@
         "agent_ms",
         "human_ms"
       ]
+    },
+    "CaptureSummary": {
+      "description": "Bounded, content-free capture observation for a project's current run.",
+      "type": "object",
+      "properties": {
+        "last_prompt_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     },
     "CategoriesResponse": {
       "type": "object",

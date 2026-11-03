@@ -11,6 +11,7 @@ mod preferences;
 mod project;
 mod prompts;
 mod publish;
+mod readiness;
 mod recovery;
 mod redacted;
 mod secret;
@@ -145,6 +146,11 @@ enum Cmd {
         /// One line for status bars; prints nothing when there is no run.
         #[arg(long)]
         line: bool,
+    },
+    /// Show read-only capture readiness and the next action.
+    Readiness {
+        #[arg(long)]
+        json: bool,
     },
     /// Show whether this project has captured a prompt.
     Capture,
@@ -587,31 +593,16 @@ fn run(cmd: Cmd) -> Result<()> {
                 println!("Prompt retention preference saved.");
             }
         },
-        Cmd::Capture => {
-            let p = Project::require(&cwd)?;
-            match ops::active_run(&c, &p)? {
-                None => println!(
-                    "No prompt captured yet. Install your host hooks and send an agent prompt in this project."
-                ),
-                Some(run) => {
-                    let events: Vec<speedrun_core::Event> =
-                        c.get(&format!("/v1/runs/{}/events", run.run_id))?;
-                    let prompt = events
-                        .iter()
-                        .rev()
-                        .find(|e| matches!(e.payload, EventPayload::PromptSubmitted { .. }));
-                    if let Some(event) = prompt {
-                        if let EventPayload::PromptSubmitted { host, .. } = &event.payload {
-                            println!(
-                                "Last captured prompt: {} by {} (run {}).",
-                                event.occurred_at, host, run.run_id
-                            );
-                        }
-                    } else {
-                        println!("No prompt captured in the current run.");
-                    }
-                }
+        Cmd::Readiness { json } => {
+            let state = readiness::inspect(&c, &cwd)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&state)?);
+            } else {
+                readiness::print(&state);
             }
+        }
+        Cmd::Capture => {
+            readiness::print(&readiness::inspect(&c, &cwd)?);
         }
         Cmd::History { json } => {
             let p = Project::require(&cwd)?;
@@ -644,6 +635,25 @@ fn run(cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Status { json, line } => {
+            if !json && !line {
+                let state = readiness::inspect(&c, &cwd)?;
+                readiness::print(&state);
+                if state.project == "untracked" {
+                    Project::require(&cwd)?;
+                }
+                if state.project != "trusted" || state.daemon != "online" {
+                    return Ok(());
+                }
+                let p = Project::require(&cwd)?;
+                let response: speedrun_core::api::ActiveRunResponse =
+                    c.get_existing(&format!("/v1/projects/{}/active-run", p.config.project_id))?;
+                println!();
+                match response.run {
+                    Some(run) => print!("{}", ops::format_status(&run)),
+                    None => println!("No active run; the timer starts at the next prompt."),
+                }
+                return Ok(());
+            }
             let p = Project::require(&cwd)?;
             match ops::active_run(&c, &p)? {
                 Some(run) if json => println!("{}", serde_json::to_string_pretty(&run)?),

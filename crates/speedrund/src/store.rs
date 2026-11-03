@@ -103,6 +103,9 @@ UPDATE local_test_observations SET body = json_set(body, '$.argv', json('[]'));
 ALTER TABLE prompts ADD COLUMN ciphertext BLOB;
 ALTER TABLE prompts ADD COLUMN disclosure_digest TEXT;
 "#,
+    r#"
+CREATE INDEX events_by_run_type_seq ON events (run_id, type, seq);
+"#,
 ];
 
 pub struct Store {
@@ -669,6 +672,34 @@ impl Reader<'_> {
             .and_then(|payload| payload.get("project_root"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string))
+    }
+
+    /// Read at most one prompt and one abandonment event, without exposing prompt content.
+    pub fn capture_summary(&self, project_id: &str) -> rusqlite::Result<speedrun_core::api::CaptureSummary> {
+        let mut summary = speedrun_core::api::CaptureSummary {
+            last_prompt_at: None,
+            last_host: None,
+        };
+        let Some(run_id) = self.latest_run(project_id)? else {
+            return Ok(summary);
+        };
+        let abandoned: bool = self.0.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'run_finished' AND json_extract(body, '$.payload.outcome') = 'abandoned')",
+            [&run_id], |r| r.get(0))?;
+        if abandoned {
+            return Ok(summary);
+        }
+        let body: Option<String> = self.0.query_row(
+            "SELECT body FROM events WHERE run_id = ?1 AND type = 'prompt_submitted' ORDER BY seq DESC LIMIT 1",
+            [&run_id], |r| r.get(0)).optional()?;
+        if let Some(body) = body {
+            let event: Event = parse(&body)?;
+            if let speedrun_core::EventPayload::PromptSubmitted { host, .. } = event.payload {
+                summary.last_prompt_at = Some(event.occurred_at);
+                summary.last_host = Some(host);
+            }
+        }
+        Ok(summary)
     }
 
     pub fn run_events(&self, run_id: &str) -> rusqlite::Result<Vec<Event>> {

@@ -126,3 +126,12 @@ test("capture and history expose the captured run without prompt text", async ()
     expect(JSON.parse(inspect.stdout).run_id).toBe(runs[0].run_id);
   } finally { local.close(); }
 });
+
+test("readiness rejects partial and incompatible CLI responses", async () => {
+  const { parseReadiness } = await import("../../src/cli");
+  const valid: import("../../src/cli").Readiness = { version: 1, project: "trusted", daemon: "online", integrations: [], selected_integration: null, recording: "captured", last_activity: "2026-01-01T00:00:00Z", last_host: "test", queue_scope: "device", queued: 0, rejected: 0, write_failures: 0, next_action: "Observed" };
+  expect(parseReadiness(valid)).toEqual(valid);
+  expect(parseReadiness({ ...valid, version: 2 })).toBeUndefined();
+  expect(parseReadiness({ ...valid, queued: -1 })).toBeUndefined();
+  expect(parseReadiness({ ...valid, recording: undefined })).toBeUndefined();
+});

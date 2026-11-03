@@ -1061,6 +1061,10 @@ impl Service {
             .collect()
     }
 
+    pub fn capture_summary(&self, project_id: &str) -> Result<speedrun_core::api::CaptureSummary> {
+        Ok(self.store.reader().capture_summary(project_id)?)
+    }
+
     pub fn active_run(&self, project_id: &str) -> Result<Option<RunView>> {
         let r = self.store.reader();
         let Some(run_id) = r.latest_run(project_id)? else {

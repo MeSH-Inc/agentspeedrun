@@ -302,7 +302,7 @@ pub fn run(cwd: &Path, options: Options) -> Result<()> {
         );
     }
     println!(
-        "Setup configured; prompt capture has not been verified. Restart the capture host, send a real agent prompt in {}, then run `speedrun capture` there to check it.",
+        "Setup configured; prompt capture has not been verified. Restart the capture host, send a real agent prompt in {}, then run `speedrun readiness` there to check it.",
         project.root.display()
     );
     Ok(())

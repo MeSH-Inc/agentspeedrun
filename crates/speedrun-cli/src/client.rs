@@ -623,6 +623,11 @@ impl Client {
         self.with_autostart(|| self.verify_health().map(|_| ()))
     }
 
+    /// Read from an already verified daemon without starting one.
+    pub(crate) fn get_existing<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
+        self.send("GET", path, None, Delivery::Fresh, self.credential)
+    }
+
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, CallError> {
         self.ready()?;
         self.send("GET", path, None, Delivery::Fresh, self.credential)

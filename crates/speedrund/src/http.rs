@@ -139,6 +139,7 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
     let participant = Router::new()
         .route("/v1/events", post(append))
         .route("/v1/projects/{project_id}/active-run", get(active_run))
+        .route("/v1/projects/{project_id}/capture-summary", get(capture_summary))
         .route("/v1/projects/{project_id}/events", post(append_to_project))
         .route("/v1/runs/{run_id}", get(run))
         .route("/v1/runs/{run_id}/events", get(events))
@@ -503,6 +504,10 @@ async fn erase_prompt(State(s): State<AppState>, Path(id): Path<String>) -> impl
 
 async fn project_history(State(s): State<AppState>, Path(project_id): Path<String>) -> impl IntoResponse {
     call(&s, move |svc| svc.project_history(&project_id)).await
+}
+
+async fn capture_summary(State(s): State<AppState>, Path(project_id): Path<String>) -> impl IntoResponse {
+    call(&s, move |svc| svc.capture_summary(&project_id)).await
 }
 
 async fn active_run(State(s): State<AppState>, Path(project_id): Path<String>) -> impl IntoResponse {

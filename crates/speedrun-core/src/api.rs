@@ -191,6 +191,13 @@ pub struct ActiveRunResponse {
     pub run: Option<RunView>,
 }
 
+/// Bounded, content-free capture observation for a project's current run.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CaptureSummary {
+    pub last_prompt_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_host: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CategoriesResponse {
     pub categories: Vec<Category>,
@@ -256,6 +263,7 @@ pub struct Protocol {
     prompt_request: PromptRequest,
     prompt_response: PromptResponse,
     active_run_response: ActiveRunResponse,
+    capture_summary: CaptureSummary,
     categories_response: CategoriesResponse,
     chain_report: ChainReport,
     export_response: ExportResponse,
