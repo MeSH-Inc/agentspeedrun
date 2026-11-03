@@ -83,11 +83,33 @@ path access was permitted. Admitting only the temporary project through
 Copilot's workspace trust configuration enabled capture. The projection ignores
 redundant end notifications after the turn closes; a regression test covers it.
 
-Claude Code 2.1.314 loaded its hooks and recorded a signed prompt, but its
-isolated credential copy received an expired-token 401. A successful Claude
-model response, normal completed turn, and model-invoked MCP tool remain
-unverified. Refresh authentication in the host before repeating this check.
+Claude Code 2.1.314 subsequently completed two successful model turns using the
+existing authenticated host profile, an explicitly loaded agentspeedrun plugin,
+and temporary Git projects with isolated Speedrun data and loopback addresses.
+The model invoked `mcp__plugin_agentspeedrun_agentspeedrun__speedrun_status`,
+received its result, and completed successfully. The log contained a prompt,
+turn start, and Stop/SessionEnd notifications; all nine events were signed and
+`speedrun verify` passed. Daemons and temporary project/data directories were
+removed afterward. No plugin change or user login was needed.
+
+The earlier 401 came from an isolated stale credential copy; it did not establish
+that the active host authentication was unusable. Prefer the host's supported
+credential handling over copying access tokens into a test profile. The live
+check used the following command from a temporary initialized project with
+`SPEEDRUN_HOME` and `SPEEDRUN_ADDR` set to isolated values:
+
+```sh
+claude -p --plugin-dir /absolute/path/to/agentspeedrun/plugins/claude-code \
+  --allowedTools mcp__plugin_agentspeedrun_agentspeedrun__speedrun_status \
+  --output-format stream-json --verbose \
+  'Call the agentspeedrun speedrun_status tool exactly once and briefly report its result.'
+```
+
+Afterward, inspect `speedrun log`, run `speedrun verify`, and stop the temporary
+daemon with `speedrun daemon stop`. This command makes a real model request
+using the host account; the temporary Speedrun data does not isolate the host's
+own authentication profile.
 
 ## Hardware and remaining coverage
 
-The local Mac is arm64. The reachable Linux x86-64 machine and Windows x64 machine have AMD processors; neither is native Intel macOS. No native Intel Mac was available for this round. A native Intel macOS build and packaged binary smoke test remain necessary before claiming that platform was tested. Native Zed agent prompt capture is unsupported by design. Its installed GUI has no headless agent invocation in the available CLI; a real Zed model/tool session was not exercised. Successful model responses and model-invoked tools still need verification in Claude Code, pi and oh-my-pi with working host authentication and supported model access.
+The local Mac is arm64. The reachable Linux x86-64 machine and Windows x64 machine have AMD processors; neither is native Intel macOS. No native Intel Mac was available for this round. A native Intel macOS build and packaged binary smoke test remain necessary before claiming that platform was tested. Native Zed agent prompt capture is unsupported by design. Its installed GUI has no headless agent invocation in the available CLI; a real Zed model/tool session was not exercised. Successful model responses and model-invoked tools still need verification in pi and oh-my-pi with working host authentication and supported model access.
