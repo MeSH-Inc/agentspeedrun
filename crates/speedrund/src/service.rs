@@ -106,6 +106,7 @@ pub struct Service {
     /// The daemon's own `data_dir_id` (the value `/v1/health` reports), which
     /// every live snapshot names as its source.
     source_id: String,
+    generation: String,
     /// Completed runs per project@category@version, fastest first by `timed_ms`.
     /// A live run's PB is taken from its own project's entry only.
     /// Cleared whenever any run finishes.
@@ -250,6 +251,7 @@ impl Service {
             store,
             categories,
             source_id,
+            generation: speedrun_core::new_id(),
             pb_cache: HashMap::new(),
         }
     }
@@ -862,16 +864,31 @@ impl Service {
                 continue;
             };
             if !view.closed && view.last_event_at >= as_of - window {
-                views.push((view, log.unreadable));
+                let mut jobs = HashMap::new();
+                for milestone in &view.milestones {
+                    if let Some(event) = log.events.iter().rev().find(|event| matches!(&event.payload,
+                        EventPayload::MilestoneReached { milestone_id, .. } if milestone_id == &milestone.milestone_id)
+                        && RunView::claim_is_current(&log.events, &milestone.milestone_id, &event.event_id))
+                        && self.store.verification_job_status(&event.event_id)?.is_some() {
+                            let status = self.verification_status(&event.event_id)?;
+                            jobs.insert(milestone.milestone_id.clone(), speedrun_core::live::LiveVerification {
+                                cause_event_id: status.cause_event_id, state: status.state,
+                            });
+                    }
+                }
+                views.push((view, log.unreadable, jobs));
             }
         }
         let mut runs = Vec::with_capacity(views.len());
-        for (view, unreadable) in views {
+        for (view, unreadable, mut jobs) in views {
             let name = category::find(&self.categories, &view.category_id, Some(view.category_version))
                 .map_or_else(|| view.category_id.clone(), |c| c.name.clone());
             let group = self.completed_runs(&view)?;
             let pb = group.runs.iter().find(|r| r.run_id != view.run_id);
             let mut run = LiveRun::from_view(&view, &name, as_of, pb);
+            for milestone in &mut run.milestones {
+                milestone.verification = jobs.remove(&milestone.milestone_id);
+            }
             run.errors = snapshot_errors(unreadable);
             for row in &group.unreadable {
                 if row.run_id != view.run_id {
@@ -890,6 +907,7 @@ impl Service {
             source: LiveSource {
                 kind: LiveSourceKind::Local,
                 id: self.source_id.clone(),
+                generation: self.generation.clone(),
             },
             as_of,
             cursor,
@@ -941,6 +959,15 @@ impl Service {
             return Ok(None);
         };
         attach_root(&reader, view).map(Some)
+    }
+
+    pub fn project_history(&self, project_id: &str) -> Result<Vec<RunView>> {
+        self.store
+            .reader()
+            .project_runs(project_id)?
+            .iter()
+            .map(|id| self.run(id))
+            .collect()
     }
 
     pub fn active_run(&self, project_id: &str) -> Result<Option<RunView>> {
@@ -1317,6 +1344,15 @@ mod tests {
         assert_eq!(status.state, VerificationJobState::Failed);
         assert_eq!(status.attempts, 2);
         assert!(!status.report.unwrap().problems.is_empty());
+        let snapshot = s.live(Duration::days(7)).unwrap();
+        let milestone = snapshot.runs[0]
+            .milestones
+            .iter()
+            .find(|m| m.key.as_deref() == Some("scaffold-runs"))
+            .unwrap();
+        let live_job = milestone.verification.as_ref().unwrap();
+        assert_eq!(live_job.state, VerificationJobState::Failed);
+        assert_eq!(live_job.cause_event_id, "claim");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 {
-  "protocol": 1,
+  "protocol": 2,
   "source": {
+    "generation": "example-generation",
     "kind": "local",
     "id": "5f1c0de05f1c0de05f1c0de05f1c0de05f1c0de05f1c0de05f1c0de05f1c0de0"
   },
@@ -49,6 +50,8 @@
           "trust": "self_declared",
           "required_trust": "self_declared",
           "counts": true,
+          "pending_confirmation": false,
+          "verification": null,
           "split": {
             "wall_ms": 540000,
             "timed_ms": 540000,
@@ -72,6 +75,8 @@
           "trust": "agent_claimed",
           "required_trust": "evidence_verified",
           "counts": false,
+          "pending_confirmation": false,
+          "verification": null,
           "split": null,
           "pb_split": {
             "wall_ms": 1800000,
@@ -90,6 +95,8 @@
           "trust": null,
           "required_trust": "agent_claimed",
           "counts": false,
+          "pending_confirmation": false,
+          "verification": null,
           "split": null,
           "pb_split": null,
           "delta_ms": null

@@ -1776,6 +1776,10 @@
       "description": "The origin of a snapshot, so a display showing several can tell them apart.",
       "type": "object",
       "properties": {
+        "generation": {
+          "description": "Changes each time the daemon opens its store; cursors are scoped to this generation.",
+          "type": "string"
+        },
         "kind": {
           "$ref": "#/$defs/LiveSourceKind"
         },
@@ -1785,6 +1789,7 @@
         }
       },
       "required": [
+        "generation",
         "kind",
         "id"
       ]
@@ -2008,6 +2013,20 @@
           "description": "Reached at or above the required trust.",
           "type": "boolean"
         },
+        "pending_confirmation": {
+          "type": "boolean"
+        },
+        "verification": {
+          "description": "Current local verification job; details require the participant API.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiveVerification"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "split": {
           "anyOf": [
             {
@@ -2044,7 +2063,23 @@
         "origin",
         "state",
         "required_trust",
-        "counts"
+        "counts",
+        "pending_confirmation"
+      ]
+    },
+    "LiveVerification": {
+      "type": "object",
+      "properties": {
+        "cause_event_id": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/VerificationJobState"
+        }
+      },
+      "required": [
+        "cause_event_id",
+        "state"
       ]
     },
     "PersonalBest": {

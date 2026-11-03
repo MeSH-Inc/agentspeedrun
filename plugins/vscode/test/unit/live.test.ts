@@ -79,3 +79,50 @@ test("live client follows the real stream and sees pushed updates", async () => 
     client.stop();
   }
 });
+
+test("stream generations reset cursors and invalid snapshots are reported", async () => {
+  const originalFetch = globalThis.fetch;
+  const received: LiveSnapshot[] = [];
+  const states: string[] = [];
+  const first = structuredClone(example);
+  first.cursor = 100;
+  const restored = structuredClone(example);
+  restored.cursor = 2;
+  restored.source.generation = "restored";
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    const snapshots = calls++ === 0 ? [first] : [{ ...restored, protocol: 999 }, { ...restored, runs: "broken" }, restored];
+    const body = new ReadableStream({ start(controller) {
+      for (const snap of snapshots) controller.enqueue(new TextEncoder().encode(`event: snapshot\ndata: ${JSON.stringify(snap)}\n\n`));
+      controller.close();
+    }});
+    return new Response(body, { status: 200 });
+  }) as unknown as typeof fetch;
+  const client = new LiveClient(async () => ({ base_url: "http://example", token: "test" }), (s) => received.push(s), (s) => states.push(s));
+  try {
+    client.start();
+    for (let i = 0; i < 100 && received.length < 2; i++) await Bun.sleep(20);
+    expect(received.map((s) => s.cursor)).toEqual([100, 2]);
+    expect(states).toContain("incompatible");
+    expect(states).toContain("corrupt-data");
+  } finally { client.stop(); globalThis.fetch = originalFetch; }
+});
+
+test("capture and history expose the captured run without prompt text", async () => {
+  const local = await sandbox();
+  const cli = new Cli(() => process.env.SPEEDRUN_BIN!);
+  try {
+    const prompt = "private sample prompt";
+    await cli.run(["ingest", "prompt", "--host", "test", "--session", "history"], local.project, prompt);
+    const capture = await cli.run(["capture"], local.project);
+    expect(capture.ok).toBe(true);
+    expect(capture.stdout).toContain("test");
+    expect(capture.stdout).not.toContain(prompt);
+    const history = await cli.run(["history", "--json"], local.project);
+    expect(history.ok).toBe(true);
+    const runs = JSON.parse(history.stdout);
+    expect(runs).toHaveLength(1);
+    const inspect = await cli.run(["inspect", runs[0].run_id, "--json"], local.project);
+    expect(JSON.parse(inspect.stdout).run_id).toBe(runs[0].run_id);
+  } finally { local.close(); }
+});

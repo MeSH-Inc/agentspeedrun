@@ -673,6 +673,15 @@ impl Reader<'_> {
             .map(|n| n as u64)
     }
 
+    /// All runs for a project, newest first.
+    pub fn project_runs(&self, project_id: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.0.prepare_cached(
+            "SELECT run_id FROM runs WHERE project_id = ?1 ORDER BY created DESC, rowid DESC",
+        )?;
+        let rows = stmt.query_map([project_id], |r| r.get(0))?;
+        rows.collect()
+    }
+
     /// The newest run of every project.
     pub fn latest_runs(&self) -> rusqlite::Result<Vec<String>> {
         let mut stmt = self.0.prepare_cached(

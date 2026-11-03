@@ -6,7 +6,7 @@
 
 import * as vscode from "vscode";
 import { Cli, PROJECT_FILE, projectId } from "./cli";
-import { fmtDelta, fmtMs, type LiveMilestone, type LiveRun, LiveClient, type LiveSnapshot, statusText } from "./live";
+import { fmtDelta, fmtMs, type LiveMilestone, type LiveRun, LiveClient, type LiveSnapshot, type LiveState, statusText } from "./live";
 
 type Project = { folder: vscode.WorkspaceFolder; id: string };
 
@@ -33,12 +33,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
   let project: Project | undefined;
   let snapshot: LiveSnapshot | undefined;
   let receivedAt = new Date();
+  let liveState: LiveState = "disconnected";
+  let frozenAt = Date.now();
   let warnedMissing = false;
 
   const currentRun = () => snapshot?.runs.find((r) => r.project_id === project?.id);
   const asOf = () => (snapshot ? new Date(Date.parse(snapshot.as_of)) : new Date());
   // Tick from the local clock, shifted so that skew between us and the daemon cancels out.
-  const now = () => new Date(asOf().getTime() + (Date.now() - receivedAt.getTime()));
+  const now = () => new Date(asOf().getTime() + ((liveState === "connected" ? Date.now() : frozenAt) - receivedAt.getTime()));
 
   // --- status bar ---------------------------------------------------------
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
@@ -48,6 +50,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
   const render = () => {
     const run = currentRun();
     if (!project) return status.hide();
+    if (liveState !== "connected") {
+      status.text = `$(warning) Speedrun: ${liveState}`;
+      status.tooltip = "Live data is unavailable or cannot be trusted. The last timer is frozen.";
+      return status.show();
+    }
     if (!run) {
       status.text = "$(watch) Speedrun: waiting for first prompt";
       status.tooltip = "The run's timer starts with the first agent prompt in this project.";
@@ -80,8 +87,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
       const split = m.split ? fmtMs(m.split.timed_ms) : "";
       const delta = m.delta_ms != null ? ` ${fmtDelta(m.delta_ms)}` : "";
       item.description =
-        m.state === "proposed" ? "proposed by agent" : m.counts ? `${split}${delta}` : m.trust ? `needs ${m.required_trust}` : "";
-      item.tooltip = `${m.key ?? m.milestone_id} · ${m.origin} · trust ${m.trust ?? "none"} (needs ${m.required_trust})`;
+        m.state === "proposed" ? "proposed by agent" : m.pending_confirmation ? "awaiting confirmation" : m.verification && m.verification.state !== "verified" ? `local check: ${m.verification.state}` : m.counts ? `${split}${delta}` : m.trust ? `needs ${m.required_trust}` : "";
+      item.tooltip = `${m.key ?? m.milestone_id} · ${m.origin} · trust ${m.trust ?? "none"} (needs ${m.required_trust})${m.verification ? ` · local check ${m.verification.state}` : ""}`;
       item.contextValue = m.state;
       return item;
     },
@@ -97,8 +104,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
       return conn;
     },
     (snap) => {
+      const previous = currentRun();
       snapshot = snap;
+      const completed = currentRun();
+      if (previous && completed && previous.run_id === completed.run_id && previous.status !== "completed" && completed.status === "completed") {
+        void vscode.window.showInformationMessage(`Run completed in ${fmtMs(completed.timing.timed_ms)}. ${completed.progress.counted}/${completed.progress.total} category milestones counted.`, "View history").then((choice) => {
+          if (choice) void vscode.commands.executeCommand("agentspeedrun.history");
+        });
+      }
       receivedAt = new Date();
+      render();
+      changed.fire();
+    },
+    (state) => {
+      if (liveState === "connected" && state !== "connected") frozenAt = Date.now();
+      liveState = state;
       render();
       changed.fire();
     },
@@ -241,6 +261,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     { label: "Public URL…", detail: "The deployment, or a terms/privacy page.", flag: "--url", prompt: "https://" },
     { label: "GitHub Actions run…", detail: "A passing run of this repo.", flag: "--ci", prompt: "https://github.com/" },
     { label: "Stripe payment…", detail: "pi_, ch_, cs_, in_ or evt_ id; needs `speedrun secret set stripe`.", flag: "--stripe", prompt: "" },
+    { label: "Local test observation…", detail: "Observation ID from speedrun local-test.", flag: "--local-test", prompt: "" },
     { label: "No evidence", detail: "Counts only for milestones that accept self_declared.", flag: "", prompt: "" },
   ];
 
@@ -251,13 +272,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     if (commit !== undefined) {
       evidence = commit ? ["--commit", commit] : [];
     } else {
-      const pick = await vscode.window.showQuickPick(EVIDENCE, { title: "Evidence" });
-      if (!pick) return;
-      if (pick.flag === "--commit") evidence = ["--commit", "HEAD"];
-      else if (pick.flag) {
-        const value = await vscode.window.showInputBox({ title: pick.label.replace("…", ""), value: pick.prompt });
-        if (!value?.trim()) return;
-        evidence = [pick.flag, value.trim()];
+      while (true) {
+        const pick = await vscode.window.showQuickPick([...EVIDENCE, { label: "Done", detail: "Submit the selected evidence.", flag: "done", prompt: "" }], { title: `Evidence (${evidence.length / 2} attached)` });
+        if (!pick) return;
+        if (pick.flag === "done" || !pick.flag) break;
+        if (pick.flag !== "--url") {
+          const previous = evidence.indexOf(pick.flag);
+          if (previous >= 0) evidence.splice(previous, 2);
+        }
+        if (pick.flag === "--commit") evidence.push("--commit", "HEAD");
+        else if (pick.flag === "--local-test") {
+          const out = await speedrun(["local-test-history"]);
+          if (!out) return;
+          try {
+            const attempts = JSON.parse(out) as Array<{ id: string; argv: string[]; status: { kind: string }; observed_at: string }>;
+            const selected = await vscode.window.showQuickPick(attempts.map((a) => ({ label: a.argv.join(" "), description: a.status.kind, detail: a.observed_at, id: a.id })), { title: "Select a local test observation" });
+            if (!selected) return;
+            evidence.push(pick.flag, selected.id);
+          } catch { void vscode.window.showErrorMessage("Could not read local test observations."); return; }
+        }
+        else {
+          const value = await vscode.window.showInputBox({ title: pick.label.replace("…", ""), value: pick.prompt });
+          if (!value?.trim()) return;
+          evidence.push(pick.flag, value.trim());
+        }
       }
     }
     // The daemon checks evidence before answering; network checks take a few seconds.
@@ -266,7 +304,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
       () => speedrun(["split", id, ...evidence], undefined, 120_000),
     );
     const verdict = out?.split("\n\n")[0];
-    if (verdict?.startsWith("Evidence not verified")) void vscode.window.showWarningMessage(verdict);
+    if (verdict) void vscode.window.showInformationMessage(verdict);
   });
 
   register("agentspeedrun.add", async (title?: string) => {
@@ -282,6 +320,99 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
   register("agentspeedrun.reject", async (arg?: unknown) => {
     const id = await chooseMilestone(arg, (m) => m.state === "proposed", "Reject");
     if (id) await speedrun(["reject", id]);
+  });
+
+  register("agentspeedrun.confirm", async (arg?: unknown) => {
+    const id = await chooseMilestone(arg, (m) => m.pending_confirmation, "Confirm agent claim");
+    if (id) await speedrun(["confirm", id]);
+  });
+  register("agentspeedrun.invalidate", async (arg?: unknown) => {
+    const id = await chooseMilestone(arg, (m) => m.state === "reached" || m.state === "verified", "Invalidate milestone");
+    if (!id) return;
+    const reason = await vscode.window.showInputBox({ title: "Reason for invalidating this milestone" });
+    if (reason?.trim()) await speedrun(["invalidate", id, "--reason", reason.trim()]);
+  });
+  register("agentspeedrun.verification", async (arg?: unknown) => {
+    let milestone: LiveMilestone | undefined;
+    if (arg && typeof arg === "object" && "milestone_id" in arg) milestone = arg as LiveMilestone;
+    else {
+      const id = await chooseMilestone(undefined, (m) => Boolean(m.verification), "Select a local evidence check");
+      milestone = currentRun()?.milestones.find((m) => m.milestone_id === id);
+    }
+    if (!milestone?.verification) { void vscode.window.showInformationMessage("No local evidence check for this milestone."); return; }
+    const out = await speedrun(["verification", milestone.verification.cause_event_id]);
+    if (out) {
+      const status = JSON.parse(out);
+      const report = status.report;
+      await showText("Local evidence check", [`${milestone.title}`, `State: ${status.state} (${status.attempts} attempts)`, report ? `Scope: ${report.scope} · Observer: ${report.observer} ${report.observer_version}` : "Waiting for a result.", ...(report?.problems ?? []), ...(report?.facts ?? []).map((fact: string) => `Observed: ${fact}`)].join("\n"));
+    }
+  });
+  register("agentspeedrun.localTest", async () => {
+    const input = await vscode.window.showInputBox({ title: "Run local test", prompt: "Enter the command and arguments as a JSON array, for example [\"cargo\", \"test\"]" });
+    if (!input) return;
+    let argv: string[];
+    try { argv = JSON.parse(input); if (!Array.isArray(argv) || !argv.length || argv.some((v) => typeof v !== "string" || !v)) throw new Error(); }
+    catch { void vscode.window.showErrorMessage("Enter a nonempty JSON array of command arguments."); return; }
+    const out = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Running local test" }, () => speedrun(["local-test", "--", ...argv], undefined, 180_000));
+    if (out) { const result = JSON.parse(out); void vscode.window.showInformationMessage(`Local test: ${result.status.kind}. Select this observation when attaching evidence.`); }
+  });
+  register("agentspeedrun.capture", async () => {
+    const out = await speedrun(["capture"]);
+    if (out) void vscode.window.showInformationMessage(out.trim());
+  });
+  async function chooseRun(): Promise<string | undefined> {
+    const out = await speedrun(["history", "--json"]);
+    if (!out) return undefined;
+    try {
+      const runs = JSON.parse(out) as Array<{ run_id: string; category_id: string; category_version: number; status: string; started_at: string }>;
+      if (!runs.length) { void vscode.window.showInformationMessage("No runs captured for this project yet."); return undefined; }
+      return (await vscode.window.showQuickPick(runs.map((r) => ({ label: `${r.category_id}@${r.category_version} · ${r.status}`, description: r.started_at, detail: r.run_id, id: r.run_id })), { title: "Select a run" }))?.id;
+    } catch { void vscode.window.showErrorMessage("Could not read run history."); return undefined; }
+  }
+  async function showText(title: string, content: string) {
+    const doc = await vscode.workspace.openTextDocument({ language: "plaintext", content });
+    await vscode.window.showTextDocument(doc, { preview: false });
+    return title;
+  }
+  register("agentspeedrun.history", async (runId?: string) => {
+    const id = runId ?? await chooseRun();
+    if (!id) return;
+    const out = await speedrun(["inspect", id]);
+    if (out) await showText("Run details", out);
+  });
+  register("agentspeedrun.publish", async () => {
+    const id = await chooseRun();
+    if (!id) return;
+    const tier = await vscode.window.showQuickPick([
+      { label: "Tier 0: chain heads", value: "0" },
+      { label: "Tier 1: signed event log", value: "1" },
+      { label: "Tier 2: signed event log and prompt commitments", value: "2" },
+    ], { title: "Choose disclosure tier" });
+    if (!tier) return;
+    const summary = await speedrun(["inspect", id]);
+    if (!summary) return;
+    const preview = await speedrun(["publish", "--run", id, "--tier", tier.value, "--preview"]);
+    if (!preview) return;
+    let digest: string;
+    try {
+      const parsed = JSON.parse(preview);
+      digest = parsed.digest;
+      if (typeof digest !== "string") throw new Error();
+      const bundle = parsed.bundle;
+      await showText("Publication preview", [
+        summary.trim(), "", `Disclosure tier: ${tier.value}`, `Bundle digest: ${digest}`,
+        `Included: ${bundle.chain_heads.length} chain heads, ${bundle.events.length} signed events, ${bundle.prompts.length} prompt commitments, ${bundle.rotations.length} key rotations.`,
+        "Events can include milestone claims and evidence references. Local checks do not guarantee that the commons will verify them.",
+        "The exact bundle to be published follows:", "", JSON.stringify(bundle, null, 2),
+      ].join("\n"));
+    }
+    catch { void vscode.window.showErrorMessage("Invalid publication preview."); return; }
+    const destination = await vscode.window.showInputBox({ title: "Commons URL", prompt: "Review the exact bundle. Local evidence checks do not guarantee public verification.", placeHolder: "https://commons.example" });
+    if (!destination?.trim()) return;
+    const confirm = await vscode.window.showWarningMessage("Publish the displayed bundle? Its event and evidence data will be public and cannot be retracted.", { modal: true }, "Publish");
+    if (confirm !== "Publish") return;
+    const out = await speedrun(["publish", "--run", id, "--tier", tier.value, "--to", destination.trim(), "--expect-digest", digest], undefined, 120_000);
+    if (out) await showText("Publication receipt", out);
   });
 
   register("agentspeedrun.pause", () => speedrun(["pause"]));
@@ -300,6 +431,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     const terminal = vscode.window.createTerminal({ name: "speedrun watch", cwd: project?.folder.uri });
     terminal.sendText(`${bin()} watch`);
     terminal.show();
+  });
+
+  register("agentspeedrun.trust", async () => {
+    const out = await speedrun(["init", "--trust"]);
+    if (out) void vscode.window.showInformationMessage(out.trim());
   });
 
   register("agentspeedrun.setupCopilotHooks", async () => {

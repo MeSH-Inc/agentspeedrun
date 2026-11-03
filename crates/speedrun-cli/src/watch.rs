@@ -18,6 +18,8 @@ use crate::ops::fmt_ms;
 struct Shared {
     snapshot: Option<LiveSnapshot>,
     connection: String,
+    frozen_at: Option<DateTime<Utc>>,
+    received_at: Option<DateTime<Utc>>,
 }
 
 pub fn watch(since_hours: u32, once: bool) -> Result<()> {
@@ -35,13 +37,28 @@ pub fn watch(since_hours: u32, once: bool) -> Result<()> {
             let res = client.stream_live(since_hours, |snap| {
                 let mut s = writer.lock().unwrap_or_else(|p| p.into_inner());
                 // Ignore out-of-order snapshots.
-                if s.snapshot.as_ref().is_none_or(|old| snap.cursor >= old.cursor) {
+                if snap.protocol != speedrun_core::live::LIVE_PROTOCOL_VERSION {
+                    s.connection = format!("incompatible live protocol {}", snap.protocol);
+                    s.frozen_at.get_or_insert_with(Utc::now);
+                    return;
+                }
+                if s.snapshot
+                    .as_ref()
+                    .is_none_or(|old| snap.source != old.source || snap.cursor >= old.cursor)
+                {
                     s.snapshot = Some(snap);
                 }
                 s.connection.clear();
+                s.frozen_at = None;
+                s.received_at = Some(Utc::now());
             });
-            if let Err(e) = res {
-                writer.lock().unwrap_or_else(|p| p.into_inner()).connection = format!("reconnecting: {e}");
+            {
+                let mut shared = writer.lock().unwrap_or_else(|p| p.into_inner());
+                shared.connection = match res {
+                    Ok(()) => "disconnected; reconnecting".into(),
+                    Err(e) => format!("reconnecting: {e}"),
+                };
+                shared.frozen_at.get_or_insert_with(Utc::now);
             }
             let _ = client.ready();
             std::thread::sleep(Duration::from_secs(1));
@@ -50,11 +67,26 @@ pub fn watch(since_hours: u32, once: bool) -> Result<()> {
     loop {
         let frame = {
             let s = shared.lock().unwrap_or_else(|p| p.into_inner());
+            let now = Utc::now();
+            let stale_at = s.received_at.map(|t| t + chrono::Duration::seconds(90));
+            let stale = stale_at.is_some_and(|t| now > t);
+            let display_at = s
+                .frozen_at
+                .or_else(|| stale_at.filter(|t| now > *t))
+                .unwrap_or(now);
             let body = s
                 .snapshot
                 .as_ref()
-                .map_or_else(|| "connecting…\n".to_string(), |snap| render(snap, Utc::now()));
-            format!("{body}{}\n", s.connection)
+                .map_or_else(|| "connecting…\n".to_string(), |snap| render(snap, display_at));
+            format!(
+                "{body}{}{}\n",
+                s.connection,
+                if stale && s.connection.is_empty() {
+                    "stale live stream"
+                } else {
+                    ""
+                }
+            )
         };
         print!("\x1b[H\x1b[2J{frame}");
         std::thread::sleep(Duration::from_millis(250));

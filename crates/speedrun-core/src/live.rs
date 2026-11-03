@@ -29,11 +29,13 @@ pub struct LiveSnapshot {
 }
 
 /// Version of the live-display contract in this module.
-pub const LIVE_PROTOCOL_VERSION: u32 = 1;
+pub const LIVE_PROTOCOL_VERSION: u32 = 2;
 
 /// The origin of a snapshot, so a display showing several can tell them apart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LiveSource {
+    /// Changes each time the daemon opens its store; cursors are scoped to this generation.
+    pub generation: String,
     pub kind: LiveSourceKind,
     /// For `local`, the daemon's `data_dir_id` (as in `/v1/health`).
     pub id: String,
@@ -121,11 +123,20 @@ pub struct LiveMilestone {
     pub required_trust: Trust,
     /// Reached at or above the required trust.
     pub counts: bool,
+    pub pending_confirmation: bool,
+    /// Current local verification job; details require the participant API.
+    pub verification: Option<LiveVerification>,
     pub split: Option<Timing>,
     /// The personal best's split for the same category milestone.
     pub pb_split: Option<Timing>,
     /// `split.timed_ms - pb_split.timed_ms`; negative is ahead of PB.
     pub delta_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LiveVerification {
+    pub cause_event_id: String,
+    pub state: crate::api::VerificationJobState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -186,6 +197,8 @@ impl LiveRun {
                     trust: m.trust,
                     required_trust: m.required_trust,
                     counts: m.counts(),
+                    pending_confirmation: m.pending_confirmation,
+                    verification: None,
                     split: m.split,
                     pb_split,
                     delta_ms: m.split.zip(pb_split).map(|(a, b)| a.timed_ms - b.timed_ms),
@@ -394,6 +407,7 @@ mod tests {
             protocol: LIVE_PROTOCOL_VERSION,
             source: LiveSource {
                 kind: LiveSourceKind::Local,
+                generation: "example-generation".into(),
                 id: "5f1c0de0".repeat(8),
             },
             as_of,

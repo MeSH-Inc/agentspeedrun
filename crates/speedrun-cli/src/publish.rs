@@ -125,17 +125,52 @@ fn refusal(url: &str, error: ureq::Error) -> anyhow::Error {
 
 /// Fetch `run_id`'s bundle at `tier` from the daemon, post it to the
 /// resolved commons, then report the receipt.
-pub fn run(client: &Client, tier: u8, run_id: &str, to: Option<&str>) -> Result<()> {
+pub fn run(
+    client: &Client,
+    tier: u8,
+    run_id: &str,
+    to: Option<&str>,
+    preview: bool,
+    expected_digest: Option<&str>,
+) -> Result<()> {
     if tier > 2 {
         bail!("tier must be 0, 1 or 2");
     }
     // Resolve the destination first: an unnamed commons leaves the daemon
     // untouched, so nothing is fetched or sent.
-    let commons = Commons::resolve(to)?;
+    let commons = if preview {
+        None
+    } else {
+        Some(Commons::resolve(to)?)
+    };
     let path = format!("/v1/runs/{}/bundle?tier={tier}", path_segment(run_id));
     let bundle: Bundle = client.get(&path)?;
+    let digest = speedrun_core::bundle::digest(&bundle)?;
+    if expected_digest.is_some_and(|expected| expected != digest) {
+        bail!("the bundle changed since preview; review it again");
+    }
+    if preview {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({"digest": digest, "bundle": bundle}))?
+        );
+        return Ok(());
+    }
+    let commons = commons.expect("destination resolved for publication");
     let receipt: PublishReceipt = commons.post("/v1/bundles", &bundle)?;
     print_receipt(&receipt);
+    println!(
+        "run: {}",
+        commons
+            .destination
+            .url(&format!("/runs/{}", path_segment(run_id)))
+    );
+    println!(
+        "publication: {}",
+        commons
+            .destination
+            .url(&format!("/v1/bundles/{}", path_segment(&receipt.bundle_digest)))
+    );
     Ok(())
 }
 

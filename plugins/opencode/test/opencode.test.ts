@@ -114,7 +114,7 @@ test("milestone tools go through the CLI", async () => {
 
   sb.commit("scaffold");
   const claimed = await hooks.tool.speedrun_claim_milestone.execute({ milestone: "scaffold-runs", commit: "HEAD" }, ctx);
-  expect(claimed).toContain("Evidence verified (git)");
+  expect(claimed).toContain("this milestone requires a semantic claim; attached evidence alone cannot verify it");
   // An agent's claim on a self_declared milestone counts only once the user confirms it (D6).
   expect(claimed).toContain("waits for the user to confirm it");
   sb.cli("confirm", "scaffold-runs");

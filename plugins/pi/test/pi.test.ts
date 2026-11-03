@@ -103,7 +103,7 @@ test("milestone tools go through the CLI", async () => {
   const exec = (name: string, params: any) => tools.get(name).execute("call-1", params, undefined, undefined, c);
   sb.commit("scaffold");
   const claimed = await exec("speedrun_claim_milestone", { milestone: "scaffold-runs", commit: "HEAD" });
-  expect(claimed.content[0].text).toContain("Evidence verified (git)");
+  expect(claimed.content[0].text).toContain("this milestone requires a semantic claim; attached evidence alone cannot verify it");
   // An agent's claim on a self_declared milestone counts only once the user confirms it (D6).
   expect(claimed.content[0].text).toContain("waits for the user to confirm it");
   expect(statuses.at(-1)).toMatch(/^⏱ any-percent 0\/2 · /);

@@ -25,13 +25,13 @@ describe("agentspeedrun in VS Code", () => {
   });
 
   it("activates for a tracked workspace and waits for the first prompt", async () => {
-    await until("status", () => api.statusText() !== undefined);
+    await until("connected status", () => /waiting for first prompt/.test(api.statusText() ?? ""));
     assert.match(api.statusText()!, /waiting for first prompt/);
   });
 
   it("contributes its commands", async () => {
     const all = await vscode.commands.getCommands(true);
-    for (const id of ["init", "split", "add", "accept", "reject", "pause", "resume", "reset", "watch", "setupCopilotHooks"]) {
+    for (const id of ["init", "split", "add", "accept", "reject", "pause", "resume", "reset", "watch", "setupCopilotHooks", "confirm", "invalidate", "capture", "history", "publish", "verification", "localTest"]) {
       assert.ok(all.includes(`agentspeedrun.${id}`), id);
     }
   });
@@ -52,6 +52,14 @@ describe("agentspeedrun in VS Code", () => {
   it("adds a user milestone", async () => {
     await vscode.commands.executeCommand("agentspeedrun.add", "Recipes persist");
     await until("milestone listed", () => api.run()?.milestones.some((m) => m.title === "Recipes persist") === true);
+  });
+
+  it("opens a readable history entry for the captured run", async () => {
+    const runId = api.run()?.run_id;
+    assert.ok(runId);
+    await vscode.commands.executeCommand("agentspeedrun.history", runId);
+    assert.match(vscode.window.activeTextEditor?.document.getText() ?? "", /run .* —/);
+    assert.match(vscode.window.activeTextEditor?.document.getText() ?? "", /scaffold-runs/);
   });
 
   it("offers the MCP server for this project", () => {

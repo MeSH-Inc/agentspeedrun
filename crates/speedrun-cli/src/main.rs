@@ -95,6 +95,19 @@ enum Cmd {
         #[arg(long)]
         line: bool,
     },
+    /// Show whether this project has captured a prompt.
+    Capture,
+    /// List runs for the current project, newest first.
+    History {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect any local run by id.
+    Inspect {
+        run: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Mark a milestone as reached. The daemon checks attached evidence and
     /// upgrades the claim to evidence_verified when it holds up.
     Split {
@@ -193,6 +206,12 @@ enum Cmd {
         /// Commons base URL; defaults to SPEEDRUN_COMMONS_URL.
         #[arg(long)]
         to: Option<String>,
+        /// Print the exact bundle without publishing it.
+        #[arg(long)]
+        preview: bool,
+        /// Refuse publication if the bundle has changed since preview.
+        #[arg(long)]
+        expect_digest: Option<String>,
     },
     /// Link this device to a GitHub account through a commons.
     Link {
@@ -457,6 +476,62 @@ fn run(cmd: Cmd) -> Result<()> {
                 category
             );
         }
+        Cmd::Capture => {
+            let p = Project::require(&cwd)?;
+            match ops::active_run(&c, &p)? {
+                None => println!(
+                    "No prompt captured yet. Install your host hooks and send an agent prompt in this project."
+                ),
+                Some(run) => {
+                    let events: Vec<speedrun_core::Event> =
+                        c.get(&format!("/v1/runs/{}/events", run.run_id))?;
+                    let prompt = events
+                        .iter()
+                        .rev()
+                        .find(|e| matches!(e.payload, EventPayload::PromptSubmitted { .. }));
+                    if let Some(event) = prompt {
+                        if let EventPayload::PromptSubmitted { host, .. } = &event.payload {
+                            println!(
+                                "Last captured prompt: {} by {} (run {}).",
+                                event.occurred_at, host, run.run_id
+                            );
+                        }
+                    } else {
+                        println!("No prompt captured in the current run.");
+                    }
+                }
+            }
+        }
+        Cmd::History { json } => {
+            let p = Project::require(&cwd)?;
+            let runs: Vec<speedrun_core::RunView> =
+                c.get(&format!("/v1/projects/{}/runs", p.config.project_id))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&runs)?);
+            } else if runs.is_empty() {
+                println!("No runs yet. The first captured prompt starts a run.");
+            } else {
+                for run in runs {
+                    println!(
+                        "{}  {}@{}  {:?}  {}  {}",
+                        run.run_id,
+                        run.category_id,
+                        run.category_version,
+                        run.status,
+                        ops::fmt_ms(run.timing.timed_ms),
+                        run.started_at
+                    );
+                }
+            }
+        }
+        Cmd::Inspect { run, json } => {
+            let view: speedrun_core::RunView = c.get(&format!("/v1/runs/{}", run))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else {
+                print!("{}", ops::format_status(&view));
+            }
+        }
         Cmd::Status { json, line } => {
             let p = Project::require(&cwd)?;
             match ops::active_run(&c, &p)? {
@@ -634,7 +709,13 @@ fn run(cmd: Cmd) -> Result<()> {
                 c.get(&format!("/v1/runs/{}/export?tier={tier}", run.run_id))?;
             println!("{}", serde_json::to_string_pretty(&export)?);
         }
-        Cmd::Publish { tier, run, to } => publish::run(&c, tier, &run, to.as_deref())?,
+        Cmd::Publish {
+            tier,
+            run,
+            to,
+            preview,
+            expect_digest,
+        } => publish::run(&c, tier, &run, to.as_deref(), preview, expect_digest.as_deref())?,
         Cmd::Link { to } => link::run(&c, to.as_deref())?,
         Cmd::Categories => {
             let r: CategoriesResponse = c.get("/v1/categories")?;

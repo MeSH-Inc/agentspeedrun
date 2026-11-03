@@ -129,6 +129,7 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .route("/v1/verifications/{event_id}", get(verification_status))
         .route_layer(middleware::from_fn_with_state(state.clone(), participant_auth));
     let api = Router::new()
+        .route("/v1/projects/{project_id}/runs", get(project_history))
         .route(
             "/v1/runs/{run_id}/local-tests",
             post(crate::local_test::run).get(local_test_attempts),
@@ -476,6 +477,10 @@ async fn verification_status(State(s): State<AppState>, Path(id): Path<String>) 
 
 async fn local_test_attempts(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     call(&s, move |svc| svc.local_test_attempts(&id)).await
+}
+
+async fn project_history(State(s): State<AppState>, Path(project_id): Path<String>) -> impl IntoResponse {
+    call(&s, move |svc| svc.project_history(&project_id)).await
 }
 
 async fn active_run(State(s): State<AppState>, Path(project_id): Path<String>) -> impl IntoResponse {

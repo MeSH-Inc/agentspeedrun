@@ -45,7 +45,7 @@ test("a passing CI run verifies tests-green", async () => {
       undefined,
       ctx(),
     );
-  expect(claimed.content[0].text).toContain("Evidence verified (ci)");
+  expect(claimed.content[0].text).toContain("Evidence verified in Local scope (ci)");
   const milestone = sb.status().milestones.find((m: any) => m.key === "tests-green");
   expect(milestone.trust).toBe("evidence_verified");
 });

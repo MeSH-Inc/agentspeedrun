@@ -1,48 +1,10 @@
 // Live-display client: follows speedrund's /v1/live/stream and ticks clocks
 // locally (docs/LIVE_DISPLAY.md). No VS Code imports, so it is testable with Bun.
 
-/** The subset of LiveSnapshot (schema/protocol.schema.json) this extension reads. */
-export interface Timing {
-  wall_ms: number;
-  timed_ms: number;
-  agent_ms: number;
-  human_ms: number;
-}
-
-export interface LiveMilestone {
-  milestone_id: string;
-  key: string | null;
-  title: string;
-  origin: "predefined" | "user" | "agent_generated";
-  state: "proposed" | "accepted" | "rejected" | "reached" | "verified";
-  trust: string | null;
-  required_trust: string;
-  counts: boolean;
-  split: Timing | null;
-  pb_split: Timing | null;
-  delta_ms: number | null;
-}
-
-export interface LiveRun {
-  run_id: string;
-  project_id: string;
-  project_name: string | null;
-  category: { id: string; version: number; name: string };
-  status: "running" | "paused" | "completed" | "abandoned";
-  timing: Timing;
-  running: { wall: boolean; timed: boolean; agent: boolean; human: boolean; human_stops_at: string | null };
-  active_agents: number;
-  prompt_count: number;
-  progress: { counted: number; total: number };
-  milestones: LiveMilestone[];
-  pb: { run_id: string; project_name: string | null; timing: Timing } | null;
-}
-
-export interface LiveSnapshot {
-  as_of: string;
-  cursor: number;
-  runs: LiveRun[];
-}
+import type { LiveSnapshot, LiveRun, LiveMilestone, Timing2 as Timing } from "./protocol.generated";
+import { validateSnapshot } from "./validate.generated";
+export type { LiveSnapshot, LiveRun, LiveMilestone } from "./protocol.generated";
+export type { Timing2 as Timing } from "./protocol.generated";
 
 /** The clocks at `now`, extrapolated from a snapshot taken at `asOf`. Mirrors `LiveRun::timing_at`. */
 export function timingAt(run: LiveRun, asOf: Date, now: Date): Timing {
@@ -107,6 +69,8 @@ export class SseParser {
   }
 }
 
+export type LiveState = "connected" | "stale" | "disconnected" | "incompatible" | "corrupt-data";
+
 export type Connection = { base_url: string; token: string };
 
 /**
@@ -118,21 +82,28 @@ export class LiveClient {
   private abort?: AbortController;
   private stopped = false;
   private lastCursor = -1;
+  private streamKey?: string;
+  private lastReceived = 0;
+  private staleTimer?: ReturnType<typeof setInterval>;
   latest?: LiveSnapshot;
 
   constructor(
     private readonly connect: () => Promise<Connection | undefined>,
     private readonly onSnapshot: (s: LiveSnapshot) => void,
-    private readonly onState: (state: "connected" | "disconnected") => void = () => {},
+    private readonly onState: (state: LiveState) => void = () => {},
   ) {}
 
   start(): void {
+    this.staleTimer = setInterval(() => {
+      if (this.lastReceived && Date.now() - this.lastReceived > 90_000) this.onState("stale");
+    }, 5000);
     void this.loop();
   }
 
   stop(): void {
     this.stopped = true;
     this.abort?.abort();
+    if (this.staleTimer) clearInterval(this.staleTimer);
   }
 
   private async loop() {
@@ -161,17 +132,28 @@ export class LiveClient {
       signal: this.abort.signal,
     });
     if (!res.ok || !res.body) throw new Error(`stream refused: ${res.status}`);
-    this.onState("connected");
     const parser = new SseParser();
     const decoder = new TextDecoder();
     for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
       for (const ev of parser.push(decoder.decode(chunk, { stream: true }))) {
         if (ev.event !== "snapshot") continue;
-        const snap = JSON.parse(ev.data) as LiveSnapshot;
+        let value: unknown;
+        try { value = JSON.parse(ev.data); } catch { this.onState("corrupt-data"); continue; }
+        if (value && typeof value === "object" && "protocol" in value && value.protocol !== 2) {
+          this.onState("incompatible"); continue;
+        }
+        if (!validateSnapshot(value) || !Number.isFinite(Date.parse((value as LiveSnapshot).as_of))) {
+          this.onState("corrupt-data"); continue;
+        }
+        const snap = value as LiveSnapshot;
+        const key = `${snap.source.kind}:${snap.source.id}:${snap.source.generation}`;
+        if (key !== this.streamKey) { this.streamKey = key; this.lastCursor = -1; }
         if (snap.cursor < this.lastCursor) continue;
         this.lastCursor = snap.cursor;
         this.latest = snap;
+        this.lastReceived = Date.now();
         this.onSnapshot(snap);
+        this.onState(snap.runs.some((r) => (r.errors?.length ?? 0) > 0) ? "corrupt-data" : "connected");
       }
     }
   }
