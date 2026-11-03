@@ -5,7 +5,7 @@
 // observe chat prompts. Source: plugins/vscode in mesh-inc/agentspeedrun.
 
 import * as vscode from "vscode";
-import { Cli, PROJECT_FILE, projectId, type Readiness } from "./cli";
+import { Cli, PROJECT_FILE, projectId, readinessLabel, type Readiness } from "./cli";
 import { actionItems, parseMilestones, type GuidedMilestone } from "./milestone";
 import { fmtDelta, fmtMs, type LiveMilestone, type LiveRun, LiveClient, type LiveSnapshot, type LiveState, statusText } from "./live";
 
@@ -70,7 +70,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
       return status.show();
     }
     if (!run) {
-      status.text = `$(watch) Speedrun: ${readiness.recording === "captured" ? "capture observed" : (readiness.integrations.length || readiness.selected_integration) ? "waiting for first prompt" : "integration needed"}`;
+      status.text = `$(watch) Speedrun: ${readinessLabel(readiness)}`;
       status.tooltip = details;
       return status.show();
     }

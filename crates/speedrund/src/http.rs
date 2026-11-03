@@ -826,14 +826,15 @@ mod live_hub_tests {
         .await
         .unwrap();
         state.shutdown.request();
-        for receiver in &mut receivers {
-            assert!(
-                tokio::time::timeout(StdDuration::from_secs(2), receiver.changed())
-                    .await
-                    .unwrap()
-                    .is_err()
-            );
-        }
+        // A receiver may still have an unseen snapshot when its sender closes.
+        // Drain that snapshot and require every stream to close within one deadline.
+        tokio::time::timeout(StdDuration::from_secs(2), async {
+            for receiver in &mut receivers {
+                while receiver.changed().await.is_ok() {}
+            }
+        })
+        .await
+        .unwrap();
         drop(guard);
     }
     #[tokio::test]

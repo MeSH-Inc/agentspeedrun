@@ -9,7 +9,7 @@ import type { Connection } from "./live";
 export type Readiness = {
   version: number; project: "untracked" | "untrusted" | "trusted";
   daemon: "online" | "offline" | "wrong_data_dir";
-  integrations: string[]; selected_integration: [string, string] | null; recording: "unknown" | "awaiting_prompt" | "captured";
+  integrations: string[]; integration_state: "installed" | "missing" | "external"; selected_integration: [string, string] | null; recording: "unknown" | "awaiting_prompt" | "captured";
   last_activity: string | null; last_host: string | null; queue_scope: "device"; queued: number; rejected: number; write_failures: number; next_action: string;
 };
 
@@ -22,12 +22,18 @@ export function parseReadiness(value: unknown): Readiness | undefined {
   const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
   if (v.version !== 1 || !oneOf(v.project, ["untracked", "untrusted", "trusted"]) ||
       !oneOf(v.daemon, ["online", "offline", "wrong_data_dir"]) ||
+      !oneOf(v.integration_state, ["installed", "missing", "external"]) ||
       !oneOf(v.recording, ["unknown", "awaiting_prompt", "captured"]) ||
       !Array.isArray(v.integrations) || !v.integrations.every((x) => typeof x === "string") ||
       !(v.selected_integration === null || (Array.isArray(v.selected_integration) && v.selected_integration.length === 2 && v.selected_integration.every((x) => typeof x === "string"))) ||
       !nullableString(v.last_activity) || !nullableString(v.last_host) || v.queue_scope !== "device" ||
       !count(v.queued) || !count(v.rejected) || !count(v.write_failures) || typeof v.next_action !== "string") return undefined;
   return v as Readiness;
+}
+
+export function readinessLabel(readiness: Readiness): string {
+  return readiness.recording === "captured" ? "capture observed" :
+    readiness.integration_state === "missing" ? "integration needed" : "waiting for first prompt";
 }
 
 export type Result = { ok: boolean; stdout: string; stderr: string; missing: boolean };

@@ -160,3 +160,32 @@ fn readiness_reports_capture_offline_queue_rejections_and_query_failure() {
     assert_eq!(state["rejected"], 1);
     assert!(!String::from_utf8_lossy(&output.stdout).contains("queued secret"));
 }
+
+#[test]
+fn external_selections_are_not_reported_as_missing() {
+    for host in ["claude", "zed"] {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let command = |args: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_speedrun"))
+                .args(args)
+                .current_dir(&project)
+                .env("HOME", &home)
+                .env("SPEEDRUN_HOME", temp.path().join("data"))
+                .env("SPEEDRUN_ADDR", "127.0.0.1:1")
+                .output()
+                .unwrap()
+        };
+        assert!(
+            command(&["setup", "--host", host, "--capture", "metadata-only", "--yes"])
+                .status
+                .success()
+        );
+        let state: serde_json::Value =
+            serde_json::from_slice(&command(&["readiness", "--json"]).stdout).unwrap();
+        assert_eq!(state["integration_state"], "external", "{host}");
+    }
+}

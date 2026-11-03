@@ -18,6 +18,7 @@ pub struct Readiness {
     pub daemon: &'static str,
     pub integrations: Vec<&'static str>,
     pub selected_integration: Option<(String, String)>,
+    pub integration_state: &'static str,
     pub recording: &'static str,
     pub last_activity: Option<String>,
     pub last_host: Option<String>,
@@ -41,6 +42,23 @@ pub fn inspect(client: &Client, cwd: &Path) -> Result<Readiness> {
         .map(|p| crate::onboarding::selected_integration(&p.config.project_id))
         .transpose()?
         .flatten();
+    let integration_state = match selected_integration.as_ref() {
+        Some((_, scope)) if scope == "external" => "external",
+        Some((host, _)) => {
+            let adapter = if host == "vscode" {
+                "copilot"
+            } else {
+                host.as_str()
+            };
+            if integrations.contains(&adapter) {
+                "installed"
+            } else {
+                "missing"
+            }
+        }
+        None if integrations.is_empty() => "missing",
+        None => "installed",
+    };
     let stats = client::spool_stats()?;
     let daemon = match client.verify_health() {
         Ok(_) => "online",
@@ -82,7 +100,7 @@ pub fn inspect(client: &Client, cwd: &Path) -> Result<Readiness> {
         "Check speedrun doctor and retry readiness."
     } else if recording == "captured" {
         "Capture has been observed in this current run."
-    } else if integrations.is_empty() && selected_integration.is_none() {
+    } else if integration_state == "missing" {
         "Install an integration with speedrun setup."
     } else {
         "Send an agent prompt in this project to verify capture."
@@ -93,6 +111,7 @@ pub fn inspect(client: &Client, cwd: &Path) -> Result<Readiness> {
         daemon,
         integrations,
         selected_integration,
+        integration_state,
         recording,
         last_activity,
         last_host,
@@ -155,7 +174,7 @@ fn installed(project: Option<&Path>) -> Vec<&'static str> {
 
 pub fn print(state: &Readiness) {
     println!(
-        "Project: {}\nDaemon: {}\nInstalled integrations: {}\nSelected integration: {}\nRecording: {}\nLast activity: {} by {}\nDevice queue: {} · rejected: {} · write failures: {}\nNext: {}",
+        "Project: {}\nDaemon: {}\nInstalled integrations: {}\nSelected integration: {}\nIntegration state: {}\nRecording: {}\nLast activity: {} by {}\nDevice queue: {} · rejected: {} · write failures: {}\nNext: {}",
         state.project,
         state.daemon,
         if state.integrations.is_empty() {
@@ -167,6 +186,7 @@ pub fn print(state: &Readiness) {
             .selected_integration
             .as_ref()
             .map_or_else(|| "none".into(), |(host, scope)| format!("{host} ({scope})")),
+        state.integration_state,
         state.recording,
         state.last_activity.as_deref().unwrap_or("none observed"),
         state.last_host.as_deref().unwrap_or("unknown host"),
