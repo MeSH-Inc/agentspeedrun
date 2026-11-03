@@ -76,7 +76,7 @@ Address: `http://127.0.0.1:7477` (`SPEEDRUN_ADDR`).
 
 ### Auth
 
-- Use the **display token**: `$SPEEDRUN_HOME/display-token`, or `speedrun display`. It is read-only and only works on `/v1/live*` and `/v1/categories`, which never contain prompt text.
+- Use the **display token**: `$SPEEDRUN_HOME/display-token`, or `speedrun display`. It is read-only and only works on `/v1/live*` and `/v1/categories`, which do not contain prompt text. Snapshots still expose project names, milestone titles and run activity, so treat the display token as access to that information.
 - Send it as `Authorization: Bearer <token>`, or as `?token=<token>` because browser `EventSource` cannot set headers.
 - The full token in `token` also works, but never give it to a display.
 

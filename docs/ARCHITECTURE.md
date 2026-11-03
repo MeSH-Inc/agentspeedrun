@@ -151,11 +151,10 @@ subscribers then recompute and send a full snapshot. Details:
 - Prompt text passes through `redact()` (API keys, tokens, PEM keys, `*_SECRET=` assignments) before it is stored. `redacted: true` marks changed prompts.
 - Displays get the display token, which cannot read events or prompts.
 - The daemon only listens on loopback (override: `SPEEDRUN_ALLOW_NON_LOOPBACK=1`) and requires the bearer token.
-- Planned: encrypt prompt content at rest with a key in the OS keychain. Make syncing prompt text opt-in and separate from syncing timing metadata.
+- Prompt text uses authenticated encryption under a private key next to the database. A database copy without the key cannot decrypt it; theft of the whole data directory includes the key. Metadata-only capture omits prompt text and commitments before enqueue. Erasure leaves events and existing disclosure commitments intact, but does not guarantee physical removal from journals or backups.
 
 ## Roadmap
 
 1. Materialized projections, once loading a full log per write becomes a cost (today O(events in run) per append).
-2. Prompt encryption at rest.
-3. Cloud sync: push events to Postgres with `ON CONFLICT (event_id) DO NOTHING`, verify chains server-side, sign events with a device key, leaderboards per `category@version`.
-4. Multiple simultaneous categories per run: any% ⊂ 100% ⊂ first revenue share a timeline.
+2. Cloud sync: push events to Postgres with `ON CONFLICT (event_id) DO NOTHING`, verify chains server-side, sign events with a device key, leaderboards per `category@version`.
+3. Multiple simultaneous categories per run: any% ⊂ 100% ⊂ first revenue share a timeline.

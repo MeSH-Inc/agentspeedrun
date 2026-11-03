@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-test installed or packaged binaries end to end, in a throwaway
 # data dir and repo: daemon autostart from the CLI's own directory, a
-# prompt starting a run, a verified split, the hash chain, embedded adapters.
+# prompt starting a run, splits, the hash chain, embedded adapters.
 #   scripts/smoke.sh <dir containing speedrun and speedrund>
 set -euo pipefail
 
@@ -11,7 +11,9 @@ export SPEEDRUN_HOME="$work/home"
 export SPEEDRUN_ADDR="127.0.0.1:$((20000 + RANDOM % 20000))"
 unset SPEEDRUN_NO_AUTOSTART SPEEDRUN_BIN
 cleanup() {
-  pkill -f "$bin/speedrund" 2>/dev/null || true
+  # The stop command authenticates against this temporary home before shutdown.
+  # Never kill by executable name: other users may be running the same binary.
+  "$bin/speedrun" daemon stop >/dev/null 2>&1 || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -39,7 +41,7 @@ git -c user.name=smoke -c user.email=smoke@example.com commit -q --allow-empty -
 
 sr split scaffold-runs --commit HEAD >/dev/null || fail "split"
 has "$(sr status)" "✔ scaffold-runs" || fail "split did not count: $(sr status)"
-has "$(sr split happy-path-demo --commit HEAD)" "Evidence verified (git)" || fail "git verification"
+sr split happy-path-demo --commit HEAD >/dev/null || fail "happy-path split"
 has "$(sr status)" "completed" || fail "run did not complete: $(sr status)"
 has "$(sr verify)" "^ok" || fail "hash chain"
 

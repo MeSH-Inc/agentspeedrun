@@ -1,6 +1,8 @@
 # agentspeedrun as a commons
 
-**Status:** proposal, not built. P0 is `V0.2.md`; this document is v0.3 and later.
+**Status:** Sections 1–18 describe a proposal and include unimplemented features.
+Sections 19–20 describe the implemented publication and identity contracts;
+consult those sections for current behavior.
 
 ## 1. Premise
 
@@ -648,22 +650,24 @@ authorized (exit 1 on 410 or once `expires_at` passes). It asks `GET /v1/health`
 `commons_pubkey`, builds the `LinkClaim` with `issued_at` now, has the daemon sign it, confirms, and
 prints `linked <login> (github id <id>) to device <fingerprint>`.
 
-**Pages.** `GET /`, `GET /runs/{run_id}` and `GET /people/{login}` answer `text/html;
+**Pages.** `GET /`, `GET /runs/{run_id}`, `GET /publications/{digest}` and `GET /people/{login}` answer `text/html;
 charset=utf-8` with `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'` and a
 viewport meta tag, and lay out in one column that fits 320 px (wide tables scroll inside their
 own box). Unknown runs and people are 404 pages in the same shape.
-- `/` lists the 50 newest publications, newest first: a link to `/runs/{run_id}`, the tier, the
+- `/` lists the 50 newest publications, newest first: category, local result and timed clock when disclosed, links to the run and specific publication, the tier, the
   received time (UTC, RFC 3339 to the second), and the person's login linked to
   `/people/{login}`, `github id <id>` for a person who lost their login, or `unlinked device`
   with the publisher key's fingerprint. A tier 0 publication has no category, as it has no events.
 - `/runs/{run_id}` shows the run's latest publication: run id, category `id@version`, the person
   as on `/`, tier and received time. At tiers 1 and 2: the clocks `wall`, `agent` and `human` from
-  the published view, each as `H:MM:SS`; and one row per judged milestone with its title, required
-  trust, claimed and granted trust (snake case, `none` when absent) and its problems. At tier 0:
+  the published view, including timed time, each as `H:MM:SS`; and one row per judged milestone with its title, required
+  trust, claimed and granted trust, verification scope and status, and problems. At tier 0:
   the anchored chain heads (device id, seq, hash) and no clocks or milestones. Then the record: the
   bundle digest linked to `/v1/bundles/{digest}`, the judgment's signature and the commons key,
   the leaf index, the latest tree head's size and root, the leaf's audit path against that head,
   and the two `curl` commands that fetch the bundle and the proof.
+- `/publications/{digest}` fixes the selected publication; its current attribution, publication
+  history and proof against the latest tree head can change as the commons grows.
 - `/people/{login}` shows the login and GitHub id, each linked device (fingerprint, linked time),
   and the person's publications as `/` lists them.
 
