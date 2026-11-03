@@ -10,7 +10,7 @@ use crate::api::PromptCommitment;
 use crate::hash::canonical_digest;
 
 /// The bundle format this build writes and reads.
-pub const BUNDLE_FORMAT: u32 = 1;
+pub const BUNDLE_FORMAT: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Bundle {
@@ -33,12 +33,36 @@ pub struct Bundle {
     /// gives them. Empty at tiers 0 and 1.
     #[serde(default)]
     pub prompts: Vec<PromptCommitment>,
+    /// Certificates from the run's origin key to the publishing key, in order.
+    #[serde(default)]
+    pub rotations: Vec<RotationProof>,
     /// Hex ed25519 public key of the device that signs this bundle. At tiers
     /// 1 and 2 it must be a key that signs one of the run's chains.
     pub publisher_pubkey: String,
     /// Hex signature of `publisher_pubkey` over [`digest`] of this bundle
     /// (`sign::sign_hash`).
     pub signature: String,
+}
+
+/// An origin-key rotation, authorized by the previous key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RotationProof {
+    pub new_pubkey: String,
+    pub certificate: String,
+}
+
+/// The origin key is part of the run identifier and cannot be substituted.
+pub fn origin_key(run_id: &str) -> Option<&str> {
+    let (nonce, key) = run_id.split_once('.')?;
+    if nonce.len() != 26
+        || key.len() != 64
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    Some(key)
 }
 
 /// The last event of one device's chain in a run.
@@ -60,7 +84,7 @@ pub fn digest(bundle: &Bundle) -> Result<String, serde_json::Error> {
     Ok(canonical_digest(&value))
 }
 
-/// JSON Schema of bundle format 1, committed as `schema/bundle.schema.json`.
+/// JSON Schema of bundle format 2, committed as `schema/bundle.schema.json`.
 pub fn bundle_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(Bundle)).expect("schema serializes")
 }
@@ -88,6 +112,7 @@ mod tests {
             events: vec![],
             chain_heads: vec![],
             prompts: vec![],
+            rotations: vec![],
             publisher_pubkey: "ab".repeat(32),
             signature: String::new(),
         };

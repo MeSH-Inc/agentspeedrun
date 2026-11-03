@@ -67,6 +67,8 @@ pub async fn publish(
     }
 
     let validated = validate(&bundle)?;
+    let history = store.publication_history(&bundle.run_id).await?;
+    validate_continuity(&bundle, &validated, &history)?;
     let issued_at = Utc::now();
     let milestones = match &validated.view {
         // The verifier fetches over blocking HTTP; keep it off the async workers.
@@ -183,6 +185,17 @@ fn validate(bundle: &Bundle) -> Result<Validated, PublishError> {
     if !sign::verify_hash(&bundle.publisher_pubkey, &digest, &bundle.signature) {
         return refused("the bundle signature does not verify".into());
     }
+    let mut authority = bundle::origin_key(&bundle.run_id)
+        .ok_or_else(|| PublishError::Refused("run id must contain its origin key".into()))?;
+    for rotation in &bundle.rotations {
+        if !sign::verify_rotation(authority, &rotation.new_pubkey, &rotation.certificate) {
+            return refused("the origin key rotation proof does not verify".into());
+        }
+        authority = &rotation.new_pubkey;
+    }
+    if authority != bundle.publisher_pubkey {
+        return refused("publisher is not the current origin key".into());
+    }
     if bundle.tier == 0 {
         validate_chain_heads(bundle)?;
         Ok(Validated {
@@ -237,8 +250,39 @@ fn validate_log(bundle: &Bundle) -> Result<Validated, PublishError> {
         };
         return refused(format!("the event signatures do not verify: {problem}"));
     }
-    if !publisher_signs_a_chain(&events, &bundle.publisher_pubkey) {
-        return refused("the publisher key signs none of the run's chains".into());
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+        .collect();
+    let [start] = starts.as_slice() else {
+        return refused("a run must have exactly one origin event".into());
+    };
+    let EventPayload::RunStarted {
+        device_pubkey: Some(key),
+        ..
+    } = &start.payload
+    else {
+        return refused("the origin event must name its key".into());
+    };
+    if Some(key.as_str()) != bundle::origin_key(&bundle.run_id) {
+        return refused("the origin event does not match the run id".into());
+    }
+    let rotations: Vec<_> = events
+        .iter()
+        .filter(|event| event.device_id == start.device_id)
+        .filter_map(|event| match &event.payload {
+            EventPayload::DeviceRotated {
+                new_pubkey,
+                certificate,
+            } => Some(bundle::RotationProof {
+                new_pubkey: new_pubkey.clone(),
+                certificate: certificate.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+    if rotations != bundle.rotations {
+        return refused("the origin rotation proof does not match the run's chain".into());
     }
     if events.iter().any(|event| {
         matches!(
@@ -285,16 +329,50 @@ fn fold(events: &[Event]) -> Option<RunView> {
     RunView::fold(events, latest)
 }
 
-fn publisher_signs_a_chain(events: &[Event], publisher: &str) -> bool {
-    events.iter().any(|event| match &event.payload {
-        EventPayload::RunStarted {
-            device_pubkey: Some(key),
-            ..
-        } => key.as_str() == publisher,
-        EventPayload::DeviceJoined { device_pubkey: key } => key.as_str() == publisher,
-        EventPayload::DeviceRotated { new_pubkey, .. } => new_pubkey.as_str() == publisher,
-        _ => false,
-    })
+/// A disclosed origin chain cannot be replaced or shortened on republication.
+fn validate_continuity(
+    bundle: &Bundle,
+    validated: &Validated,
+    history: &[StoredPublication],
+) -> Result<(), PublishError> {
+    for stored in history {
+        let prior: Bundle =
+            serde_json::from_str(&stored.body).map_err(|e| PublishError::Internal(e.into()))?;
+        if !bundle.rotations.starts_with(&prior.rotations) {
+            return refused("publication replaces or rolls back the origin's key history".into());
+        }
+    }
+    let Some(start) = validated
+        .events
+        .iter()
+        .find(|e| matches!(e.payload, EventPayload::RunStarted { .. }))
+    else {
+        return Ok(());
+    };
+    let current: BTreeMap<u64, &str> = validated
+        .events
+        .iter()
+        .filter(|e| e.device_id == start.device_id)
+        .map(|e| (e.seq, e.hash.as_str()))
+        .collect();
+    for stored in history.iter().filter(|p| p.tier != 0) {
+        let prior: Bundle =
+            serde_json::from_str(&stored.body).map_err(|e| PublishError::Internal(e.into()))?;
+        let old_events = parse_events(&prior).map_err(|e| PublishError::Internal(e.into()))?;
+        let old_start = old_events
+            .iter()
+            .find(|e| matches!(e.payload, EventPayload::RunStarted { .. }))
+            .ok_or_else(|| PublishError::Internal(anyhow!("stored run has no origin")))?;
+        for old in old_events.iter().filter(|e| e.device_id == old_start.device_id) {
+            if current.get(&old.seq).copied() != Some(old.hash.as_str()) {
+                return refused(format!(
+                    "publication replaces or truncates the origin chain of run {}",
+                    bundle.run_id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_prompts(events: &[Event], bundle: &Bundle) -> Result<(), PublishError> {

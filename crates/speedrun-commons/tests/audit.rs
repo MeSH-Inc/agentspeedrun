@@ -46,6 +46,11 @@ struct Log {
     events: Vec<Event>,
 }
 
+fn fixture_id(name: &str) -> String {
+    let key = sign::parse_seed(&hash::sha256_hex(name.as_bytes())).unwrap();
+    format!("{name:0<26}.{}", sign::pubkey_hex(&key))
+}
+
 impl Log {
     /// A run started at minute 0 with any%'s two milestones proposed and accepted.
     fn start(run_id: &str) -> Self {
@@ -53,9 +58,9 @@ impl Log {
     }
 
     fn start_with_root(run_id: &str, project_root: Option<&str>) -> Self {
-        let key = sign::generate();
+        let key = sign::parse_seed(&hash::sha256_hex(run_id.as_bytes())).unwrap();
         let mut log = Self {
-            run_id: run_id.into(),
+            run_id: fixture_id(run_id),
             events: Vec::new(),
             key,
         };
@@ -225,6 +230,7 @@ impl Log {
             events: self.bodies(),
             chain_heads: vec![],
             prompts,
+            rotations: vec![],
             publisher_pubkey: String::new(),
             signature: String::new(),
         };
@@ -253,6 +259,7 @@ impl Log {
             events: vec![],
             chain_heads: heads,
             prompts: vec![],
+            rotations: vec![],
             publisher_pubkey: String::new(),
             signature: String::new(),
         };
@@ -517,7 +524,7 @@ fn audit_p1_a_a_judgment_is_signed_by_the_commons_key() {
     let judgment = &receipt.judgment;
     assert_eq!(receipt.bundle_digest, bundle::digest(&bundle).unwrap());
     assert_eq!(judgment.bundle_digest, receipt.bundle_digest);
-    assert_eq!(judgment.run_id, "01RUNSIGNED");
+    assert_eq!(judgment.run_id, log.run_id);
     assert_eq!(judgment.verifier_pubkey, health.commons_pubkey);
     assert!(sign::verify_hash(
         &health.commons_pubkey,
@@ -695,7 +702,7 @@ fn audit_p1_ingest_refuses_bundles_that_do_not_verify() {
     ));
 
     let mut format_2 = log.bundle(1);
-    format_2.format = 2;
+    format_2.format = BUNDLE_FORMAT + 1;
     cases.push((
         "bundle format 2",
         serde_json::to_value(signed(format_2, &log.key)).unwrap(),
@@ -746,7 +753,7 @@ fn audit_p1_b_a_published_run_is_reproducible_from_its_bundle_alone() {
     let commons = Commons::start();
     let log = claimed_run("01RUNREPRODUCED", 5, "scaffold-runs", vec![]);
     let receipt = commons.publish(&log.bundle(2));
-    let (status, body) = commons.get("/v1/runs/01RUNREPRODUCED");
+    let (status, body) = commons.get(&format!("/v1/runs/{}", log.run_id));
     assert_eq!(status, 200, "{body}");
     let published: PublishedRun = serde_json::from_value(body).unwrap();
     assert_eq!(published.tier, 2);
@@ -1088,7 +1095,7 @@ fn audit_p1_f_a_link_needs_the_devices_signature_and_the_authorized_person() {
         confirmation(&other_device, &stranger),
     ));
     let mut format_2 = good.clone();
-    format_2.format = 2;
+    format_2.format = BUNDLE_FORMAT + 1;
     cases.push(("link format 2", confirmation(&format_2, &key)));
     for (case, body) in &cases {
         let (status, answer) = commons.post(&confirm, body);
@@ -1180,7 +1187,7 @@ fn audit_p1_f_a_persons_publications_are_those_their_devices_signed() {
         digests,
         [second.bundle_digest.as_str(), first.bundle_digest.as_str()]
     );
-    assert!(record.publications.iter().all(|p| p.run_id == "01RUNMINE"));
+    assert!(record.publications.iter().all(|p| p.run_id == mine.run_id));
 }
 
 #[test]
@@ -1204,9 +1211,9 @@ fn guard_p1_f_a_login_names_the_person_who_last_authorized_with_it() {
     let record = person_record(&commons, "alice");
     assert_eq!(record.person.github_id, 2);
     let runs: Vec<&str> = record.publications.iter().map(|p| p.run_id.as_str()).collect();
-    assert_eq!(runs, ["01RUNNEWALICE"]);
+    assert_eq!(runs, [after.run_id.as_str()]);
 
-    let former = commons.page("/runs/01RUNFORMERALICE");
+    let former = commons.page(&format!("/runs/{}", before.run_id));
     assert!(former.body.contains("github id 1"), "{}", former.body);
     assert!(
         !former.body.contains("href=\"/people/"),
@@ -1240,19 +1247,19 @@ fn audit_p1_g_the_run_page_shows_the_published_record() {
     link(&commons, &log.key);
     let receipt = commons.publish(&log.bundle(1));
 
-    let page = commons.page("/runs/01RUNPAGE");
+    let page = commons.page(&format!("/runs/{}", log.run_id));
     assert_eq!(page.status, 200);
     assert!(
         page.content_type.starts_with("text/html"),
         "{}",
         page.content_type
     );
-    let run = published(&commons, "01RUNPAGE");
+    let run = published(&commons, &log.run_id);
     let timing = &run.view.as_ref().unwrap().timing;
     let (_, head) = commons.get("/v1/log/head");
     let head: TreeHead = serde_json::from_value(head).unwrap();
     for expected in [
-        "01RUNPAGE".to_string(),
+        log.run_id.clone(),
         "any-percent@1".into(),
         "Octo-Person".into(),
         "href=\"/people/Octo-Person\"".into(),
@@ -1290,7 +1297,7 @@ fn audit_p1_g_pages_escape_what_the_log_says() {
         )
         .finish(30);
     commons.publish(&log.bundle(1));
-    let page = commons.page("/runs/01RUNESCAPE");
+    let page = commons.page(&format!("/runs/{}", log.run_id));
     assert_eq!(page.status, 200);
     assert!(
         !page.body.contains("<script"),
@@ -1327,8 +1334,13 @@ fn audit_p1_g_the_front_page_lists_publications_newest_first() {
             .find(text)
             .unwrap_or_else(|| panic!("the front page lacks {text:?}:\n{}", page.body))
     };
-    assert!(at("href=\"/runs/01RUNLISTTHREE\"") < at("href=\"/runs/01RUNLISTTWO\""));
-    assert!(at("href=\"/runs/01RUNLISTTWO\"") < at("href=\"/runs/01RUNLISTONE\""));
+    assert!(
+        at(&format!("href=\"/runs/{}\"", fixture_id("01RUNLISTTHREE")))
+            < at(&format!("href=\"/runs/{}\"", unlinked.run_id))
+    );
+    assert!(
+        at(&format!("href=\"/runs/{}\"", unlinked.run_id)) < at(&format!("href=\"/runs/{}\"", linked.run_id))
+    );
     at("href=\"/people/Octo-Person\"");
     at("unlinked device");
     at(&sign::fingerprint(&sign::pubkey_hex(&unlinked.key)).unwrap());
@@ -1340,7 +1352,7 @@ fn audit_p1_g_pages_carry_the_security_policy_and_fit_a_phone() {
     commons.publish(&plain_run("01RUNPOLICY").bundle(1));
     for path in [
         "/",
-        "/runs/01RUNPOLICY",
+        &format!("/runs/{}", fixture_id("01RUNPOLICY")),
         "/runs/01RUNNOSUCHRUN",
         "/people/nobody-here",
     ] {
@@ -1370,7 +1382,7 @@ fn audit_p1_g_a_tier_0_page_shows_chain_heads_only() {
     let log = plain_run("01RUNHEADSONLY");
     let head = log.head();
     commons.publish(&log.heads_bundle(vec![head.clone()]));
-    let page = commons.page("/runs/01RUNHEADSONLY");
+    let page = commons.page(&format!("/runs/{}", log.run_id));
     assert_eq!(page.status, 200);
     assert!(page.body.contains(&head.hash), "{}", page.body);
     assert!(page.body.contains(&head.device_id));
@@ -1385,7 +1397,7 @@ fn guard_p1_g_curl_commands_name_the_configured_address_never_the_host_header() 
     let fetch = |commons: &Commons| {
         let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(10)).build();
         agent
-            .get(&format!("{}/runs/01RUNCURL", commons.base))
+            .get(&format!("{}/runs/{}", commons.base, fixture_id("01RUNCURL")))
             .set("Host", "evil.example")
             .call()
             .unwrap()
@@ -1487,5 +1499,83 @@ fn audit_p1_h_a_backup_restores_the_log() {
     let (_, again) = restored.get("/v1/log/head");
     let again: TreeHead = serde_json::from_value(again).unwrap();
     assert_eq!(again.root_hash, head.root_hash);
-    assert_eq!(published(&restored, "01RUNBACKUPTWO").tier, 2);
+    assert_eq!(published(&restored, &fixture_id("01RUNBACKUPTWO")).tier, 2);
+}
+
+#[test]
+fn publication_identity_rejects_replacement_and_keeps_history() {
+    let commons = Commons::start();
+    let original = plain_run("IDENTITY-ORIGINAL");
+    let first = commons.publish(&original.bundle(1));
+    let attacker = sign::generate();
+    let forged_head = signed(original.heads_bundle(vec![original.head()]), &attacker);
+    let (status, _) = commons.post("/v1/bundles", &serde_json::to_value(forged_head).unwrap());
+    assert_eq!(status, 400);
+
+    let mut forged = plain_run("IDENTITY-ATTACKER");
+    forged.run_id = original.run_id.clone();
+    let mut previous = None;
+    for event in &mut forged.events {
+        event.run_id = original.run_id.clone();
+        event.prev_hash = previous;
+        event.hash = hash::compute_hash(event);
+        event.sig = Some(sign::sign_hash(&forged.key, &event.hash));
+        previous = Some(event.hash.clone());
+    }
+    let (status, _) = commons.post("/v1/bundles", &serde_json::to_value(forged.bundle(1)).unwrap());
+    assert_eq!(status, 400);
+    let (status, body) = commons.get(&format!("/v1/runs/{}", original.run_id));
+    assert_eq!(status, 200);
+    assert_eq!(body["bundle_digest"], first.bundle_digest);
+    assert!(
+        commons
+            .page(&format!("/runs/{}", original.run_id))
+            .body
+            .contains(&first.bundle_digest)
+    );
+    let second = commons.publish(&original.heads_bundle(vec![original.head()]));
+    let (status, history) = commons.get(&format!("/v1/runs/{}/history", original.run_id));
+    assert_eq!(status, 200);
+    assert_eq!(history[0]["bundle_digest"], first.bundle_digest);
+    assert_eq!(history[1]["bundle_digest"], second.bundle_digest);
+    assert_eq!(commons.health().tree_size, 2);
+}
+
+#[test]
+fn publication_identity_allows_certified_rotation_and_refuses_rollback() {
+    let commons = Commons::start();
+    let mut log = plain_run("IDENTITY-ROTATION");
+    commons.publish(&log.bundle(1));
+    let old = log.key.clone();
+    let next = sign::generate();
+    let next_key = sign::pubkey_hex(&next);
+    let cert = sign::rotation_certificate(&old, &next_key);
+    let device = log.events[0].device_id.clone();
+    log.key = next;
+    log.push(
+        50,
+        EventPayload::DeviceRotated {
+            new_pubkey: next_key.clone(),
+            certificate: cert.clone(),
+        },
+    );
+    let last = log.events.last_mut().unwrap();
+    last.device_id = device;
+    last.hash = hash::compute_hash(last);
+    last.sig = Some(sign::sign_hash(&log.key, &last.hash));
+    let proof = speedrun_core::bundle::RotationProof {
+        new_pubkey: next_key,
+        certificate: cert,
+    };
+    let mut rotated = log.bundle(1);
+    rotated.rotations.push(proof.clone());
+    let rotated = signed(rotated, &log.key);
+    commons.publish(&rotated);
+    let mut heads = log.heads_bundle(vec![log.head()]);
+    heads.rotations.push(proof);
+    commons.publish(&signed(heads, &log.key));
+    let rollback = signed(log.heads_bundle(vec![log.head()]), &old);
+    let (status, _) = commons.post("/v1/bundles", &serde_json::to_value(rollback).unwrap());
+    assert_eq!(status, 400);
+    assert_eq!(commons.health().tree_size, 3);
 }

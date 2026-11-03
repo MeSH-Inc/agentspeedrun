@@ -44,6 +44,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/bundles", post(publish))
         .route("/v1/bundles/{digest}", get(published_bundle))
         .route("/v1/runs/{run_id}", get(published_run))
+        .route("/v1/runs/{run_id}/history", get(run_history))
         .route("/v1/log/head", get(log_head))
         .route("/v1/log/proof/{leaf_index}", get(log_proof))
         .route("/v1/links", post(start_link))
@@ -231,6 +232,21 @@ async fn published_run(
         Some(stored) => Ok(Json(record::published_run(stored).map_err(publish_error)?)),
         None => Err((StatusCode::NOT_FOUND, format!("no run {run_id}"))),
     }
+}
+
+async fn run_history(
+    State(s): State<AppState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Vec<PublishedRun>>, (StatusCode, String)> {
+    let history = s.store.publication_history(&run_id).await.map_err(internal)?;
+    if history.is_empty() {
+        return Err((StatusCode::NOT_FOUND, format!("no run {run_id}")));
+    }
+    let mut result = Vec::with_capacity(history.len());
+    for publication in history {
+        result.push(record::published_run(publication).map_err(publish_error)?);
+    }
+    Ok(Json(result))
 }
 
 fn publish_error(error: PublishError) -> (StatusCode, String) {

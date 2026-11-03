@@ -170,7 +170,7 @@ impl Store {
     /// The run's latest publication, by arrival order.
     pub async fn latest_publication_for_run(&self, run_id: &str) -> Result<Option<StoredPublication>> {
         let digest: Option<String> = sqlx::query_scalar(
-            "SELECT digest FROM bundles WHERE run_id = ? ORDER BY received_at DESC, rowid DESC LIMIT 1",
+            "SELECT h.digest FROM publication_history h JOIN log_leaves l ON l.bundle_digest = h.digest WHERE h.run_id = ? ORDER BY l.leaf_index DESC LIMIT 1",
         )
         .bind(run_id)
         .fetch_optional(&self.pool)
@@ -179,6 +179,25 @@ impl Store {
             Some(digest) => self.publication(&digest).await,
             None => Ok(None),
         }
+    }
+
+    /// The immutable publication sequence for a run, oldest first.
+    pub async fn publication_history(&self, run_id: &str) -> Result<Vec<StoredPublication>> {
+        let digests: Vec<String> = sqlx::query_scalar(
+            "SELECT h.digest FROM publication_history h JOIN log_leaves l ON l.bundle_digest = h.digest WHERE h.run_id = ? ORDER BY l.leaf_index",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut history = Vec::with_capacity(digests.len());
+        for digest in digests {
+            history.push(
+                self.publication(&digest)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("publication history references a missing bundle"))?,
+            );
+        }
+        Ok(history)
     }
 
     /// Write one publication and its log entry in one transaction.
@@ -195,6 +214,12 @@ impl Store {
         .bind(publication.publisher_pubkey)
         .execute(&mut *transaction)
         .await?;
+        sqlx::query("INSERT INTO publication_history (digest, run_id, predecessor) VALUES (?, ?, (SELECT h.digest FROM publication_history h JOIN log_leaves l ON l.bundle_digest = h.digest WHERE h.run_id = ? ORDER BY l.leaf_index DESC LIMIT 1))")
+            .bind(publication.bundle_digest)
+            .bind(publication.run_id)
+            .bind(publication.run_id)
+            .execute(&mut *transaction)
+            .await?;
         sqlx::query("INSERT INTO judgments (bundle_digest, body) VALUES (?, ?)")
             .bind(publication.bundle_digest)
             .bind(publication.judgment)

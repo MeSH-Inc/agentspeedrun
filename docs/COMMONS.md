@@ -392,7 +392,7 @@ keys; a tampered event fails signature check; `V0.2` acceptance tests still pass
 
 ### P1 — a public record, no leaderboard
 
-Deliverables: `speedrun publish --tier {0,1,2}`; bundle format v1 with a JSON
+Deliverables: `speedrun publish --tier {0,1,2}`; bundle format v2 with a JSON
 Schema in `schema/`; server ingest + re-verify + signed judgment; Merkle log
 with signed tree heads and inclusion proofs; GitHub OAuth for persons; a run
 page that shows clocks, bracket, badges, and judgments.
@@ -504,11 +504,10 @@ each with its reason:
   C4; the owner chose SQLite on 2026-11-02, so no hosting choice is needed yet). speedrund pins
   rusqlite 0.39, which shares `libsqlite3-sys` with sqlx 0.9.
 
-**Bundle (`speedrun_core::bundle`, format 1, schema `schema/bundle.schema.json`).** `events` are
+**Bundle (`speedrun_core::bundle`, format 2, schema `schema/bundle.schema.json`).** A run ID consists of a 26-character nonce, a dot, and the lowercase hex origin public key. Bundles carry the ordered certificates from this origin key to the publishing key, including at tier 0. The origin key signs each rotation and the final key signs the bundle. This binds the run ID to its origin without disclosing the genesis event at tier 0. `events` are
 the run's stored bodies, verbatim, ordered by `device_id` then `seq`. `digest` is the canonical
 digest without `signature`; `signature` is `sign::sign_hash(device key, digest)`; the publisher key
-must sign one of the run's chains (its `RunStarted`/`DeviceJoined` key or a `DeviceRotated` new
-key). Tier 2's `prompts` are `speedrun export`'s commitments, one per `prompt_submitted` event.
+must be the last key in the certified origin rotation chain. Tier 2's `prompts` are `speedrun export`'s commitments, one per `prompt_submitted` event.
 
 **Daemon.** `GET /v1/runs/{run_id}/bundle?tier=<0|1|2>`, full token only (agent and display tokens
 401), returns the signed `Bundle` from the current device key. 409 when the run is not finished or
@@ -528,11 +527,12 @@ there are problems.
 `judgment_digest` or `tree_head_digest`, checkable with `/v1/health`'s `commons_pubkey`.
 
 - `POST /v1/bundles` takes a `Bundle`. It is refused with 400 and nothing stored unless all of
-  these hold: `format` is 1 and `tier` at most 2; the signature verifies over `digest`; at tier 0,
+  these hold: `format` is 2 and `tier` at most 2; the run ID embeds its origin key and the rotation certificates establish the publisher; the signature verifies over `digest`; at tier 0,
   `events` and `prompts` are empty, `chain_heads` is not, no two heads name the same `device_id`,
   and each head's `hash` is 64 lowercase hex digits; at tiers 1 and 2, `chain_heads` is
   empty, every event names the bundle's `run_id`, `hash::verify_stored_chain` passes,
-  `sign::verify_event_signatures` passes, the publisher key signs one of the run's chains, the run
+  `sign::verify_event_signatures` passes, exactly one `RunStarted` matches the origin key,
+  its chain matches the rotation certificates, the run
   folds and is finished, no `RunStarted` holds a `project_root`, and `prompts` is empty at tier 1
   and at tier 2 names each `prompt_submitted` event exactly once. A valid bundle is stored with its
   body exactly as received, judged, signed, and appended as the next leaf; the answer is a
@@ -561,7 +561,10 @@ there are problems.
 - `GET /v1/bundles/{digest}` and `GET /v1/runs/{run_id}` return the `PublishedRun` of that bundle,
   or of the run's latest publication: the bundle as stored, its judgment, its leaf index, and at
   tiers 1 and 2 the view `RunView::fold(events, the latest occurred_at among them)`. 404 when
-  unknown.
+  unknown. `GET /v1/runs/{run_id}/history` returns every publication in append order. The commons
+  stores an immutable predecessor link for each publication and rejects rotation rollback, origin
+  chain replacement and truncation. The history links are commons records; the bundle signatures
+  authenticate each bundle and the Merkle log authenticates its inclusion and order.
 - `GET /v1/health` is `CommonsHealth`.
 
 

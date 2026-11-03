@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use speedrun_core::Event;
 use speedrun_core::api::PromptCommitment;
-use speedrun_core::bundle::{BUNDLE_FORMAT, Bundle, ChainHead, digest};
+use speedrun_core::bundle::{BUNDLE_FORMAT, Bundle, ChainHead, RotationProof, digest};
 
 /// Build the bundle for `tier` from the run's stored rows (each a typed event
 /// and the body it was stored as), its prompt commitments and the publisher's
@@ -24,6 +24,31 @@ pub fn build<F>(
 where
     F: FnOnce(&str) -> String,
 {
+    let origin_device = rows
+        .iter()
+        .find_map(|(event, _)| {
+            matches!(event.payload, speedrun_core::EventPayload::RunStarted { .. })
+                .then_some(event.device_id.as_str())
+        })
+        .unwrap_or("");
+    let rotations = rows
+        .iter()
+        .filter_map(|(event, _)| {
+            if event.device_id != origin_device {
+                return None;
+            }
+            match &event.payload {
+                speedrun_core::EventPayload::DeviceRotated {
+                    new_pubkey,
+                    certificate,
+                } => Some(RotationProof {
+                    new_pubkey: new_pubkey.clone(),
+                    certificate: certificate.clone(),
+                }),
+                _ => None,
+            }
+        })
+        .collect();
     let (events, chain_heads): (Vec<serde_json::Value>, Vec<ChainHead>) = match tier {
         0 => (Vec::new(), heads(&rows)),
         _ => (rows.into_iter().map(|(_, body)| body).collect(), Vec::new()),
@@ -35,6 +60,7 @@ where
         events,
         chain_heads,
         prompts: if tier == 2 { prompts } else { Vec::new() },
+        rotations,
         publisher_pubkey,
         signature: String::new(),
     };

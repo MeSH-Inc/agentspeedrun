@@ -41,6 +41,14 @@
       },
       "default": []
     },
+    "rotations": {
+      "description": "Certificates from the run's origin key to the publishing key, in order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RotationProof"
+      },
+      "default": []
+    },
     "publisher_pubkey": {
       "description": "Hex ed25519 public key of the device that signs this bundle. At tiers\n1 and 2 it must be a key that signs one of the run's chains.",
       "type": "string"
@@ -105,6 +113,22 @@
         "commitment",
         "length",
         "redacted"
+      ]
+    },
+    "RotationProof": {
+      "description": "An origin-key rotation, authorized by the previous key.",
+      "type": "object",
+      "properties": {
+        "new_pubkey": {
+          "type": "string"
+        },
+        "certificate": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "new_pubkey",
+        "certificate"
       ]
     }
   }

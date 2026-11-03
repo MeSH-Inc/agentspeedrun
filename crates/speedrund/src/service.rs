@@ -918,7 +918,7 @@ fn deployed_url(run: &RunView) -> Option<String> {
 }
 
 fn start_run(tx: &mut Tx<'_>, req: &PromptRequest, cat: &Category, at: DateTime<Utc>) -> Result<String> {
-    let run_id = speedrun_core::new_id();
+    let run_id = format!("{}.{}", speedrun_core::new_id(), tx.device_pubkey());
     let base = &req.event_id;
     let (start_head, start_head_committed_at) = match req.project_root.as_deref() {
         Some(root) => match speedrun_verify::git::head(root) {
