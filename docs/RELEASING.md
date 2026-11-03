@@ -4,20 +4,19 @@ One version covers everything shipped from this repo: the Rust crates, the
 VS Code extension, the Zed extension, the opencode and pi packages and the
 Claude Code plugin. `scripts/version.py check` fails if they drift.
 
-1. Bump every manifest and the lockfiles. This also pins the Claude Code
-   plugin in `.claude-plugin/marketplace.json` to the new tag (a `git-subdir`
-   source with `ref: vX.Y.Z`), so a hooks change on `main` reaches users only
-   with the release whose binary handles it:
+Local verification requires the pinned Rust toolchain, Python 3.11 or newer
+(for version and lockfile checks), Node.js, Bun, and the adapter dependencies.
 
-   ```bash
-   scripts/version.py set 0.2.0
-   ```
-
-2. Commit, then tag and push:
-
-   ```bash
-   git commit -am "Release 0.2.0" && git tag v0.2.0 && git push origin main v0.2.0
-   ```
+1. Set the version with `scripts/version.py set X.Y.Z`. This updates manifests,
+   lockfiles, and the Claude Code marketplace pin to `vX.Y.Z`.
+2. Commit the candidate and run the local checks below. Record their results and
+   asset hashes before creating a tag or publishing.
+3. For the prepared 0.3.0 preview, use tag `v0.3.0`, mark the GitHub release
+   as a prerelease explicitly, and package the VS Code extension with
+   `vsce package --pre-release`. A numeric version keeps the extension
+   manifests compatible; the tag alone does not identify it as a preview.
+   The existing tag-triggered release workflow only infers prerelease status
+   from a hyphenated tag, so do not rely on it for this preview.
 
 Before publishing, verify locally:
 

@@ -18,7 +18,9 @@ capture metadata-only` to record timing without prompt text or text commitments.
 
 ## Quick start
 
-The current source checkout contains the guided setup and milestone commands described below. The latest published release is v0.2.0; it does not include these newer commands. To try this guide, build from a checkout:
+This guide describes the 0.3.0 preview. If its assets are not yet available on
+the Releases page, build this checkout to use the guided setup and milestone
+commands below:
 
 ```bash
 cargo install --locked --path crates/speedrund
@@ -38,6 +40,16 @@ available, the build attestation. It installs to `~/.local/bin` (override with
 `SPEEDRUN_INSTALL_DIR`; pin with `SPEEDRUN_VERSION=v0.2.0`). For v0.2.0, use
 `speedrun init`, the explicit host setup commands below, and `speedrun status`;
 run `speedrun --help` for the commands available in that release.
+
+When the 0.3.0 preview assets are available, install that exact version with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/v0.3.0/install.sh | SPEEDRUN_VERSION=v0.3.0 SPEEDRUN_SKIP_ATTESTATION=1 sh
+```
+
+The preview assets are locally built and have no build provenance attestations.
+The installer still verifies their published checksums; the command skips only
+attestation verification for this preview.
 
 In the repo you want to time:
 

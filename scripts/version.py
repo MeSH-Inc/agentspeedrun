@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +43,25 @@ def versions():
     for f in JSON:
         yield f, json.loads((ROOT / f).read_text()).get("version")
     yield MARKETPLACE, pinned_version()
+    for directory in (ROOT, ROOT / "plugins/zed"):
+        manifest = tomllib.loads((directory / "Cargo.toml").read_text())
+        lock = tomllib.loads((directory / "Cargo.lock").read_text())
+        if directory == ROOT:
+            names = {
+                tomllib.loads((ROOT / member / "Cargo.toml").read_text())["package"]["name"]
+                for member in manifest["workspace"]["members"]
+            }
+        else:
+            names = {manifest["package"]["name"]}
+        packages = {p["name"]: p["version"] for p in lock["package"] if p["name"] in names}
+        for name in sorted(names):
+            yield f"{(directory / 'Cargo.lock').relative_to(ROOT)} ({name})", packages.get(name)
+    for directory in ("plugins/vscode", "plugins/opencode", "plugins/pi"):
+        path = ROOT / directory / "package-lock.json"
+        if path.exists():
+            lock = json.loads(path.read_text())
+            yield str(path.relative_to(ROOT)), lock.get("version")
+            yield f"{path.relative_to(ROOT)} (root package)", lock.get("packages", {}).get("", {}).get("version")
 
 
 def plugin_source(version):

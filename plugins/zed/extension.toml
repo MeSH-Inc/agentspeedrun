@@ -1,6 +1,6 @@
 id = "agentspeedrun"
 name = "agentspeedrun"
-version = "0.2.0"
+version = "0.3.0"
 schema_version = 1
 authors = ["mesh-inc"]
 description = "Speedrun timing for agentic coding: milestone tools for Zed's agent, backed by the speedrun CLI."
