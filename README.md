@@ -82,6 +82,14 @@ prompts. Zed's extension provides tools but does not capture its own agent promp
 | VS Code (timer, splits view, MCP tools) | `code --install-extension agentspeedrun-<version>.vsix` from the release ([details](plugins/vscode)) |
 | Zed (MCP tools) | dev extension in [plugins/zed](plugins/zed) |
 
+Use `speedrun milestone` to choose a milestone and an action based on its
+current state. `speedrun milestone <id>` opens one milestone; `--json` lists the
+same actions for integrations. The VS Code **Milestone Actions** command uses
+the same choices. The explicit `split`, `accept`, `reject`, `confirm`,
+`invalidate`, evidence and verification commands remain available for direct use.
+Evidence checks may fail or be unavailable; attaching evidence does not itself
+guarantee verification.
+
 ```bash
 speedrun status                              # timer and splits
 speedrun split happy-path-demo --commit HEAD # claim a split with evidence

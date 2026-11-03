@@ -5,6 +5,7 @@ mod doctor;
 mod hook;
 mod link;
 mod mcp;
+mod milestone;
 mod onboarding;
 mod ops;
 mod preferences;
@@ -172,6 +173,14 @@ enum Cmd {
     /// Inspect any local run by id.
     Inspect {
         run: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Choose a milestone and an available action.
+    Milestone {
+        /// Milestone id or category key.
+        milestone: Option<String>,
+        /// List available actions as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -662,6 +671,10 @@ fn run(cmd: Cmd) -> Result<()> {
                 Some(run) => print!("{}", ops::format_status(&run)),
                 None => println!("No active run; the timer starts at the next prompt."),
             }
+        }
+        Cmd::Milestone { milestone, json } => {
+            let p = Project::require(&cwd)?;
+            milestone::run(&c, &p, milestone.as_deref(), json)?;
         }
         Cmd::Split {
             milestone,

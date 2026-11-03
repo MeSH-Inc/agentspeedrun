@@ -6,6 +6,7 @@
 
 import * as vscode from "vscode";
 import { Cli, PROJECT_FILE, projectId, type Readiness } from "./cli";
+import { actionItems, parseMilestones, type GuidedMilestone } from "./milestone";
 import { fmtDelta, fmtMs, type LiveMilestone, type LiveRun, LiveClient, type LiveSnapshot, type LiveState, statusText } from "./live";
 
 type Project = { folder: vscode.WorkspaceFolder; id: string };
@@ -295,6 +296,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
         "agentspeedrun: tracking this project. Commit .speedrun/project.json. The timer starts at the first agent prompt.",
       );
     }
+  });
+
+  register("agentspeedrun.milestone", async (arg?: unknown) => {
+    const id = typeof arg === "string" ? arg : arg && typeof arg === "object" && "milestone_id" in arg ? (arg as LiveMilestone).milestone_id : undefined;
+    const out = await speedrun(["milestone", ...(id ? [id] : []), "--json"]);
+    if (!out) return;
+    let milestones: GuidedMilestone[];
+    try { milestones = parseMilestones(out); }
+    catch { void vscode.window.showErrorMessage("Could not read milestone actions."); return; }
+    const milestone = id ? milestones[0] : (await vscode.window.showQuickPick(milestones.map((m) => ({ label: m.title, description: `${m.state}${m.pending_confirmation ? " · awaiting confirmation" : m.counts ? " · counted" : ""}`, milestone: m })), { title: "Select a milestone" }))?.milestone;
+    if (!milestone) return;
+    if (!milestone.actions.length) { void vscode.window.showInformationMessage("No actions available for this milestone."); return; }
+    const action = await vscode.window.showQuickPick(actionItems(milestone.actions), { title: `${milestone.title} · ${milestone.state}${milestone.pending_confirmation ? " · awaiting confirmation" : milestone.counts ? " · counted" : ""}` });
+    if (!action) return;
+    if (action.action.id === "reject" || action.action.id === "invalidate") {
+      const confirmation = await vscode.window.showWarningMessage(`${action.label}: ${milestone.title}?`, { modal: true }, action.label);
+      if (confirmation !== action.label) return;
+      const reason = await vscode.window.showInputBox({ title: "Reason", prompt: action.action.id === "invalidate" ? "A reason is required" : "Optional" });
+      if (reason === undefined || (action.action.id === "invalidate" && !reason.trim())) return;
+      await speedrun([action.action.id, milestone.id, ...(reason.trim() ? ["--reason", reason.trim()] : [])]);
+      return;
+    }
+    if (action.action.id === "split") {
+      const evidence: string[] = [];
+      let choices = milestone.evidence;
+      if (milestone.evidence_alternatives) {
+        const selected = await vscode.window.showQuickPick([...choices.map((choice) => ({ label: choice.label, choice })), { label: "Record without evidence", detail: "May not count until required trust is met", choice: undefined }], { title: "Select evidence (local test preferred)" });
+        if (!selected) return;
+        choices = selected.choice ? [selected.choice] : [];
+      }
+      for (const choice of choices) {
+        let value: string | undefined;
+        if (choice.flag === "--local-test") {
+          const history = await speedrun(["local-test-history"]);
+          if (!history) return;
+          try {
+            const attempts = JSON.parse(history) as Array<{ id: string; argv: string[]; status: { kind: string }; observed_at: string }>;
+            value = (await vscode.window.showQuickPick(attempts.map((a) => ({ label: `Local test (${a.argv.length} arguments hidden)`, description: a.status.kind, detail: a.observed_at, id: a.id })), { title: "Select a local test observation" }))?.id;
+          } catch { void vscode.window.showErrorMessage("Could not read local test observations."); return; }
+        } else value = await vscode.window.showInputBox({ title: choice.label, prompt: "Optional evidence; the daemon checks it but verification is not guaranteed." });
+        if (value === undefined) return;
+        if (value.trim()) evidence.push(choice.flag, value.trim());
+      }
+      const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "agentspeedrun: recording milestone…" }, () => speedrun(["split", milestone.id, ...evidence], undefined, 120_000));
+      if (result) void vscode.window.showInformationMessage(result.split("\n\n")[0]);
+      return;
+    }
+    await speedrun([action.action.id, milestone.id]);
   });
 
   // Evidence the daemon can check, by the flag `speedrun split` takes it with.

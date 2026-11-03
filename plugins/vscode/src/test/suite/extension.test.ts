@@ -31,7 +31,7 @@ describe("agentspeedrun in VS Code", () => {
 
   it("contributes its commands", async () => {
     const all = await vscode.commands.getCommands(true);
-    for (const id of ["init", "split", "add", "accept", "reject", "pause", "resume", "reset", "watch", "setupCopilotHooks", "confirm", "invalidate", "capture", "history", "publish", "verification", "localTest"]) {
+    for (const id of ["init", "milestone", "split", "add", "accept", "reject", "pause", "resume", "reset", "watch", "setupCopilotHooks", "confirm", "invalidate", "capture", "history", "publish", "verification", "localTest"]) {
       assert.ok(all.includes(`agentspeedrun.${id}`), id);
     }
   });
@@ -60,6 +60,18 @@ describe("agentspeedrun in VS Code", () => {
     await vscode.commands.executeCommand("agentspeedrun.history", runId);
     assert.match(vscode.window.activeTextEditor?.document.getText() ?? "", /run .* —/);
     assert.match(vscode.window.activeTextEditor?.document.getText() ?? "", /scaffold-runs/);
+  });
+
+  it("records a milestone through the contextual action", async () => {
+    const window = vscode.window as unknown as { showQuickPick: typeof vscode.window.showQuickPick };
+    const original = window.showQuickPick;
+    try {
+      window.showQuickPick = (async (items: unknown) => (items as Array<{ action?: { id: string } }>).find((item) => item.action?.id === "split")) as typeof vscode.window.showQuickPick;
+      await vscode.commands.executeCommand("agentspeedrun.milestone", "happy-path-demo");
+      await until("guided milestone counted", () => api.run()?.milestones.find((m) => m.key === "happy-path-demo")?.counts === true);
+    } finally {
+      window.showQuickPick = original;
+    }
   });
 
   it("offers the MCP server for this project", () => {

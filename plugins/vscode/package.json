@@ -30,6 +30,12 @@
         "icon": "$(watch)"
       },
       {
+        "command": "agentspeedrun.milestone",
+        "title": "Milestone Actions",
+        "category": "Speedrun",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "agentspeedrun.split",
         "title": "Split (Mark Milestone Reached)",
         "category": "Speedrun",
@@ -193,6 +199,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "agentspeedrun.milestone",
+          "when": "view == agentspeedrun.splits",
+          "group": "inline@1"
+        },
         {
           "command": "agentspeedrun.accept",
           "when": "view == agentspeedrun.splits && viewItem == proposed",
