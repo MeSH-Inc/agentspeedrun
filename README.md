@@ -16,38 +16,28 @@ Prompt text is redacted on a best-effort basis and encrypted locally. Redaction
 does not guarantee that every secret is removed. Use `speedrun preferences
 capture metadata-only` to record timing without prompt text or text commitments.
 
-## How it works
-
-```
-Claude Code / opencode / pi / VS Code / Zed      thin adapters (hooks, MCP)
-                   │  speedrun CLI: spools to disk if the daemon is down
-                   ▼
-          speedrund (local daemon)                append-only, hash-chained
-          SQLite event log → run projections      event log; timing derived
-```
-
-- **Local-first.** One daemon per machine owns the data, listening on loopback with a bearer token. Core timing works offline; some evidence checks and publication use the network.
-- **Event-sourced.** Runs are folds over an append-only log; the database rejects updates and deletes.
-- **Signed and chained.** Each event is signed by its device's key and hashes the one before; `speedrun verify` checks both with public keys only. Whoever holds a device's private key can still rewrite and re-sign that device's local runs; a published run cannot change ([docs/COMMONS.md](docs/COMMONS.md)).
-- **Idempotent and offline-safe.** Every write carries a client event id; writes made while the daemon is down are spooled and replayed.
-- **Trust levels.** A milestone counts only at its category's required trust: `self_declared` < `agent_claimed` < `evidence_verified`. Only daemon verifiers grant `evidence_verified`: git commits in the project's history, live public HTTPS pages (including terms and privacy content), passing GitHub Actions runs, and real live-mode Stripe payments.
-- **Several clocks.** Real time, timed (minus pauses), agent time (turns, unioned across sessions) and human time (gaps between turns, capped at 15 min each).
-
-Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Building a widget, picture-in-picture or phone view? See [docs/LIVE_DISPLAY.md](docs/LIVE_DISPLAY.md). Runs are local by default. Publication to a configured commons is explicit; [docs/COMMONS.md](docs/COMMONS.md) describes the implemented publication protocol and future proposals.
-
 ## Quick start
 
-Prebuilt binaries for Linux (x86_64, arm64; static) and macOS (Apple silicon, Intel). Windows is not supported; use WSL.
+The current source checkout contains the guided setup and milestone commands described below. The latest published release is v0.2.0; it does not include these newer commands. To try this guide, build from a checkout:
+
+```bash
+cargo install --locked --path crates/speedrund
+cargo install --locked --path crates/speedrun-cli
+```
+
+Ensure `~/.cargo/bin` is on your `PATH`. Published v0.2.0 binaries are also
+available for Linux (x86_64 and arm64, static) and macOS (Apple silicon and
+Intel); Windows users can use WSL. To install that release, run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/main/install.sh | sh
 ```
 
-The installer checks the release's `SHA256SUMS`, and with an authenticated GitHub CLI also the archive's build attestation (`gh attestation verify`). It puts `speedrun` and `speedrund` in `~/.local/bin` (`SPEEDRUN_INSTALL_DIR` to change, `SPEEDRUN_VERSION=v0.2.0` to pin) and restarts the daemon authenticated by the current data directory only when it was launched from that installation. Or build from source, in a clone:
-
-```bash
-cargo install --locked --path crates/speedrund && cargo install --locked --path crates/speedrun-cli
-```
+The installer verifies `SHA256SUMS` and, when an authenticated GitHub CLI is
+available, the build attestation. It installs to `~/.local/bin` (override with
+`SPEEDRUN_INSTALL_DIR`; pin with `SPEEDRUN_VERSION=v0.2.0`). For v0.2.0, use
+`speedrun init`, the explicit host setup commands below, and `speedrun status`;
+run `speedrun --help` for the commands available in that release.
 
 In the repo you want to time:
 
@@ -68,21 +58,21 @@ speedrun setup --host pi --scope project --capture metadata-only --yes
 ```
 
 A new project defaults to `any-percent`; use `--category` to choose another.
-To remove an installed adapter, run `speedrun setup opencode --remove` (or
-`pi`, `omp`, or `copilot`); add `--project` if it was installed for a project.
-This preserves other host configuration and dependencies. Remove the binaries
-installed by the script with:
+Once capture succeeds, inspect the run and its milestones:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/main/install.sh | sh -s -- --uninstall
+speedrun status
+speedrun milestone
 ```
 
-Use the same `SPEEDRUN_INSTALL_DIR` as installation. The uninstaller stops a
-matching daemon and removes only binaries whose contents still match its
-installation record. Without that record, including for older or manually
-installed binaries, it leaves the binaries untouched. Project settings, run
-history, adapters, their dependencies and other configuration remain. Remove adapters before uninstalling the CLI. Extensions
-installed through a host's own marketplace must be removed there.
+Choose a milestone and follow its available actions. A claim records that a
+milestone was reached; a verifier can independently check supported evidence.
+Whether a claim counts depends on the category's required trust level. Complete
+the required milestones to finish the run. Run `speedrun doctor` if capture is
+missing, check that the correct host and project are selected, restart the host,
+and send another prompt. `speedrun flush` retries pending writes queued while the
+daemon was unavailable; it does not retry permanently rejected requests. See
+[troubleshooting](docs/TROUBLESHOOTING.md) for specific symptoms and recovery.
 
 The explicit adapter-only commands below remain available. Claude Code uses a
 plugin; VS Code's extension adds a display and tools while Copilot hooks capture
@@ -95,8 +85,18 @@ prompts. Zed's extension provides tools but does not capture its own agent promp
 | pi | `speedrun setup pi` ([details](plugins/pi)) |
 | oh-my-pi | `speedrun setup omp` ([details](plugins/pi)) |
 | Copilot agent (VS Code, Copilot CLI) | `speedrun setup copilot --project` ([details](plugins/copilot)) |
-| VS Code (timer, splits view, MCP tools) | `code --install-extension agentspeedrun-<version>.vsix` from the release ([details](plugins/vscode)) |
+| VS Code (timer, splits view, MCP tools) | Build and install the matching source VSIX as described below ([details](plugins/vscode)) |
 | Zed (MCP tools) | dev extension in [plugins/zed](plugins/zed) |
+
+When using the source checkout, build its matching VS Code extension (the
+published v0.2.0 VSIX may not match the source CLI):
+
+```bash
+cd plugins/vscode
+npm ci --ignore-scripts
+npm run package
+code --install-extension agentspeedrun-*.vsix
+```
 
 Use `speedrun milestone` to choose a milestone and an action based on its
 current state. `speedrun milestone <id>` opens one milestone; `--json` lists the
@@ -110,6 +110,8 @@ fail or be unavailable; attaching evidence does not itself guarantee verificatio
 
 ```bash
 speedrun status                              # timer and splits
+speedrun local-test -- cargo test             # record a local test observation
+speedrun milestone                           # select the milestone and attach evidence
 speedrun split happy-path-demo --commit HEAD # claim a split with evidence
 speedrun split deployed --url https://myapp.com
 speedrun split tests-green --ci https://github.com/me/app/actions/runs/123
@@ -140,6 +142,43 @@ Pending prompt text is also encrypted in the durable outbox under a separate
 `spool/outbox.key`. Existing legacy JSONL files remain plaintext until an
 explicit `speedrun flush` migrates them; unreadable records are encrypted and
 retained as rejected diagnostics while later records are replayed.
+
+## How it works
+
+```
+Claude Code / opencode / pi / VS Code / Zed      thin adapters (hooks, MCP)
+                   │  speedrun CLI: spools to disk if the daemon is down
+                   ▼
+          speedrund (local daemon)                append-only, hash-chained
+          SQLite event log → run projections      event log; timing derived
+```
+
+- **Local-first.** One daemon per machine owns the data, listening on loopback with a bearer token. Core timing works offline; some evidence checks and publication use the network.
+- **Event-sourced.** Runs are folds over an append-only log; the database rejects updates and deletes.
+- **Signed and chained.** Each event is signed by its device's key and hashes the one before; `speedrun verify` checks both with public keys only. Whoever holds a device's private key can still rewrite and re-sign that device's local runs; a published run cannot change ([docs/COMMONS.md](docs/COMMONS.md)).
+- **Idempotent and offline-safe.** Every write carries a client event id; writes made while the daemon is down are spooled and replayed.
+- **Trust levels.** A milestone counts only at its category's required trust: `self_declared` < `agent_claimed` < `evidence_verified`. Only daemon verifiers grant `evidence_verified`: local test observations, git commits in the project's history, live public HTTPS pages (including terms and privacy content), optional passing GitHub Actions runs, and real live-mode Stripe payments.
+- **Several clocks.** Real time, timed (minus pauses), agent time (turns, unioned across sessions) and human time (gaps between turns, capped at 15 min each).
+
+Design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Building a widget, picture-in-picture or phone view? See [docs/LIVE_DISPLAY.md](docs/LIVE_DISPLAY.md). Runs are local by default. Publication to a configured commons is explicit; [docs/COMMONS.md](docs/COMMONS.md) describes the implemented publication protocol and future proposals.
+
+## Removing the installation
+
+To remove an installed adapter, run `speedrun setup opencode --remove` (or
+`pi`, `omp`, or `copilot`); add `--project` if it was installed for a project.
+This preserves other host configuration and dependencies. Remove the binaries
+installed by the script with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MeSH-Inc/agentspeedrun/main/install.sh | sh -s -- --uninstall
+```
+
+Use the same `SPEEDRUN_INSTALL_DIR` as installation. The uninstaller stops a
+matching daemon and removes only binaries whose contents still match its
+installation record. Without that record, including for older or manually
+installed binaries, it leaves the binaries untouched. Project settings, run
+history, adapters, their dependencies and other configuration remain. Remove adapters before uninstalling the CLI. Extensions
+installed through a host's own marketplace must be removed there.
 
 ### Backups
 

@@ -35,6 +35,12 @@ matching_daemon() {
   if [ "$(uname -s)" = Linux ] && [ -L "/proc/$pid/exe" ]; then
     command=$(readlink "/proc/$pid/exe" 2>/dev/null) ||
       die "could not inspect daemon process $pid in /proc; binaries left untouched"
+    # Under binary translation /proc/PID/exe can name the interpreter. The
+    # authenticated daemon's first argument still names its launched binary.
+    if [ "$command" != "$canonical_dest/speedrund" ] && [ "$command" != "$logical_dest/speedrund" ]; then
+      command=$(tr '\000' '\n' <"/proc/$pid/cmdline" | sed -n '1p') ||
+        die "could not inspect daemon arguments $pid in /proc; binaries left untouched"
+    fi
   else
     command -v ps >/dev/null 2>&1 || die "needs ps to check the running daemon; binaries left untouched"
     command=$(ps -p "$pid" -o command= 2>/dev/null) ||

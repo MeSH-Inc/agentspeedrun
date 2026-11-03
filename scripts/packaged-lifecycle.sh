@@ -58,6 +58,9 @@ other daemon restart >/dev/null
 other_before=$(other daemon status)
 install
 [ "$(other daemon status)" = "$other_before" ] || { echo 'unrelated daemon changed' >&2; exit 1; }
+# Even an authenticated daemon must not be stopped when it came from another installation.
+SPEEDRUN_HOME="$work/other-data" SPEEDRUN_ADDR="$other_addr" install
+[ "$(other daemon status)" = "$other_before" ] || { echo 'other installation daemon changed' >&2; exit 1; }
 install # idempotent before daemon start
 cd "$work/repo"
 git init -q
