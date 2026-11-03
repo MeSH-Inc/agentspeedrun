@@ -59,9 +59,17 @@ speedrun setup
 
 Guided setup selects your host, adapter scope, project category, and device-wide
 prompt capture preference. It initializes or trusts the current project without
-replacing an existing project. Restart the capture host, send a real prompt in
-this repo, then run `speedrun capture` to check whether it arrived. The daemon
-starts automatically on first use.
+replacing an existing project. Setup does not start the daemon; the read-only
+`speedrun readiness` and `speedrun capture` checks may report it offline before
+the first prompt. Run `speedrun flush` to start it and deliver queued requests,
+or let the first prompt start it. Restart the capture host, send a real prompt
+in this repo, then run `speedrun readiness` to check whether it arrived.
+
+Setup writes `.speedrun/project.json` and, with project scope, host adapter
+files into the repository. Review `git status` and commit the project config
+and any adapter files you want shared; ignore files that should remain local.
+Local test evidence requires a clean working tree before and after the command,
+and must match the current Git HEAD when verified.
 
 For scripts, specify the choices explicitly, for example:
 

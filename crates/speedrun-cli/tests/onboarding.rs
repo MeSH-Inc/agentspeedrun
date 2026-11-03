@@ -43,6 +43,9 @@ fn noninteractive_setup_requires_explicit_choices_and_is_idempotent() {
     assert_eq!(prefs["capture"], "metadata_only");
     let output = String::from_utf8(first.stdout).unwrap();
     assert!(output.contains("capture has not been verified"));
+    assert!(output.contains("Readiness is read-only"));
+    assert!(output.contains("`speedrun flush`"));
+    assert!(output.contains("`speedrun local-test` requires a clean working tree"));
     assert!(!root.join("data/speedrun.sqlite").exists());
     let second = run(
         root,

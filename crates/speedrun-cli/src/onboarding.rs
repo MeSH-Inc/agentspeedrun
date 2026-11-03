@@ -305,5 +305,11 @@ pub fn run(cwd: &Path, options: Options) -> Result<()> {
         "Setup configured; prompt capture has not been verified. Restart the capture host, send a real agent prompt in {}, then run `speedrun readiness` there to check it.",
         project.root.display()
     );
+    println!(
+        "Readiness is read-only and may report the daemon offline before the first prompt. Run `speedrun flush` to start it and deliver queued requests."
+    );
+    println!(
+        "Before recording local test evidence, review `git status` and commit intended project and adapter files or ignore files that should remain local. `speedrun local-test` requires a clean working tree."
+    );
     Ok(())
 }

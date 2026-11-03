@@ -3,6 +3,9 @@
 These commands describe the current source checkout; the published v0.2.0
 release does not include `capture`, `local-test`, or `outbox rejected`.
 
+- **Daemon offline just after setup:** Setup and read-only readiness checks do
+  not start the daemon. Run `speedrun flush` to start it and deliver queued
+  requests, or send a prompt through an installed capture host.
 - **No prompt captured:** In the project directory, run `speedrun capture` and
   follow its next step. Check that the chosen host adapter is installed, restart
   that host, send a new prompt in this project, and run `speedrun capture` again.
@@ -23,7 +26,10 @@ release does not include `capture`, `local-test`, or `outbox rejected`.
   underlying project or request problem and submit a new action if appropriate.
   Rejected entries are diagnostics, not a queue that `flush` replays; their
   bodies and daemon error messages are not shown.
-- **Local test cannot verify a dirty tree:** Run `git status`, ignore generated files and commit the intended changes, then run
+- **Local test cannot verify a dirty tree:** Run `git status` and review the
+  files created by setup, including `.speedrun/project.json` and any
+  project-scoped adapter files. Commit the intended changes and ignore files
+  that should remain local, then run
   `speedrun local-test -- <command> [args...]` again, then use
   `speedrun milestone` to attach the new passing observation. It must match the
   current Git HEAD and meet the milestone's verification requirements.
