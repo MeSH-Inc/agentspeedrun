@@ -1,6 +1,8 @@
 //! speedrund: the local agentspeedrun daemon. Owns the event log; every
 //! editor and agent plugin talks to it over loopback HTTP.
 
+#[cfg(test)]
+mod benchmarks;
 mod bundle;
 mod clock;
 mod datadir_lock;

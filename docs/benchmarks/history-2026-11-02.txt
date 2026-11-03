@@ -1,0 +1,254 @@
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=1000 subscribers=1 seconds=0.02
+load_deserialize n=30 p50_ms=0.834 p95_ms=0.981
+fold n=30 p50_ms=0.136 p95_ms=0.173
+closed_loop_cycles_per_second=191.713
+http_get_live n=30 p50_ms=1.355 p95_ms=1.484
+http_append_response n=30 p50_ms=2.633 p95_ms=2.969
+append_to_all_subscribers n=30 p50_ms=3.816 p95_ms=4.248
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.35s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=1000 subscribers=5 seconds=0.02
+load_deserialize n=30 p50_ms=0.833 p95_ms=0.953
+fold n=30 p50_ms=0.136 p95_ms=0.173
+closed_loop_cycles_per_second=108.891
+http_get_live n=30 p50_ms=1.306 p95_ms=1.377
+http_append_response n=30 p50_ms=2.488 p95_ms=2.617
+append_to_all_subscribers n=30 p50_ms=7.827 p95_ms=8.159
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.46s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=1000 subscribers=20 seconds=0.02
+load_deserialize n=30 p50_ms=0.831 p95_ms=0.977
+fold n=30 p50_ms=0.142 p95_ms=0.185
+closed_loop_cycles_per_second=37.393
+http_get_live n=30 p50_ms=1.422 p95_ms=1.645
+http_append_response n=30 p50_ms=2.728 p95_ms=3.239
+append_to_all_subscribers n=30 p50_ms=24.971 p95_ms=26.632
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 1.01s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.08s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=10000 subscribers=1 seconds=0.21
+load_deserialize n=30 p50_ms=10.347 p95_ms=11.203
+fold n=30 p50_ms=2.302 p95_ms=2.437
+closed_loop_cycles_per_second=18.225
+http_get_live n=30 p50_ms=13.706 p95_ms=14.968
+http_append_response n=30 p50_ms=26.575 p95_ms=29.708
+append_to_all_subscribers n=30 p50_ms=39.725 p95_ms=43.575
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 2.72s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.08s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=10000 subscribers=5 seconds=0.21
+load_deserialize n=30 p50_ms=9.688 p95_ms=10.199
+fold n=30 p50_ms=2.172 p95_ms=2.531
+closed_loop_cycles_per_second=9.790
+http_get_live n=30 p50_ms=12.972 p95_ms=13.626
+http_append_response n=30 p50_ms=25.604 p95_ms=26.575
+append_to_all_subscribers n=30 p50_ms=88.934 p95_ms=91.275
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 4.14s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=10000 subscribers=20 seconds=0.21
+load_deserialize n=30 p50_ms=9.695 p95_ms=10.108
+fold n=30 p50_ms=2.143 p95_ms=2.484
+closed_loop_cycles_per_second=3.283
+http_get_live n=30 p50_ms=13.409 p95_ms=15.749
+http_append_response n=30 p50_ms=26.441 p95_ms=27.405
+append_to_all_subscribers n=30 p50_ms=289.091 p95_ms=312.581
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 10.41s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.08s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=100000 subscribers=1 seconds=2.09
+load_deserialize n=30 p50_ms=101.388 p95_ms=123.928
+fold n=30 p50_ms=102.089 p95_ms=133.933
+closed_loop_cycles_per_second=1.165
+http_get_live n=30 p50_ms=210.132 p95_ms=241.523
+http_append_response n=30 p50_ms=419.506 p95_ms=450.433
+append_to_all_subscribers n=30 p50_ms=630.875 p95_ms=667.202
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 38.05s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.34s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=100000 subscribers=5 seconds=2.07
+load_deserialize n=30 p50_ms=101.475 p95_ms=117.224
+fold n=30 p50_ms=102.551 p95_ms=108.900
+test benchmarks::history_pressure has been running for over 60 seconds
+closed_loop_cycles_per_second=0.596
+http_get_live n=30 p50_ms=208.353 p95_ms=213.949
+http_append_response n=30 p50_ms=412.125 p95_ms=470.759
+append_to_all_subscribers n=30 p50_ms=1454.015 p95_ms=1527.752
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 63.41s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: lifecycle output root is unmanaged: /Volumes/rabbitx10/build/agentspeedrun/target/release
+    Finished `release` profile [optimized] target(s) in 0.35s
+     Running unittests src/main.rs (target/release/deps/speedrund-714949aff824cb79)
+
+running 1 test
+seed events=100000 subscribers=20 seconds=2.04
+load_deserialize n=30 p50_ms=98.877 p95_ms=110.145
+fold n=30 p50_ms=99.679 p95_ms=103.023
+test benchmarks::history_pressure has been running for over 60 seconds
+closed_loop_cycles_per_second=0.210
+http_get_live n=30 p50_ms=205.585 p95_ms=219.211
+http_append_response n=30 p50_ms=408.298 p95_ms=448.023
+append_to_all_subscribers n=30 p50_ms=4506.593 p95_ms=4834.941
+test benchmarks::history_pressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 158.84s
+
+     Running tests/audit.rs (target/release/deps/audit-fa9457a73d5ba351)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+
+     Running tests/local_test_auth.rs (target/release/deps/local_test_auth-fba62c2a621b9f77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
