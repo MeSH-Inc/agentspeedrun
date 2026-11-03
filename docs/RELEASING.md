@@ -88,21 +88,25 @@ lifecycle separately from the real VS Code host integration tests.
 
 ## Published release upgrade verification
 
-Test the published v0.2.0 archive against the development binaries on each
-platform. Download the archive and `SHA256SUMS` from the release, then run:
+Test the most recent published archive and the v0.2.0 archive against the
+development binaries on each platform. Download each archive and its release's
+`SHA256SUMS`, then run the following for each baseline:
 
 ```bash
+scripts/release-upgrade.sh /path/to/agentspeedrun-v0.3.1-TARGET.tar.gz /path/to/SHA256SUMS target/debug
 scripts/release-upgrade.sh /path/to/agentspeedrun-v0.2.0-TARGET.tar.gz /path/to/SHA256SUMS target/debug
 ```
 
 The script verifies the published checksum, installs that archive, creates a
 trusted project with signed history and queues a prompt while offline. It then
 installs a separately built development archive and checks the existing history,
-trust, signature chain and delivery of the old outbox. It compares an existing
-preferences file if the baseline created one. This harness expects the v0.2.0
-legacy JSONL outbox; update it when testing a newer release. Use binaries for
-the named target; the checkout version may match the published tag while the
-code differs.
+trust, signature chain and delivery of the old outbox. It covers the v0.2
+legacy JSONL outbox and v0.3 or later SQLite outbox. For v0.3 or later it also
+sets non-default capture and retention preferences and installs the opencode
+user integration, then verifies those preferences and the selected integration's
+installed readiness before and after upgrading. All settings are isolated in a
+temporary home. Use binaries for the named target; the checkout version may
+match the published tag while the code differs.
 
 The v0.2.0 release predates capture preferences, so it cannot test preservation
 of a preference set through that release. The earlier v0.1 format is retired;

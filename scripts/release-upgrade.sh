@@ -16,6 +16,20 @@ esac
 file=$(basename "$archive")
 case "$file" in agentspeedrun-v*"-$target.tar.gz") ;; *) echo 'archive does not match this platform' >&2; exit 1 ;; esac
 prior_version=${file#agentspeedrun-}; prior_version=${prior_version%-$target.tar.gz}
+baseline_kind=$(python3 - "$prior_version" <<'PY_VERSION'
+import re, sys
+match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", sys.argv[1])
+if not match:
+    sys.exit("baseline version must be a numeric release")
+version = tuple(map(int, match.groups()))
+if version[:2] == (0, 2):
+    print("legacy")
+elif version >= (0, 3, 0):
+    print("sqlite")
+else:
+    sys.exit("baseline must be v0.2 or later")
+PY_VERSION
+)
 scratch=$(mktemp -d)
 work="$scratch/path with spaces"
 mkdir -p "$work/assets" "$work/stage" "$work/repo" "$work/home"
@@ -57,6 +71,18 @@ cd "$work/repo"
 git init -q
 git -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m init
 sr init
+if [ "$baseline_kind" = sqlite ]; then
+  sr setup --host opencode --scope user --capture content --yes >/dev/null
+  sr preferences retention 37 >/dev/null
+  sr readiness --json > "$work/before-readiness.json"
+  python3 - "$work/before-readiness.json" "$SPEEDRUN_HOME/preferences.json" <<'PY_ASSERT'
+import json, sys
+readiness, prefs = (json.load(open(path)) for path in sys.argv[1:])
+assert readiness["selected_integration"] == ["opencode", "user"], readiness
+assert readiness["integration_state"] == "installed", readiness
+assert prefs["capture"] == "content" and prefs["retention_days"] == 37, prefs
+PY_ASSERT
+fi
 printf 'published release prompt\n' | sr ingest prompt --host test --session upgrade | grep -q '"recorded":true'
 sr log > "$work/before-log"
 sr verify
@@ -64,7 +90,11 @@ cp "$SPEEDRUN_HOME/trusted-projects.json" "$work/trust"
 [ ! -e "$SPEEDRUN_HOME/preferences.json" ] || cp "$SPEEDRUN_HOME/preferences.json" "$work/preferences"
 sr daemon stop
 printf 'offline release prompt\n' | SPEEDRUN_NO_AUTOSTART=1 sr ingest prompt --host test --session upgrade | grep -q '"spooled":true'
-[ -s "$SPEEDRUN_HOME/spool/pending.jsonl" ] || { echo 'published release did not create a pending outbox' >&2; exit 1; }
+if [ "$baseline_kind" = legacy ]; then
+  [ -s "$SPEEDRUN_HOME/spool/pending.jsonl" ] || { echo 'published release did not create a legacy outbox' >&2; exit 1; }
+else
+  [ -s "$SPEEDRUN_HOME/spool/pending.sqlite3" ] || { echo 'published release did not create a SQLite outbox' >&2; exit 1; }
+fi
 export SPEEDRUN_VERSION="v$($root/scripts/version.py get)"
 name="agentspeedrun-$SPEEDRUN_VERSION-$target"
 mkdir "$work/stage/$name"
@@ -74,6 +104,16 @@ SOURCE_DATE_EPOCH=0 "$root/scripts/archive.py" "$work/stage" "$name" "$work/asse
 sh "$root/install.sh"
 cmp "$work/trust" "$SPEEDRUN_HOME/trusted-projects.json"
 if [ -e "$work/preferences" ]; then cmp "$work/preferences" "$SPEEDRUN_HOME/preferences.json"; fi
+if [ "$baseline_kind" = sqlite ]; then
+  sr readiness --json > "$work/after-readiness.json"
+  python3 - "$work/after-readiness.json" "$SPEEDRUN_HOME/preferences.json" <<'PY_ASSERT'
+import json, sys
+readiness, prefs = (json.load(open(path)) for path in sys.argv[1:])
+assert readiness["selected_integration"] == ["opencode", "user"], readiness
+assert readiness["integration_state"] == "installed", readiness
+assert prefs["capture"] == "content" and prefs["retention_days"] == 37, prefs
+PY_ASSERT
+fi
 sr log > "$work/after-log"
 cmp "$work/before-log" "$work/after-log"
 sr verify
