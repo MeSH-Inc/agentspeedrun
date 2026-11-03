@@ -370,7 +370,18 @@ fn create_in_place(
     destination: &Path,
     checkpoint: &mut dyn FnMut(&str) -> Result<()>,
 ) -> Result<()> {
+    if !present(source)? {
+        bail!(
+            "no Speedrun data directory at {}; run `speedrun daemon restart` to initialize it, then `speedrun daemon stop` before creating a recovery bundle",
+            source.display()
+        );
+    }
     check_dir(source)?;
+    ensure!(
+        present(&source.join("speedrun.sqlite"))?,
+        "no Speedrun database at {}; run `speedrun daemon restart` to initialize it, then `speedrun daemon stop` before creating a recovery bundle",
+        source.join("speedrun.sqlite").display()
+    );
     let lock_path = source.join("speedrund.lock");
     if present(&lock_path)? {
         regular(&lock_path)?;
@@ -522,6 +533,24 @@ fn restore_in_place(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_explains_uninitialized_data_directory_and_database() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("bundle");
+        let error = create(&source, &destination).unwrap_err().to_string();
+        assert!(error.contains("no Speedrun data directory"));
+        assert!(error.contains("speedrun daemon restart"));
+        assert!(!destination.exists());
+
+        private_dir(&source).unwrap();
+        let error = create(&source, &destination).unwrap_err().to_string();
+        assert!(error.contains("no Speedrun database"));
+        assert!(error.contains("speedrun daemon stop"));
+        assert!(!source.join("speedrund.lock").exists());
+        assert!(!destination.exists());
+    }
 
     fn source(root: &Path) -> PathBuf {
         let dir = root.join("source");

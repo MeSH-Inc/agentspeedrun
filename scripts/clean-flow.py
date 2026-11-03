@@ -117,7 +117,12 @@ def main():
             missing_after_capture = readiness()
             assert missing_after_capture["recording"] == "captured" and missing_after_capture["next_action_id"] == "setup", missing_after_capture
             hook.write_text(json.dumps(config))
-            interactive(["milestone", "scaffold-runs"], "1\n")
+            claim = run("split", "scaffold-runs", "--local-test", "missing-observation")
+            assert "Evidence check failed" in claim.stdout, claim.stdout
+            assert "evidence was not verified" in claim.stdout, claim.stdout
+            assert "Milestone: counted." in claim.stdout, claim.stdout
+            counted = json.loads(run("milestone", "scaffold-runs", "--json").stdout)
+            assert counted["milestones"][0]["counts"], counted
             interactive(["milestone", "happy-path-demo"], "1\n")
             status = json.loads(run("status", "--json").stdout)
             assert status["status"] == "completed", status

@@ -138,8 +138,8 @@ pub fn format_verification(v: &VerificationReport) -> String {
             v.scope, v.facts
         ),
         _ => format!(
-            "Evidence check {:?} in {:?} scope; the claim keeps its trust:\n{}",
-            v.status,
+            "Evidence check {} in {:?} scope; evidence was not verified. The claim keeps its trust and counts only if it meets the milestone requirements:\n{}",
+            format!("{:?}", v.status).to_lowercase(),
             v.scope,
             v.problems
                 .iter()
@@ -261,5 +261,29 @@ pub fn session_start_context(project: &Project, run: Option<&RunView>) -> Option
              you understand the user's goal, and call `speedrun_claim_milestone` with the achieving commit (and URL, \
              CI run or Stripe payment where relevant) as you finish each one."
         )),
+    }
+}
+
+#[cfg(test)]
+mod verification_message_tests {
+    use super::*;
+    use speedrun_core::api::{VerificationScope, VerificationStatus};
+
+    #[test]
+    fn failed_evidence_is_distinguished_from_the_claim() {
+        let report = VerificationReport {
+            verified: false,
+            verifier: None,
+            problems: vec!["no independent evidence".into()],
+            scope: VerificationScope::Local,
+            status: VerificationStatus::Failed,
+            facts: vec![],
+            observer: String::new(),
+            observer_version: String::new(),
+        };
+        let message = format_verification(&report);
+        assert!(message.contains("evidence was not verified"));
+        assert!(message.contains("claim keeps its trust"));
+        assert!(message.contains("milestone requirements"));
     }
 }

@@ -706,7 +706,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 &Client::patient(),
                 &p,
                 EventPayload::MilestoneReached {
-                    milestone_id,
+                    milestone_id: milestone_id.clone(),
                     trust: Trust::SelfDeclared,
                     evidence,
                     claimant: Claimant::User,
@@ -716,11 +716,23 @@ fn run(cmd: Cmd) -> Result<()> {
                 println!("{}\n", ops::format_verification(v));
             } else if let Some(job) = &resp.verification_job {
                 println!(
-                    "Evidence check {:?}; inspect with `speedrun verification {}`.\n",
-                    job.state, job.cause_event_id
+                    "Evidence check {}; inspect with `speedrun verification {}`. Counting depends on the claim trust and milestone requirements, including any required confirmation.\n",
+                    format!("{:?}", job.state).to_lowercase(),
+                    job.cause_event_id
                 );
             }
-            print!("{}", ops::format_status(&ops::require_run(&c, &p)?));
+            let updated = ops::require_run(&c, &p)?;
+            if let Some(milestone) = updated.milestone(&milestone_id) {
+                println!(
+                    "Milestone: {}.",
+                    if milestone.counts() {
+                        "counted"
+                    } else {
+                        "not counted"
+                    }
+                );
+            }
+            print!("{}", ops::format_status(&updated));
         }
         Cmd::LocalTest { argv } => {
             let p = Project::require(&cwd)?;

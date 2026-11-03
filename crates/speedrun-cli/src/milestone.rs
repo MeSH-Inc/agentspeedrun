@@ -439,8 +439,9 @@ pub fn run(c: &Client, p: &Project, id: Option<&str>, json: bool) -> Result<()> 
     }
     if let Some(job) = &response.verification_job {
         println!(
-            "Evidence check {:?}; inspect with `speedrun verification {}`.",
-            job.state, job.cause_event_id
+            "Evidence check {}; inspect with `speedrun verification {}`. Counting depends on the claim trust and milestone requirements, including any required confirmation.",
+            format!("{:?}", job.state).to_lowercase(),
+            job.cause_event_id
         );
     }
     let updated = ops::require_run(c, p)?;
