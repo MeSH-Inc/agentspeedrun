@@ -34,7 +34,8 @@ A flusher leases pending rows transactionally and retries expired leases after a
 crash. Unknown outcomes are retried with the original event ID and credential;
 acknowledged rows are removed and rejected rows are retained within a size cap.
 Storage failures are reported through the spool failure counter. Legacy JSONL
-spools are imported transactionally on flush.
+spools are imported transactionally on an explicit `speedrun flush`; bounded
+hook flushes skip legacy imports to meet their deadline.
 
 ## Event log
 

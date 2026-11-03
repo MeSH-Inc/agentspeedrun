@@ -351,6 +351,13 @@ impl Client {
     ) -> Result<T, CallError> {
         let mut retried = false;
         loop {
+            if let Delivery::Replay {
+                deadline: Some(deadline),
+            } = delivery
+                && Instant::now() >= deadline
+            {
+                return Err(CallError::DeliveryUnknown("flush deadline elapsed".into()));
+            }
             let token = credential.token()?;
             match self.attempt(method, path, body, delivery, &token) {
                 Err(CallError::Api { status: 401, .. }) if !retried => retried = true,
@@ -598,14 +605,16 @@ impl Client {
     /// Claim one outbox row at a time. Expired leases are recoverable after
     /// crashes; event IDs make an uncertain delivery safe to replay.
     pub fn flush_spool(&self, deadline: Option<Instant>) -> Result<usize, CallError> {
-        let db = open_outbox().map_err(storage_error)?;
-        import_legacy(&db).map_err(storage_error)?;
+        let Some(db) = prepare_flush(&spool_dir(), deadline).map_err(storage_error)? else {
+            return Ok(0);
+        };
         let owner = speedrun_core::new_id();
         let mut delivered = 0;
         loop {
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 break;
             }
+            set_busy_deadline(&db, deadline).map_err(storage_error)?;
             let Some((id, entry)) = claim(&db, &owner).map_err(storage_error)? else {
                 break;
             };
@@ -618,14 +627,15 @@ impl Client {
             );
             match outcome {
                 Ok(_) => {
-                    finish(&db, id, &owner, false).map_err(storage_error)?;
+                    finish_with_deadline(&db, id, &owner, false, deadline).map_err(storage_error)?;
                     delivered += 1;
                 }
                 Err(error) if error.should_spool() => {
+                    set_busy_deadline(&db, deadline).map_err(storage_error)?;
                     release(&db, id, &owner).map_err(storage_error)?;
                     break;
                 }
-                Err(_) => finish(&db, id, &owner, true).map_err(storage_error)?,
+                Err(_) => finish_with_deadline(&db, id, &owner, true, deadline).map_err(storage_error)?,
             }
         }
         Ok(delivered)
@@ -669,29 +679,59 @@ fn now_seconds() -> i64 {
 }
 
 fn open_outbox() -> anyhow::Result<Connection> {
-    let dir = spool_dir();
-    fs::create_dir_all(&dir)?;
+    open_outbox_at(&spool_dir(), None)
+}
+
+// A bounded hook flush never waits for the legacy import lock or performs an
+// unbounded file import. Explicit flushes still import before delivering.
+fn prepare_flush(dir: &Path, deadline: Option<Instant>) -> anyhow::Result<Option<Connection>> {
+    if deadline.is_some_and(|d| Instant::now() >= d) {
+        return Ok(None);
+    }
+    let db = open_outbox_at(dir, deadline)?;
+    if deadline.is_none() {
+        import_legacy(&db, dir)?;
+    }
+    Ok(Some(db))
+}
+
+fn open_outbox_at(dir: &Path, deadline: Option<Instant>) -> anyhow::Result<Connection> {
+    fs::create_dir_all(dir)?;
     let path = dir.join("pending.sqlite3");
-    // Create with private permissions before SQLite opens the file.
     OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
         .open(&path)?;
-    open_outbox_path(&path)
+    open_outbox_path_with_deadline(&path, deadline)
 }
 
+#[cfg(test)]
 fn open_outbox_path(path: &Path) -> anyhow::Result<Connection> {
+    open_outbox_path_with_deadline(path, None)
+}
+
+fn set_busy_deadline(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<()> {
+    let timeout = deadline.map_or(Duration::from_secs(2), |d| {
+        d.saturating_duration_since(Instant::now())
+            .min(Duration::from_secs(2))
+    });
+    db.busy_timeout(timeout)?;
+    Ok(())
+}
+
+fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> anyhow::Result<Connection> {
     let db = Connection::open(path)?;
-    db.busy_timeout(Duration::from_secs(2))?;
-    db.execute_batch(
-        "PRAGMA synchronous=FULL; PRAGMA auto_vacuum=FULL; PRAGMA secure_delete=ON;
-        CREATE TABLE IF NOT EXISTS outbox (
-            id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL,
-            owner TEXT, lease_until INTEGER, source TEXT UNIQUE
-        );",
-    )?;
+    for statement in [
+        "PRAGMA synchronous=FULL;",
+        "PRAGMA auto_vacuum=FULL;",
+        "PRAGMA secure_delete=ON;",
+        "CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease_until INTEGER, source TEXT UNIQUE);",
+    ] {
+        set_busy_deadline(&db, deadline)?;
+        db.execute_batch(statement)?;
+    }
     Ok(db)
 }
 
@@ -728,6 +768,17 @@ fn release(db: &Connection, id: i64, owner: &str) -> anyhow::Result<()> {
 }
 
 fn finish(db: &Connection, id: i64, owner: &str, rejected: bool) -> anyhow::Result<()> {
+    finish_with_deadline(db, id, owner, rejected, None)
+}
+
+fn finish_with_deadline(
+    db: &Connection,
+    id: i64,
+    owner: &str,
+    rejected: bool,
+    deadline: Option<Instant>,
+) -> anyhow::Result<()> {
+    set_busy_deadline(db, deadline)?;
     let tx = db.unchecked_transaction()?;
     if rejected {
         let changed = tx.execute(
@@ -736,6 +787,7 @@ fn finish(db: &Connection, id: i64, owner: &str, rejected: bool) -> anyhow::Resu
         )?;
         anyhow::ensure!(changed == 1, "outbox lease was lost");
         // Keep the newest bounded diagnostic records, including at most one oversized entry.
+        set_busy_deadline(&tx, deadline)?;
         tx.execute("DELETE FROM outbox WHERE state='rejected' AND id NOT IN (SELECT id FROM (SELECT id, SUM(length(CAST(entry AS BLOB))) OVER (ORDER BY id DESC) AS total, ROW_NUMBER() OVER (ORDER BY id DESC) AS n FROM outbox WHERE state='rejected') WHERE total<=?1 OR n=1)", [REJECTED_LIMIT])?;
     } else {
         let changed = tx.execute(
@@ -744,6 +796,7 @@ fn finish(db: &Connection, id: i64, owner: &str, rejected: bool) -> anyhow::Resu
         )?;
         anyhow::ensure!(changed == 1, "outbox lease was lost");
     }
+    set_busy_deadline(&tx, deadline)?;
     tx.commit()?;
     Ok(())
 }
@@ -757,14 +810,22 @@ fn report_storage_error(error: &anyhow::Error) {
 }
 
 fn storage_error(error: anyhow::Error) -> CallError {
-    report_storage_error(&error);
+    // Contention leaves the row intact and is not a failed durable write.
+    let busy = error.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
+        matches!(
+            e.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    });
+    if !busy {
+        report_storage_error(&error);
+    }
     CallError::Storage(error.to_string())
 }
 
 /// Import old files transactionally. A source/line identity prevents duplicates
 /// if a process dies after commit but before removing the source file.
-fn import_legacy(db: &Connection) -> anyhow::Result<()> {
-    let dir = spool_dir();
+fn import_legacy(db: &Connection, dir: &Path) -> anyhow::Result<()> {
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -772,7 +833,7 @@ fn import_legacy(db: &Connection) -> anyhow::Result<()> {
         .mode(0o600)
         .open(dir.join("import.lock"))?;
     lock.lock()?;
-    for item in fs::read_dir(&dir)? {
+    for item in fs::read_dir(dir)? {
         let item = item?;
         let name = item.file_name().to_string_lossy().into_owned();
         if name != "pending.jsonl" && !name.starts_with("flushing-") {
@@ -1108,6 +1169,61 @@ mod tests {
             .query_row("SELECT state FROM outbox WHERE id=?1", [id], |r| r.get(0))
             .unwrap();
         assert_eq!(state, "leased");
+    }
+
+    #[test]
+    fn bounded_flush_skips_a_locked_legacy_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.path().join("import.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        let entry = serde_json::to_string(&sample_entry()).unwrap();
+        fs::write(dir.path().join("pending.jsonl"), format!("{entry}\n")).unwrap();
+        let start = Instant::now();
+        let db = prepare_flush(dir.path(), Some(start + Duration::from_millis(100)))
+            .unwrap()
+            .unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(claim(&db, "hook").unwrap().is_none());
+        assert!(dir.path().join("pending.jsonl").exists());
+        drop(lock);
+        drop(db);
+        let db = prepare_flush(dir.path(), None).unwrap().unwrap();
+        assert!(claim(&db, "explicit").unwrap().is_some());
+        assert!(!dir.path().join("pending.jsonl").exists());
+    }
+
+    #[test]
+    fn sqlite_open_and_acknowledgement_respect_the_flush_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = open_outbox_path(&path).unwrap();
+        let id = enqueue(&db, &sample_entry(), Some("worker")).unwrap();
+        db.execute_batch("BEGIN EXCLUSIVE;").unwrap();
+        let start = Instant::now();
+        assert!(prepare_flush(dir.path(), Some(start + Duration::from_millis(100))).is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        db.execute_batch("ROLLBACK;").unwrap();
+
+        let reader = open_outbox_path(&path).unwrap();
+        reader.execute_batch("BEGIN;").unwrap();
+        let _: i64 = reader
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        let start = Instant::now();
+        assert!(
+            finish_with_deadline(&db, id, "worker", false, Some(start + Duration::from_millis(100))).is_err()
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        reader.execute_batch("ROLLBACK;").unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM outbox WHERE id=?1", [id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "failed acknowledgement must keep the event");
     }
 
     /// M7.d: writers refused at the same moment, with the log trimming under
