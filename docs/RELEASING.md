@@ -113,3 +113,20 @@ of a preference set through that release. The earlier v0.1 format is retired;
 see `docs/V0.2.md` §5. A successful upgrade from v0.2.0 does not establish v0.1
 compatibility. Record the archive hash, checkout revision and platform with each
 verification.
+
+## When to cut the next release
+
+Publish a new preview when a verified user-facing fix changes the installed
+binary or embedded adapters, or when a new capability is ready for outside
+use. Run the candidate checks above and ship matching binaries and docs.
+Verification-only scripts and coverage records can be pushed without replacing
+the current preview.
+
+Before calling a release stable, exercise clean installation and setup, actual
+prompt capture, normal turn completion, and a model-invoked milestone tool in
+each advertised capture host. Record host versions, authentication/provider
+blockers, native versus emulated platforms, and unsupported capabilities.
+Retain preview status while important advertised paths remain unverified.
+A provider authentication failure is a coverage gap, not evidence that the
+adapter works or that it is broken. Do not relabel fixture-based tool tests as
+live-host verification.
