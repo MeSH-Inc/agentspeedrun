@@ -803,8 +803,40 @@ mod tests {
             let input = PathBuf::from(parts.next().unwrap());
             let output = PathBuf::from(parts.next().unwrap());
             let point = parts.next().unwrap();
+            let source = PathBuf::from(std::env::var_os("SPEEDRUN_RECOVERY_SOURCE").unwrap());
+            let project = PathBuf::from(std::env::var_os("SPEEDRUN_RECOVERY_PROJECT").unwrap());
+            let session = std::env::var("SPEEDRUN_RECOVERY_SESSION").unwrap();
             let mut kill = |p: &str| -> Result<()> {
                 if p == point {
+                    use std::io::Write;
+                    let mut hook = std::process::Command::new(std::env::current_exe()?)
+                        .args([
+                            "--exact",
+                            "recovery::tests::real_hook_processes_enqueue_during_recovery",
+                            "--quiet",
+                        ])
+                        .env("SPEEDRUN_RECOVERY_HOOK_CHILD", "1")
+                        .env("SPEEDRUN_HOME", &source)
+                        .env("HOME", &source)
+                        .env("SPEEDRUN_NO_AUTOSTART", "1")
+                        .env("SPEEDRUN_ADDR", "127.0.0.1:1")
+                        .current_dir(&project)
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .spawn()?;
+                    write!(
+                        hook.stdin.take().unwrap(),
+                        "{}",
+                        serde_json::json!({"prompt": "checkpoint fixture", "session_id": session})
+                    )?;
+                    ensure!(hook.wait()?.success(), "checkpoint hook failed");
+                    let db = Connection::open(source.join("spool/pending.sqlite3"))?;
+                    let count: i64 = db.query_row(
+                        "SELECT COUNT(*) FROM outbox WHERE json_extract(entry, '$.body.session_id')=?1",
+                        [&session],
+                        |row| row.get(0),
+                    )?;
+                    ensure!(count == 1, "checkpoint hook was not durably queued");
                     std::process::Command::new("kill")
                         .args(["-KILL", &std::process::id().to_string()])
                         .status()
@@ -832,6 +864,7 @@ mod tests {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker_source = source.clone();
+        let worker_project = project.clone();
         let (ready, wait_ready) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             use std::io::Write;
@@ -849,7 +882,7 @@ mod tests {
                     .env("HOME", &worker_source)
                     .env("SPEEDRUN_NO_AUTOSTART", "1")
                     .env("SPEEDRUN_ADDR", "127.0.0.1:1")
-                    .current_dir(&project)
+                    .current_dir(&worker_project)
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::null())
                     .spawn()
@@ -888,11 +921,25 @@ mod tests {
             for (i, point) in points.iter().enumerate() {
                 let output = root.path().join(format!("killed-{mode}-{i}"));
                 let spec = format!("{mode}|{}|{}|{point}", input.display(), output.display());
+                let session = format!("checkpoint-{mode}-{i}");
                 let status = std::process::Command::new(std::env::current_exe().unwrap())
                     .args(["--exact", "recovery::tests::process_death_at_every_checkpoint_preserves_inputs_and_never_clobbers", "--quiet"])
-                    .env("SPEEDRUN_RECOVERY_TEST_CHILD", spec).status().unwrap();
+                    .env("SPEEDRUN_RECOVERY_TEST_CHILD", spec)
+                    .env("SPEEDRUN_RECOVERY_SOURCE", &source)
+                    .env("SPEEDRUN_RECOVERY_PROJECT", &project)
+                    .env("SPEEDRUN_RECOVERY_SESSION", &session)
+                    .status().unwrap();
                 use std::os::unix::process::ExitStatusExt;
                 assert_eq!(status.signal(), Some(9), "{mode} {point}");
+                let db = Connection::open(source.join("spool/pending.sqlite3")).unwrap();
+                let accepted: i64 = db
+                    .query_row(
+                        "SELECT COUNT(*) FROM outbox WHERE json_extract(entry, '$.body.session_id')=?1",
+                        [&session],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(accepted, 1, "checkpoint hook lost after {mode} {point}");
                 if point.ends_with(".published") {
                     assert!(output.exists(), "published destination missing at {point}");
                     if mode == "create" {
@@ -933,7 +980,7 @@ mod tests {
         let count: i64 = db
             .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, hooks + 2); // fixture row and the pre-crash encrypted enqueue
+        assert_eq!(count, hooks + 42); // two fixture rows and 40 checkpoint hooks
         crate::client::validate_existing_outbox(&source.join("spool/pending.sqlite3")).unwrap();
     }
 
