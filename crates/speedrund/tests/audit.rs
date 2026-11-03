@@ -146,6 +146,7 @@ impl Daemon {
                 "project_id": project,
                 "project_root": null,
                 "category_id": "any-percent",
+                "category_version": 1,
                 "session_id": "s1",
                 "host": "test",
                 "model": null,

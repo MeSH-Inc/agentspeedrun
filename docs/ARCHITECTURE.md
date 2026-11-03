@@ -63,15 +63,14 @@ Derived events (verification, completion) use deterministic event ids
 (`<cause>:verify`, `<run>:completed`) and are re-derived on retries, so a
 crash between a claim and its verification heals on the next retry.
 
-Evidence checks can take seconds on the network, so they run outside the
-store lock: `Service::append` returns the claim plus a verification job,
-the HTTP layer runs it on the blocking pool (to completion, even if the
-client hangs up) and `finish_verification` appends `MilestoneVerified`.
-The response's `verification` field says what passed or why not. A failed
-check is not logged; the claim keeps its trust and claiming again re-checks.
-A verification finishing within 10 minutes of its claim is dated at the
-claim; a later one (a spooled claim replayed hours on) is dated when the
-evidence was actually checked.
+Evidence checks run outside the store lock. A checkable claim and its pending
+job are stored in the same SQLite transaction. Bounded workers persist each
+outcome and recover interrupted jobs at startup; stale results cannot verify
+a newer claim. `GET /v1/verifications/{event_id}` reports pending, checking,
+verified, failed, unavailable or stale, with the observed facts, scope and
+observer version. A later claim creates a new job. Verification finishing within
+10 minutes of its claim is dated at the claim; later checks are dated when the
+evidence was checked.
 
 A milestone's split is the clocks at the moment it first met its required trust.
 
@@ -88,15 +87,20 @@ sets `required_trust`. Verifiers (`speedrund/src/verify.rs`):
 | `stripe_event` | A Stripe event, charge, PaymentIntent, Checkout Session or invoice id, read back with the user's restricted live-mode key (`speedrun secret set stripe`): live mode, succeeded and captured, not refunded or disputed, paid after the speedrun started, and not paid from an email address that has committed to the repo (case, a `+tag` and Gmail dots are ignored; another address of the same person still passes). A refund above 10% of the captured amount, or a dispute, fails the check. An event is re-read through its payment object, so a refund made before the check counts; one made after it is not seen, because evidence is checked once, when it is claimed. |
 | `note`         | Context only, never proof. |
 
-Every attached item must pass. Some category keys also require a kind of
-evidence, whatever trust the claim was made with:
+Version 2 categories pin explicit verification policies. Semantic claims such
+as a working demo require a user assertion; commit existence does not prove
+the product works. Deployment, legal pages and payment policies check their
+specific evidence. The tests policy accepts a CI run or a locally observed test:
+`speedrun local-test -- <program> <args...>` runs argv without a shell in a
+trusted, clean project at a fixed HEAD. Attach its observation ID with
+`speedrun split tests-green --local-test <id>`. The full token is required to run commands;
+the daemon records attempt outcomes and exposes them at
+`GET /v1/runs/{run_id}/local-tests`. Local observations are not independent
+public certification. The commons reports capabilities it cannot independently
+check as unavailable and publishes its own scoped judgment.
 
-| Key | Needs |
-|-----|-------|
-| `deployed` | a `url` |
-| `legal-pages` | `url`s that together cover terms of service and a privacy policy, each with at least 200 words of server-rendered text |
-| `tests-green` | a `ci_run` |
-| `first-payment` | a `stripe_event` |
+Every attached checkable item must pass. Historical version 1 rules retain
+their original key-based requirements when read.
 
 Verifier fetches go out with a fixed user agent, a 15 s timeout and a 2 MB
 body cap; nothing fetched is stored, only the references the client sent.

@@ -1,0 +1,69 @@
+{
+  "id": "first-revenue",
+  "version": 2,
+  "name": "Time to first revenue",
+  "description": "First real payment from a real customer, taken soundly: deployed, secured, legally covered and compliant.",
+  "milestones": [
+    {
+      "key": "deployed",
+      "title": "Deployed and reachable",
+      "description": "Production deployment reachable by customers on a real domain with TLS.",
+      "required_trust": "evidence_verified",
+      "suggested_evidence": [
+        "url"
+      ],
+      "verification_policy": "deployment"
+    },
+    {
+      "key": "auth-and-data-protection",
+      "title": "Auth and data protection",
+      "description": "Authentication, authorization on every data path, secrets out of the repo, backups of user data.",
+      "required_trust": "self_declared",
+      "suggested_evidence": [
+        "git_commit",
+        "note"
+      ],
+      "verification_policy": "semantic_claim"
+    },
+    {
+      "key": "legal-pages",
+      "title": "Terms and privacy policy",
+      "description": "Terms of service and a privacy policy that matches actual data handling are published and linked at signup and checkout.",
+      "required_trust": "evidence_verified",
+      "suggested_evidence": [
+        "url"
+      ],
+      "verification_policy": "legal_pages"
+    },
+    {
+      "key": "payments-live",
+      "title": "Payments in live mode",
+      "description": "Payment provider account activated in live mode with business verification complete and refunds possible.",
+      "required_trust": "self_declared",
+      "suggested_evidence": [
+        "note"
+      ],
+      "verification_policy": "semantic_claim"
+    },
+    {
+      "key": "tax-compliance",
+      "title": "Tax and regulatory setup",
+      "description": "Sales tax / VAT collection configured for the jurisdictions sold into, and any sector-specific requirements identified.",
+      "required_trust": "self_declared",
+      "suggested_evidence": [
+        "note"
+      ],
+      "verification_policy": "semantic_claim"
+    },
+    {
+      "key": "first-payment",
+      "title": "First revenue",
+      "description": "A real customer, not the founder or a friend doing a favor, pays in live mode.",
+      "required_trust": "evidence_verified",
+      "suggested_evidence": [
+        "stripe_event"
+      ],
+      "verification_policy": "first_payment"
+    }
+  ]
+}

@@ -24,9 +24,25 @@ pub struct MilestoneTemplate {
     /// Evidence kinds that satisfy this milestone, as a hint to users and agents.
     #[serde(default)]
     pub suggested_evidence: Vec<String>,
+    /// Explicit verification rule. Absent only in historical rulesets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_policy: Option<VerificationPolicy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationPolicy {
+    SemanticClaim,
+    Deployment,
+    LegalPages,
+    LocalTestsOrCi,
+    FirstPayment,
 }
 
 const BUILTIN: &[&str] = &[
+    include_str!("../../../categories/any-percent-v2.json"),
+    include_str!("../../../categories/hundred-percent-v2.json"),
+    include_str!("../../../categories/first-revenue-v2.json"),
     include_str!("../../../categories/any-percent.json"),
     include_str!("../../../categories/hundred-percent.json"),
     include_str!("../../../categories/first-revenue.json"),
@@ -60,7 +76,7 @@ mod tests {
     #[test]
     fn builtins_parse_and_have_unique_keys() {
         let all = builtin().unwrap();
-        assert_eq!(all.len(), 3);
+        assert_eq!(all.len(), 6);
         for c in &all {
             let mut keys: Vec<_> = c.milestones.iter().map(|m| &m.key).collect();
             keys.sort();
@@ -68,5 +84,19 @@ mod tests {
             assert_eq!(keys.len(), c.milestones.len(), "duplicate key in {}", c.id);
         }
         assert!(find(&all, DEFAULT_CATEGORY, None).is_some());
+    }
+
+    #[test]
+    fn historical_rulesets_keep_their_canonical_digest() {
+        for json in &BUILTIN[..3] {
+            let original: serde_json::Value = serde_json::from_str(json).unwrap();
+            let category: Category = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                digest(&category).unwrap(),
+                crate::hash::canonical_digest(&original)
+            );
+        }
+        let all = builtin().unwrap();
+        assert_eq!(find(&all, DEFAULT_CATEGORY, None).unwrap().version, 2);
     }
 }

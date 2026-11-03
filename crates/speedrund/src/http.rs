@@ -4,7 +4,7 @@
 //! for the read-only live routes, which never expose prompts.
 
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration as StdDuration;
 
 use axum::{
@@ -126,8 +126,13 @@ pub fn router(state: AppState, cors_origins: &[String]) -> Router {
         .route("/v1/projects/{project_id}/events", post(append_to_project))
         .route("/v1/runs/{run_id}", get(run))
         .route("/v1/runs/{run_id}/events", get(events))
+        .route("/v1/verifications/{event_id}", get(verification_status))
         .route_layer(middleware::from_fn_with_state(state.clone(), participant_auth));
     let api = Router::new()
+        .route(
+            "/v1/runs/{run_id}/local-tests",
+            post(crate::local_test::run).get(local_test_attempts),
+        )
         .route("/v1/device", get(device))
         .route("/v1/link-claims", post(link_claim))
         .route("/v1/prompts", post(record_prompt))
@@ -387,23 +392,90 @@ async fn finish_append(
     let Some(job) = job else {
         return Ok(Json(response));
     };
-    let (service, verifier) = (s.service.clone(), s.verifier.clone());
-    let (outcome, derived) = tokio::task::spawn_blocking(move || {
-        let outcome = verifier.verify(&job);
-        let mut guard = service.lock().unwrap_or_else(|p| p.into_inner());
-        let derived = guard.finish_verification(&job, &outcome);
-        (outcome, derived)
-    })
-    .await
-    .map_err(|e| Error::Internal(e.into()))?;
-    let derived = derived?;
+    let task_state = s.clone();
+    let task = tokio::spawn(async move {
+        let id = job.cause_event_id.clone();
+        let claim_id = id.clone();
+        if !blocking(&task_state, move |svc| svc.start_verification_job(&claim_id)).await? {
+            return Ok(None);
+        }
+        let result = run_verification(task_state.clone(), job).await;
+        if result.is_err() {
+            let _ = blocking(&task_state, move |svc| svc.retry_verification_job(&id)).await;
+        }
+        result.map(Some)
+    });
+    let Some((outcome, derived)) = task.await.map_err(|e| Error::Internal(e.into()))?? else {
+        let event_id = response.event.event_id.clone();
+        response.verification_job = Some(blocking(&s, move |svc| svc.verification_status(&event_id)).await?);
+        return Ok(Json(response));
+    };
     crate::logging::verification_failed(&outcome);
     if !derived.is_empty() {
         notify(&s);
     }
     response.derived.extend(derived);
     response.verification = Some(outcome.report());
+    let event_id = response.event.event_id.clone();
+    response.verification_job = Some(blocking(&s, move |svc| svc.verification_status(&event_id)).await?);
     Ok(Json(response))
+}
+
+fn verification_slots() -> &'static Arc<tokio::sync::Semaphore> {
+    static SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
+}
+
+async fn run_verification(
+    s: AppState,
+    job: speedrun_verify::Job,
+) -> Result<(speedrun_verify::Outcome, Vec<speedrun_core::Event>), Error> {
+    let _permit = verification_slots()
+        .acquire()
+        .await
+        .map_err(|e| Error::Internal(e.into()))?;
+    let (service, verifier) = (s.service.clone(), s.verifier.clone());
+    tokio::task::spawn_blocking(move || {
+        let mut outcome = verifier.verify(&job);
+        let mut guard = service.lock().unwrap_or_else(|p| p.into_inner());
+        let derived = guard.record_verification_job(&job, &mut outcome)?;
+        Ok((outcome, derived))
+    })
+    .await
+    .map_err(|e| Error::Internal(e.into()))?
+}
+
+pub fn start_verification_recovery(s: AppState) {
+    tokio::spawn(async move {
+        loop {
+            match blocking(&s, |svc| svc.take_verification_job()).await {
+                Ok(Some(job)) => {
+                    let id = job.cause_event_id.clone();
+                    if let Err(error) = run_verification(s.clone(), job).await {
+                        tracing::error!(?error, "verification job failed");
+                        if let Err(error) = blocking(&s, move |svc| svc.retry_verification_job(&id)).await {
+                            tracing::error!(?error, "could not reschedule verification job");
+                        }
+                        tokio::time::sleep(StdDuration::from_secs(1)).await;
+                    }
+                    notify(&s);
+                }
+                Ok(None) => tokio::time::sleep(StdDuration::from_secs(1)).await,
+                Err(error) => {
+                    tracing::error!(?error, "could not read verification jobs");
+                    tokio::time::sleep(StdDuration::from_secs(1)).await;
+                }
+            }
+        }
+    });
+}
+
+async fn verification_status(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    call(&s, move |svc| svc.verification_status(&id)).await
+}
+
+async fn local_test_attempts(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    call(&s, move |svc| svc.local_test_attempts(&id)).await
 }
 
 async fn active_run(State(s): State<AppState>, Path(project_id): Path<String>) -> impl IntoResponse {

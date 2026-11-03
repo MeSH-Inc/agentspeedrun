@@ -55,6 +55,7 @@ pub async fn publish(
     store: &Store,
     key: &SigningKey,
     verifier: &Verifier,
+    publishing: &tokio::sync::Mutex<()>,
     bundle: Bundle,
     body: String,
 ) -> Result<PublishReceipt, PublishError> {
@@ -62,23 +63,40 @@ pub async fn publish(
 
     // A digest already in the log is the same publication; answer it from the
     // stored judgment and leaf without validating or appending again.
-    if let Some(existing) = store.publication(&digest).await? {
-        return existing_receipt(store, existing).await;
+    {
+        let _guard = publishing.lock().await;
+        if let Some(existing) = store.publication(&digest).await? {
+            return existing_receipt(store, existing).await;
+        }
     }
 
     let validated = validate(&bundle)?;
-    let history = store.publication_history(&bundle.run_id).await?;
-    validate_continuity(&bundle, &validated, &history)?;
     let issued_at = Utc::now();
-    let milestones = match &validated.view {
+    let (milestones, local_completed, public_policy) = match &validated.view {
         // The verifier fetches over blocking HTTP; keep it off the async workers.
-        Some(view) => tokio::task::block_in_place(|| judge::judge(view, &validated.events, verifier)),
-        None => Vec::new(),
+        Some(view) => {
+            let (milestones, policy) =
+                tokio::task::block_in_place(|| judge::judge_policy(view, &validated.events, verifier));
+            (
+                milestones,
+                Some(view.status == speedrun_core::projection::RunStatus::Completed),
+                Some(policy),
+            )
+        }
+        None => (
+            Vec::new(),
+            None,
+            Some(speedrun_core::commons::PublicPolicyStatus::Unavailable {
+                reason: "tier 0 does not disclose events".into(),
+            }),
+        ),
     };
     let mut judgment = Judgment {
         bundle_digest: digest.clone(),
         run_id: bundle.run_id.clone(),
         milestones,
+        local_completed,
+        public_policy,
         verifier_pubkey: sign::pubkey_hex(key),
         issued_at,
         signature: String::new(),
@@ -88,6 +106,15 @@ pub async fn publish(
     judgment.signature = sign::sign_hash(key, &judgment_digest_value);
     let judgment_body =
         serde_json::to_string(&judgment).map_err(|error| PublishError::Internal(error.into()))?;
+
+    // History may have changed while evidence was being checked. Serialize the
+    // final idempotency and continuity checks with construction of the leaf.
+    let _guard = publishing.lock().await;
+    if let Some(existing) = store.publication(&digest).await? {
+        return existing_receipt(store, existing).await;
+    }
+    let history = store.publication_history(&bundle.run_id).await?;
+    validate_continuity(&bundle, &validated, &history)?;
 
     let leaves = store.leaf_hashes().await?;
     let leaf_index = u64::try_from(leaves.len()).map_err(|error| PublishError::Internal(error.into()))?;

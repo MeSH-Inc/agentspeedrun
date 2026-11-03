@@ -73,6 +73,24 @@ CREATE TABLE run_roots (
     project_root TEXT
 );
 "#,
+    r#"
+CREATE TABLE verification_jobs (
+    cause_event_id TEXT PRIMARY KEY REFERENCES events(event_id),
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    report TEXT
+);
+CREATE INDEX verification_jobs_pending ON verification_jobs(state, updated_at);
+CREATE TABLE local_test_observations (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    head TEXT NOT NULL,
+    body TEXT NOT NULL,
+    succeeded INTEGER NOT NULL
+);
+"#,
 ];
 
 pub struct Store {
@@ -86,6 +104,87 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn record_local_test(
+        &self,
+        id: &str,
+        run_id: &str,
+        project_id: &str,
+        head: &str,
+        body: &str,
+        succeeded: bool,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute("INSERT INTO local_test_observations (id, run_id, project_id, head, body, succeeded) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id) DO UPDATE SET body = excluded.body, succeeded = excluded.succeeded WHERE run_id = excluded.run_id AND project_id = excluded.project_id AND head = excluded.head", params![id, run_id, project_id, head, body, succeeded])?;
+        Ok(())
+    }
+
+    pub fn local_test_head(
+        &self,
+        id: &str,
+        run_id: &str,
+        project_id: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT head FROM local_test_observations WHERE id = ?1 AND run_id = ?2 AND project_id = ?3 AND succeeded = 1",
+                params![id, run_id, project_id],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+    pub fn local_test_attempts(&self, run_id: &str) -> rusqlite::Result<Vec<String>> {
+        let mut query = self.conn.prepare(
+            "SELECT body FROM local_test_observations WHERE run_id = ?1 ORDER BY rowid DESC LIMIT 100",
+        )?;
+        query.query_map([run_id], |row| row.get(0))?.collect()
+    }
+
+    pub fn recover_verification_jobs(&self) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE verification_jobs SET state = 'pending' WHERE state = 'running'",
+            [],
+        )?;
+        self.conn.execute("UPDATE local_test_observations SET body = json_set(body, '$.status.kind', 'interrupted'), succeeded = 0 WHERE json_extract(body, '$.status.kind') = 'running'", [])?;
+        Ok(())
+    }
+
+    pub fn next_verification_job(&self) -> rusqlite::Result<Option<String>> {
+        self.conn.execute(
+            "UPDATE verification_jobs SET state = 'pending' WHERE state = 'running' AND updated_at < ?1",
+            [(Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()],
+        )?;
+        self.conn.query_row("SELECT cause_event_id FROM verification_jobs WHERE state = 'pending' ORDER BY updated_at, cause_event_id LIMIT 1", [], |r| r.get(0)).optional()
+    }
+
+    pub fn start_verification_job(&self, id: &str) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute("UPDATE verification_jobs SET state = 'running', attempts = attempts + 1, updated_at = ?2 WHERE cause_event_id = ?1 AND state = 'pending'", params![id, Utc::now().to_rfc3339()])? == 1)
+    }
+
+    pub fn retry_verification_job(&self, id: &str) -> rusqlite::Result<()> {
+        self.conn.execute("UPDATE verification_jobs SET state = 'pending', updated_at = ?2 WHERE cause_event_id = ?1 AND state = 'running'", params![id, Utc::now().to_rfc3339()])?;
+        Ok(())
+    }
+
+    pub fn finish_verification_job(&self, id: &str, state: &str, report: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE verification_jobs SET state = ?2, report = ?3, updated_at = ?4 WHERE cause_event_id = ?1",
+            params![id, state, report, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn verification_job_status(
+        &self,
+        id: &str,
+    ) -> rusqlite::Result<Option<(String, i64, Option<String>)>> {
+        self.conn
+            .query_row(
+                "SELECT state, attempts, report FROM verification_jobs WHERE cause_event_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+    }
+
     /// Open the database and the device key at `key_path`, which signs every
     /// event appended from now on. The device id is the fingerprint of the
     /// first key this database saw; it does not change when the key rotates.
@@ -621,6 +720,13 @@ pub struct Tx<'c> {
 }
 
 impl Tx<'_> {
+    pub fn enqueue_verification(&self, event_id: &str) -> rusqlite::Result<()> {
+        self.tx.execute(
+            "INSERT OR IGNORE INTO verification_jobs (cause_event_id, updated_at) VALUES (?1, ?2)",
+            params![event_id, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
     pub fn reader(&self) -> Reader<'_> {
         Reader(&self.tx)
     }

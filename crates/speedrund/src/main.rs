@@ -9,6 +9,7 @@ mod health;
 mod http;
 mod keys;
 mod link;
+mod local_test;
 mod logging;
 mod provenance;
 mod service;
@@ -54,19 +55,21 @@ async fn main() -> Result<()> {
         .filter(|o| !o.is_empty())
         .map(str::to_string)
         .collect();
-    let app = http::router(
-        http::AppState {
-            service: Arc::new(Mutex::new(service)),
-            token: Arc::new(token),
-            display_token: Arc::new(display_token),
-            agent_token: Arc::new(agent_token),
-            health: Arc::new(health),
-            verifier: Arc::new(speedrun_verify::Verifier::default()),
-            changes: Arc::new(tokio::sync::watch::channel(0).0),
-            shutdown: shutdown.clone(),
-        },
-        &cors_origins,
-    );
+    service
+        .recover_verification_jobs()
+        .map_err(|error| anyhow::anyhow!("recovering verification jobs: {error:?}"))?;
+    let state = http::AppState {
+        service: Arc::new(Mutex::new(service)),
+        token: Arc::new(token),
+        display_token: Arc::new(display_token),
+        agent_token: Arc::new(agent_token),
+        health: Arc::new(health),
+        verifier: Arc::new(speedrun_verify::Verifier::default()),
+        changes: Arc::new(tokio::sync::watch::channel(0).0),
+        shutdown: shutdown.clone(),
+    };
+    http::start_verification_recovery(state.clone());
+    let app = http::router(state, &cors_origins);
     let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown.clone().wait());
     shutdown.run(serve).await
 }

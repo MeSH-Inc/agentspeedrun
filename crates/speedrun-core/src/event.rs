@@ -301,6 +301,7 @@ pub enum Evidence {
     GitCommit { sha: String },
     Url { url: String },
     CiRun { url: String },
+    LocalTest { observation_id: String },
     StripeEvent { event_id: String },
     Note { text: String },
 }

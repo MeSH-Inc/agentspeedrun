@@ -35,6 +35,9 @@ pub struct MilestoneJudgment {
     /// Why the commons' verification failed. Empty when it passed or when the
     /// claim had no checkable evidence.
     pub problems: Vec<String>,
+    /// Facts independently observed by the commons, including unavailable capabilities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<crate::api::VerificationReport>,
 }
 
 /// A signed judgment of one bundle. Its milestones follow the run's
@@ -44,9 +47,23 @@ pub struct Judgment {
     pub bundle_digest: String,
     pub run_id: String,
     pub milestones: Vec<MilestoneJudgment>,
+    /// Completion recorded in the published local event log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_completed: Option<bool>,
+    /// Independent assessment against a known, pinned public ruleset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_policy: Option<PublicPolicyStatus>,
     pub verifier_pubkey: String,
     pub issued_at: DateTime<Utc>,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PublicPolicyStatus {
+    Completed,
+    Incomplete,
+    Unavailable { reason: String },
 }
 
 /// A signed tree head: the log's size and root at an instant.

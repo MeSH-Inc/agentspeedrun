@@ -1949,6 +1949,7 @@ dependencies = [
  "futures-util",
  "hex",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.1",

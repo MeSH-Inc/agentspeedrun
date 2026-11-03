@@ -23,7 +23,12 @@ pub mod git;
 use crate::git::{commit_time as git_commit_time, output as git_output};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use speedrun_core::{Evidence, api::VerificationReport, paths};
+use speedrun_core::category::VerificationPolicy;
+use speedrun_core::{
+    Evidence,
+    api::{VerificationFact, VerificationReport, VerificationScope, VerificationStatus},
+    paths,
+};
 
 /// At most this many network-checked items per claim.
 const MAX_REMOTE_EVIDENCE: usize = 6;
@@ -35,11 +40,16 @@ const MIN_LEGAL_WORDS: usize = 200;
 /// Everything a verification needs, captured under the store lock.
 #[derive(Debug, Clone)]
 pub struct Job {
+    pub scope: VerificationScope,
     pub run_id: String,
     pub cause_event_id: String,
     pub milestone_id: String,
     /// Category key, for predefined milestones.
     pub key: Option<String>,
+    /// Explicit ruleset policy; absent for historical category versions.
+    pub policy: Option<VerificationPolicy>,
+    /// Set only after the daemon validates the single referenced observation.
+    pub local_test_verified: bool,
     pub evidence: Vec<Evidence>,
     pub project_root: Option<String>,
     pub run_started_at: DateTime<Utc>,
@@ -60,6 +70,9 @@ impl Job {
 pub struct Outcome {
     pub verifiers: Vec<&'static str>,
     pub problems: Vec<String>,
+    pub scope: VerificationScope,
+    pub unavailable: bool,
+    pub facts: Vec<VerificationFact>,
 }
 
 impl Outcome {
@@ -72,6 +85,17 @@ impl Outcome {
             verified: self.verified(),
             verifier: self.verified().then(|| self.verifiers.join("+")),
             problems: self.problems.clone(),
+            scope: self.scope,
+            status: if self.verified() {
+                VerificationStatus::Verified
+            } else if self.unavailable {
+                VerificationStatus::Unavailable
+            } else {
+                VerificationStatus::Failed
+            },
+            facts: self.facts.clone(),
+            observer: "speedrun-verify".into(),
+            observer_version: env!("CARGO_PKG_VERSION").into(),
         }
     }
 }
@@ -178,6 +202,7 @@ fn kind(ev: &Evidence) -> &'static str {
         Evidence::GitCommit { .. } => "git_commit",
         Evidence::Url { .. } => "url",
         Evidence::CiRun { .. } => "ci_run",
+        Evidence::LocalTest { .. } => "local_test",
         Evidence::StripeEvent { .. } => "stripe_event",
         Evidence::Note { .. } => "note",
     }
@@ -186,8 +211,46 @@ fn kind(ev: &Evidence) -> &'static str {
 impl Verifier {
     /// Check every piece of evidence. `note` evidence is context, not proof.
     pub fn verify(&self, job: &Job) -> Outcome {
-        let mut out = Outcome::default();
-        if let Some((needed, what)) = required_kind(job.key.as_deref())
+        let mut out = Outcome {
+            scope: job.scope,
+            ..Outcome::default()
+        };
+        let legacy_key = job.key.as_deref();
+        let policy_key = match job.policy {
+            Some(VerificationPolicy::SemanticClaim) => {
+                out.problems.push(
+                    "this milestone requires a semantic claim; attached evidence alone cannot verify it"
+                        .into(),
+                );
+                return out;
+            }
+            Some(VerificationPolicy::Deployment) => Some("deployed"),
+            Some(VerificationPolicy::LegalPages) => Some("legal-pages"),
+            Some(VerificationPolicy::LocalTestsOrCi) => Some("tests-green"),
+            Some(VerificationPolicy::FirstPayment) => Some("first-payment"),
+            None => legacy_key,
+        };
+        let local_count = job
+            .evidence
+            .iter()
+            .filter(|e| matches!(e, Evidence::LocalTest { .. }))
+            .count();
+        if local_count > 1 {
+            out.problems
+                .push("at most one local test observation may be attached".into());
+        }
+        let local_or_ci = job.policy == Some(VerificationPolicy::LocalTestsOrCi);
+        if local_or_ci
+            && !job
+                .evidence
+                .iter()
+                .any(|e| matches!(e, Evidence::LocalTest { .. } | Evidence::CiRun { .. }))
+        {
+            out.problems
+                .push("this milestone requires a local test observation or CI run".into());
+        }
+        if !local_or_ci
+            && let Some((needed, what)) = required_kind(policy_key)
             && !job.evidence.iter().any(|e| kind(e) == needed)
         {
             out.problems.push(format!("this milestone is verified by {what}"));
@@ -195,7 +258,12 @@ impl Verifier {
         let remote = job
             .evidence
             .iter()
-            .filter(|e| !matches!(e, Evidence::Note { .. } | Evidence::GitCommit { .. }))
+            .filter(|e| {
+                !matches!(
+                    e,
+                    Evidence::Note { .. } | Evidence::GitCommit { .. } | Evidence::LocalTest { .. }
+                )
+            })
             .count();
         if remote > MAX_REMOTE_EVIDENCE {
             out.problems.push(format!(
@@ -204,10 +272,32 @@ impl Verifier {
             return out;
         }
 
-        let key = job.key.as_deref();
+        let key = policy_key;
         let deployed = job.deployed_url.as_deref();
         let mut legal = LegalCoverage::default();
         for ev in &job.evidence {
+            let unavailable = match ev {
+                Evidence::GitCommit { .. } | Evidence::CiRun { .. } => {
+                    job.scope == VerificationScope::Public || job.project_root.is_none()
+                }
+                Evidence::LocalTest { .. } => job.scope == VerificationScope::Public,
+                Evidence::StripeEvent { .. } => {
+                    let key = self.secrets.get("stripe");
+                    job.scope == VerificationScope::Public
+                        || key.is_none()
+                        || (job.project_root.is_none()
+                            && key
+                                .as_deref()
+                                .is_some_and(|k| k.starts_with("rk_live_") || k.starts_with("sk_live_")))
+                }
+                _ => false,
+            };
+            if unavailable {
+                out.unavailable = true;
+                out.problems
+                    .push(format!("{} verification is unavailable in this scope", kind(ev)));
+                continue;
+            }
             let (name, result) = match ev {
                 Evidence::Note { .. } => continue,
                 Evidence::GitCommit { sha } => (
@@ -219,16 +309,42 @@ impl Verifier {
                 ),
                 Evidence::Url { url } => ("url", self.check_url(url, key, deployed, &mut legal)),
                 Evidence::CiRun { url } => ("ci", self.check_ci(url, job)),
+                Evidence::LocalTest { .. } => (
+                    "local_test",
+                    if local_or_ci && local_count == 1 && job.local_test_verified {
+                        Ok(())
+                    } else {
+                        Err("local test observation could not be verified".into())
+                    },
+                ),
                 Evidence::StripeEvent { event_id } => ("stripe", self.check_stripe(event_id, job)),
             };
             match result {
-                Ok(()) => out.verifiers.push(name),
+                Ok(()) => {
+                    out.verifiers.push(name);
+                    let fact = match ev {
+                        Evidence::GitCommit { .. } => Some(VerificationFact::GitCommitInHistory),
+                        Evidence::Url { .. } if policy_key != Some("legal-pages") => {
+                            Some(VerificationFact::PublicUrlReachable)
+                        }
+                        Evidence::CiRun { .. } => Some(VerificationFact::CiRunPassed),
+                        Evidence::LocalTest { .. } => Some(VerificationFact::LocalTestsPassed),
+                        Evidence::StripeEvent { .. } => Some(VerificationFact::StripePaymentValid),
+                        _ => None,
+                    };
+                    if let Some(fact) = fact {
+                        out.facts.push(fact);
+                    }
+                }
                 Err(e) => out.problems.push(e),
             }
         }
         // Coverage only means something once every page loaded.
-        if job.key.as_deref() == Some("legal-pages") && out.problems.is_empty() {
+        if policy_key == Some("legal-pages") && out.problems.is_empty() {
             out.problems.extend(legal.missing());
+            if out.problems.is_empty() {
+                out.facts.push(VerificationFact::LegalPagesPresent);
+            }
         }
         out.verifiers.sort_unstable();
         out.verifiers.dedup();
@@ -1233,10 +1349,13 @@ mod tests {
 
     fn job(key: Option<&str>, root: Option<&str>, evidence: Vec<Evidence>) -> Job {
         Job {
+            scope: VerificationScope::Local,
             run_id: "r".into(),
             cause_event_id: "e".into(),
             milestone_id: key.unwrap_or("m").into(),
             key: key.map(str::to_string),
+            policy: None,
+            local_test_verified: false,
             evidence,
             project_root: root.map(str::to_string),
             run_started_at: DateTime::from_timestamp(1_000_000, 0).unwrap(),
@@ -1674,6 +1793,57 @@ mod tests {
             vec![Evidence::GitCommit { sha }],
         );
         assert!(verifier(Fake::default()).verify(&j).verified());
+    }
+
+    #[test]
+    fn semantic_policy_does_not_promote_git_metadata_to_proof() {
+        let (_d, root, sha) = repo();
+        let mut j = job(
+            Some("happy-path-demo"),
+            Some(&root),
+            vec![Evidence::GitCommit { sha }],
+        );
+        j.policy = Some(VerificationPolicy::SemanticClaim);
+        assert!(!verifier(Fake::default()).verify(&j).verified());
+    }
+
+    #[test]
+    fn local_test_reference_requires_trusted_validation() {
+        let mut j = job(
+            Some("tests-green"),
+            None,
+            vec![Evidence::LocalTest {
+                observation_id: "arbitrary".into(),
+            }],
+        );
+        j.policy = Some(VerificationPolicy::LocalTestsOrCi);
+        let v = verifier(Fake::default());
+        assert!(!v.verify(&j).verified());
+        j.local_test_verified = true;
+        assert!(v.verify(&j).verified());
+        j.evidence.push(Evidence::LocalTest {
+            observation_id: "other".into(),
+        });
+        assert!(!v.verify(&j).verified());
+    }
+
+    #[test]
+    fn public_scope_reports_local_observation_unavailable() {
+        let mut j = job(
+            Some("tests-green"),
+            None,
+            vec![Evidence::LocalTest {
+                observation_id: "obs".into(),
+            }],
+        );
+        j.policy = Some(VerificationPolicy::LocalTestsOrCi);
+        j.scope = VerificationScope::Public;
+        j.local_test_verified = true;
+        let report = verifier(Fake::default()).verify(&j).report();
+        assert_eq!(report.status, VerificationStatus::Unavailable);
+        assert_eq!(report.scope, VerificationScope::Public);
+        assert!(!report.verified);
+        assert!(report.facts.is_empty());
     }
 
     /// A passing GitHub Actions run, created in 2030, that tested `sha` of Acme/Shop.

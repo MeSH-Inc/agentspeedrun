@@ -32,6 +32,25 @@ const VERIFY_GRACE: Duration = Duration::minutes(10);
 const CLOCK: ClockWindow = ClockWindow::DAEMON;
 const MAX_ID_LEN: usize = 128;
 
+fn local_test_head_matches(root: &str, expected: &str) -> bool {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+    };
+    let Some(head) = git(&["rev-parse", "--verify", "HEAD^{commit}"]) else {
+        return false;
+    };
+    let Some(status) = git(&["status", "--porcelain", "--untracked-files=all"]) else {
+        return false;
+    };
+    String::from_utf8_lossy(&head.stdout).trim() == expected && status.stdout.is_empty()
+}
+
 #[derive(Debug)]
 pub enum Error {
     BadRequest(String),
@@ -449,6 +468,11 @@ impl Service {
             run.check(&payload).map_err(Error::Conflict)?;
             let at = CLOCK.clamp(req.occurred_at, Utc::now());
             let e = tx.insert(&req.run_id, &req.event_id, at, payload)?;
+            if let EventPayload::MilestoneReached { evidence, .. } = &e.payload
+                && verify::Job::has_checkable_evidence(evidence)
+            {
+                tx.enqueue_verification(&e.event_id)?;
+            }
             Ok((e, true))
         })?;
 
@@ -476,6 +500,7 @@ impl Service {
                 inserted,
                 derived,
                 verification: None,
+                verification_job: None,
             },
             job,
         })
@@ -570,16 +595,176 @@ impl Service {
             return Ok(None); // Already verified, or invalidated since.
         };
         Ok(Some(verify::Job {
+            scope: speedrun_core::api::VerificationScope::Local,
             run_id: cause.run_id.clone(),
             cause_event_id: cause.event_id.clone(),
             milestone_id: milestone_id.clone(),
             key: m.key.clone(),
+            policy: category::find(&self.categories, &run.category_id, Some(run.category_version))
+                .and_then(|c| {
+                    c.milestones
+                        .iter()
+                        .find(|template| Some(&template.key) == m.key.as_ref())
+                })
+                .and_then(|template| template.verification_policy),
+            local_test_verified: evidence
+                .iter()
+                .find_map(|item| match item {
+                    Evidence::LocalTest { observation_id } => Some(observation_id),
+                    _ => None,
+                })
+                .and_then(|id| {
+                    self.store
+                        .local_test_head(id, &run.run_id, &run.project_id)
+                        .ok()
+                        .flatten()
+                })
+                .is_some_and(|head| {
+                    run.project_root
+                        .as_deref()
+                        .is_some_and(|root| local_test_head_matches(root, &head))
+                }),
             evidence: evidence.clone(),
             project_root: run.project_root.clone(),
             run_started_at: run.started_at,
             claimed_at: cause.occurred_at,
             deployed_url: deployed_url(&run),
         }))
+    }
+
+    pub fn recover_verification_jobs(&self) -> Result<()> {
+        self.store.recover_verification_jobs()?;
+        Ok(())
+    }
+
+    pub fn record_local_test_attempt(
+        &mut self,
+        observation: &crate::local_test::TestObservation,
+    ) -> Result<()> {
+        let run = self.run(&observation.run_id)?;
+        if run.project_id != observation.project_id {
+            return Err(Error::Conflict("run changed while the test was running".into()));
+        }
+        let body = serde_json::to_string(observation).map_err(|e| Error::Internal(e.into()))?;
+        self.store.record_local_test(
+            &observation.id,
+            &observation.run_id,
+            &observation.project_id,
+            &observation.head,
+            &body,
+            !run.closed && matches!(observation.status, crate::local_test::TestStatus::Success),
+        )?;
+        if run.closed {
+            return Err(Error::Conflict("run closed while the test was running".into()));
+        }
+        Ok(())
+    }
+
+    pub fn local_test_attempts(&self, run_id: &str) -> Result<Vec<speedrun_core::api::TestObservation>> {
+        self.run(run_id)?;
+        self.store
+            .local_test_attempts(run_id)?
+            .into_iter()
+            .map(|body| serde_json::from_str(&body).map_err(|error| Error::Internal(error.into())))
+            .collect()
+    }
+
+    pub fn start_verification_job(&self, id: &str) -> Result<bool> {
+        Ok(self.store.start_verification_job(id)?)
+    }
+
+    pub fn retry_verification_job(&self, id: &str) -> Result<()> {
+        self.store.retry_verification_job(id)?;
+        Ok(())
+    }
+
+    pub fn take_verification_job(&self) -> Result<Option<verify::Job>> {
+        while let Some(id) = self.store.next_verification_job()? {
+            if !self.store.start_verification_job(&id)? {
+                continue;
+            }
+            let cause = self
+                .store
+                .reader()
+                .event(&id)?
+                .ok_or_else(|| Error::Internal(anyhow::anyhow!("verification cause missing")))?;
+            if let Some(job) = self.verification_job(&cause)? {
+                return Ok(Some(job));
+            }
+            self.store.finish_verification_job(&id, "stale", "{}")?;
+        }
+        Ok(None)
+    }
+
+    pub fn record_verification_job(
+        &mut self,
+        job: &verify::Job,
+        outcome: &mut verify::Outcome,
+    ) -> Result<Vec<Event>> {
+        if job.local_test_verified {
+            let cause = self
+                .store
+                .reader()
+                .event(&job.cause_event_id)?
+                .ok_or_else(|| Error::Internal(anyhow::anyhow!("verification cause missing")))?;
+            if !self
+                .verification_job(&cause)?
+                .is_some_and(|current| current.local_test_verified)
+            {
+                outcome.problems.push(
+                    "the tested commit or clean working tree changed before verification finished".into(),
+                );
+            }
+        }
+        let current = RunView::claim_is_current(
+            &self.store.reader().run_events(&job.run_id)?,
+            &job.milestone_id,
+            &job.cause_event_id,
+        );
+        let derived = self.finish_verification(job, outcome)?;
+        let report = serde_json::to_string(&outcome.report()).map_err(|e| Error::Internal(e.into()))?;
+        self.store.finish_verification_job(
+            &job.cause_event_id,
+            if !current {
+                "stale"
+            } else if outcome.verified() {
+                "verified"
+            } else if outcome.unavailable {
+                "unavailable"
+            } else {
+                "failed"
+            },
+            &report,
+        )?;
+        Ok(derived)
+    }
+
+    pub fn verification_status(&self, id: &str) -> Result<speedrun_core::api::VerificationJobStatus> {
+        use speedrun_core::api::{VerificationJobState, VerificationJobStatus};
+        let (state, attempts, report) = self
+            .store
+            .verification_job_status(id)?
+            .ok_or_else(|| Error::NotFound(format!("verification {id}")))?;
+        let report = report
+            .filter(|r| r != "{}")
+            .map(|r| serde_json::from_str(&r))
+            .transpose()
+            .map_err(|e| Error::Internal(e.into()))?;
+        let state = match state.as_str() {
+            "pending" => VerificationJobState::Pending,
+            "running" => VerificationJobState::Checking,
+            "verified" => VerificationJobState::Verified,
+            "failed" => VerificationJobState::Failed,
+            "unavailable" => VerificationJobState::Unavailable,
+            "stale" => VerificationJobState::Stale,
+            _ => return Err(Error::Internal(anyhow::anyhow!("unknown verification job state"))),
+        };
+        Ok(VerificationJobStatus {
+            cause_event_id: id.to_owned(),
+            state,
+            attempts: u32::try_from(attempts).map_err(|e| Error::Internal(e.into()))?,
+            report,
+        })
     }
 
     /// Record a passed verification, and the completion it may cause.
@@ -1037,6 +1222,19 @@ mod tests {
     }
 
     #[test]
+    fn unpinned_prompt_uses_latest_namespaced_rules() {
+        let (mut s, _dir) = svc();
+        let run = s.record_prompt(prompt("latest")).unwrap().run_id;
+        let view = s.run(&run).unwrap();
+        assert_eq!(view.category_version, 2);
+        assert!(
+            view.milestones
+                .iter()
+                .all(|m| m.milestone_id.starts_with("any-percent@2/"))
+        );
+    }
+
+    #[test]
     fn retries_are_idempotent() {
         let (mut s, _d) = svc();
         let a = s.record_prompt(prompt("p1")).unwrap();
@@ -1080,6 +1278,182 @@ mod tests {
         assert!(!retry.response.inserted);
         assert_eq!(retry.response.event, first.response.event);
         assert!(retry.job.is_none(), "a retry started a second check");
+    }
+
+    #[test]
+    fn verification_jobs_survive_restart_and_keep_failure_reports() {
+        use speedrun_core::api::VerificationJobState;
+        let (mut s, dir) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        s.append(AppendRequest {
+            event_id: "claim".into(),
+            run_id: run,
+            occurred_at: None,
+            payload: EventPayload::MilestoneReached {
+                milestone_id: "scaffold-runs".into(),
+                trust: Trust::SelfDeclared,
+                evidence: vec![Evidence::GitCommit { sha: "ab".repeat(20) }],
+                claimant: Claimant::User,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            s.verification_status("claim").unwrap().state,
+            VerificationJobState::Pending
+        );
+        let job = s.take_verification_job().unwrap().unwrap();
+        assert_eq!(
+            s.verification_status("claim").unwrap().state,
+            VerificationJobState::Checking
+        );
+        drop(s);
+        let mut s = open_in(&dir);
+        s.recover_verification_jobs().unwrap();
+        let retried = s.take_verification_job().unwrap().unwrap();
+        assert_eq!(retried.cause_event_id, job.cause_event_id);
+        let mut outcome = verify::Verifier::default().verify(&retried);
+        s.record_verification_job(&retried, &mut outcome).unwrap();
+        let status = s.verification_status("claim").unwrap();
+        assert_eq!(status.state, VerificationJobState::Failed);
+        assert_eq!(status.attempts, 2);
+        assert!(!status.report.unwrap().problems.is_empty());
+    }
+
+    #[test]
+    fn invented_local_test_observation_does_not_verify() {
+        let (mut s, _dir) = svc();
+        let mut p = prompt("p1");
+        p.category_id = "hundred-percent".into();
+        let run = s.record_prompt(p).unwrap().run_id;
+        let appended = s
+            .append(AppendRequest {
+                event_id: "claim".into(),
+                run_id: run,
+                occurred_at: None,
+                payload: EventPayload::MilestoneReached {
+                    milestone_id: "tests-green".into(),
+                    trust: Trust::SelfDeclared,
+                    evidence: vec![Evidence::LocalTest {
+                        observation_id: "invented".into(),
+                    }],
+                    claimant: Claimant::User,
+                },
+            })
+            .unwrap();
+        let job = appended.job.unwrap();
+        assert!(!job.local_test_verified);
+        assert!(!verify::Verifier::default().verify(&job).verified());
+    }
+
+    #[test]
+    fn interrupted_local_test_is_recorded_on_recovery() {
+        use speedrun_core::api::{TestObservation, TestStatus, VerificationScope};
+        let (mut s, dir) = svc();
+        let run = s.record_prompt(prompt("p1")).unwrap().run_id;
+        s.record_local_test_attempt(&TestObservation {
+            id: "attempt".into(),
+            run_id: run.clone(),
+            project_id: "proj".into(),
+            head: "abc".into(),
+            argv: vec!["test".into()],
+            status: TestStatus::Running,
+            observed_at: Utc::now(),
+            observer: "speedrund/local-test@1".into(),
+            scope: VerificationScope::Local,
+        })
+        .unwrap();
+        drop(s);
+        let s = open_in(&dir);
+        s.recover_verification_jobs().unwrap();
+        assert_eq!(
+            s.local_test_attempts(&run).unwrap()[0].status,
+            TestStatus::Interrupted
+        );
+        assert!(
+            s.store
+                .local_test_head("attempt", &run, "proj")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn local_test_observation_requires_matching_clean_commit() {
+        use speedrun_core::api::{TestObservation, TestStatus, VerificationScope};
+        let (mut s, dir) = svc();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        assert!(
+            git(&[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "initial"
+            ])
+            .status
+            .success()
+        );
+        let head = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        let mut p = prompt("p1");
+        p.category_id = "hundred-percent".into();
+        p.project_root = Some(repo.to_string_lossy().into_owned());
+        let run = s.record_prompt(p).unwrap().run_id;
+        s.record_local_test_attempt(&TestObservation {
+            id: "observed".into(),
+            run_id: run.clone(),
+            project_id: "proj".into(),
+            head,
+            argv: vec!["test".into()],
+            status: TestStatus::Success,
+            observed_at: Utc::now(),
+            observer: "speedrund/local-test@1".into(),
+            scope: VerificationScope::Local,
+        })
+        .unwrap();
+        let appended = s
+            .append(AppendRequest {
+                event_id: "claim".into(),
+                run_id: run,
+                occurred_at: None,
+                payload: EventPayload::MilestoneReached {
+                    milestone_id: "tests-green".into(),
+                    trust: Trust::SelfDeclared,
+                    evidence: vec![Evidence::LocalTest {
+                        observation_id: "observed".into(),
+                    }],
+                    claimant: Claimant::User,
+                },
+            })
+            .unwrap();
+        assert!(
+            verify::Verifier::default()
+                .verify(appended.job.as_ref().unwrap())
+                .verified()
+        );
+        std::fs::write(repo.join("untracked"), "changed").unwrap();
+        assert!(
+            !s.verification_job(&appended.response.event)
+                .unwrap()
+                .unwrap()
+                .local_test_verified
+        );
     }
 
     #[test]
@@ -1138,6 +1512,7 @@ mod tests {
 
         let mut p = prompt("p1");
         p.project_root = Some(repo.to_string_lossy().into());
+        p.category_version = Some(1); // Historical rules remain readable and verifiable.
         // The commit must be made during the run (audit A3-1), so the run starts before it.
         p.occurred_at = Some(Utc::now() - Duration::hours(1));
         let run = s.record_prompt(p).unwrap().run_id;
@@ -1275,10 +1650,12 @@ mod tests {
         let passed = verify::Outcome {
             verifiers: vec!["url"],
             problems: vec![],
+            ..Default::default()
         };
         let failed = verify::Outcome {
             verifiers: vec![],
             problems: vec!["down".into()],
+            ..Default::default()
         };
 
         let late = claim(&mut s, "late", Utc::now() - Duration::hours(1));
@@ -1319,6 +1696,7 @@ mod tests {
         let passed = verify::Outcome {
             verifiers: vec!["url"],
             problems: vec![],
+            ..Default::default()
         };
         let ev = s.finish_verification(&job, &passed).unwrap();
         assert_eq!(ev[0].occurred_at, at);
@@ -1438,6 +1816,7 @@ mod tests {
         let passed = verify::Outcome {
             verifiers: vec!["url"],
             problems: vec![],
+            ..Default::default()
         };
         assert!(s.finish_verification(&stale, &passed).unwrap().is_empty());
         let m = s.run(&run).unwrap();

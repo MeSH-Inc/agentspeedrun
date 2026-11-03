@@ -1,0 +1,28 @@
+{
+  "id": "any-percent",
+  "version": 2,
+  "name": "Any%",
+  "description": "Concept demo. The idea works end-to-end on the happy path; internals may be stubbed, mocked or hardcoded.",
+  "milestones": [
+    {
+      "key": "scaffold-runs",
+      "title": "Scaffold builds and runs",
+      "description": "The project builds and starts locally with no errors.",
+      "required_trust": "self_declared",
+      "suggested_evidence": [
+        "git_commit"
+      ],
+      "verification_policy": "semantic_claim"
+    },
+    {
+      "key": "happy-path-demo",
+      "title": "Happy-path demo",
+      "description": "The core concept can be demonstrated end-to-end on the happy path. Stubs and fakes are allowed.",
+      "required_trust": "self_declared",
+      "suggested_evidence": [
+        "note"
+      ],
+      "verification_policy": "semantic_claim"
+    }
+  ]
+}

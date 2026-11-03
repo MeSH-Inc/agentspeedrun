@@ -71,6 +71,8 @@ pub struct AppendResponse {
     /// Result of checking attached evidence, when there was any to check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<VerificationReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_job: Option<VerificationJobStatus>,
 }
 
 /// What the daemon's verifiers concluded about a claim's evidence. A failed
@@ -84,6 +86,94 @@ pub struct VerificationReport {
     /// Why it was not verified.
     #[serde(default)]
     pub problems: Vec<String>,
+    #[serde(default)]
+    pub scope: VerificationScope,
+    #[serde(default)]
+    pub status: VerificationStatus,
+    #[serde(default)]
+    pub facts: Vec<VerificationFact>,
+    #[serde(default)]
+    pub observer: String,
+    #[serde(default)]
+    pub observer_version: String,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationScope {
+    #[default]
+    Local,
+    Public,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStatus {
+    Verified,
+    #[default]
+    Failed,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VerificationJobStatus {
+    pub cause_event_id: String,
+    pub state: VerificationJobState,
+    pub attempts: u32,
+    pub report: Option<VerificationReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LocalTestRequest {
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TestObservation {
+    pub id: String,
+    pub run_id: String,
+    pub project_id: String,
+    pub head: String,
+    pub argv: Vec<String>,
+    pub status: TestStatus,
+    pub observed_at: DateTime<Utc>,
+    pub observer: String,
+    pub scope: VerificationScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TestStatus {
+    Running,
+    Interrupted,
+    Success,
+    Failed { exit_code: Option<i32> },
+    TimedOut,
+    ContextChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationJobState {
+    Pending,
+    Checking,
+    Verified,
+    Failed,
+    Unavailable,
+    Stale,
+}
+
+/// Only facts actually checked by the observer; these do not assert product semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationFact {
+    GitCommitInHistory,
+    PublicUrlReachable,
+    LegalPagesPresent,
+    CiRunPassed,
+    LocalTestsPassed,
+    StripePaymentValid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -149,6 +239,10 @@ pub struct Protocol {
     append_request: AppendRequest,
     project_append_request: ProjectAppendRequest,
     append_response: AppendResponse,
+    local_test_request: LocalTestRequest,
+    test_observation: TestObservation,
+    test_observations: Vec<TestObservation>,
+    verification_job_status: VerificationJobStatus,
     prompt_request: PromptRequest,
     prompt_response: PromptResponse,
     active_run_response: ActiveRunResponse,

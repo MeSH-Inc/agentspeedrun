@@ -110,9 +110,14 @@ impl Claim {
 
 pub fn format_verification(v: &VerificationReport) -> String {
     match &v.verifier {
-        Some(by) if v.verified => format!("Evidence verified ({by})."),
+        Some(by) if v.verified => format!(
+            "Evidence verified in {:?} scope ({by}); observed: {:?}.",
+            v.scope, v.facts
+        ),
         _ => format!(
-            "Evidence not verified; the claim keeps its trust. Fix and claim again:\n{}",
+            "Evidence check {:?} in {:?} scope; the claim keeps its trust:\n{}",
+            v.status,
+            v.scope,
             v.problems
                 .iter()
                 .map(|p| format!("  - {p}"))

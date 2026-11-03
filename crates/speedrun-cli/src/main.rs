@@ -109,6 +109,9 @@ enum Cmd {
         /// GitHub Actions run URL that passed on this project's history.
         #[arg(long)]
         ci: Option<String>,
+        /// ID returned by `speedrun local-test`.
+        #[arg(long)]
+        local_test: Option<String>,
         /// Stripe payment, charge, checkout session, invoice or event id
         /// (needs `speedrun secret set stripe`).
         #[arg(long)]
@@ -116,6 +119,18 @@ enum Cmd {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Run an explicit local test command and record its result.
+    LocalTest {
+        /// Command and arguments after --.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Show the status and result of a verification job.
+    Verification {
+        event_id: String,
+    },
+    /// Show recent local test attempts for the current run.
+    LocalTestHistory,
     /// Add your own milestone (accepted immediately).
     Add {
         title: String,
@@ -457,13 +472,14 @@ fn run(cmd: Cmd) -> Result<()> {
             commit,
             url,
             ci,
+            local_test,
             stripe,
             note,
         } => {
             let p = Project::require(&cwd)?;
             let run = ops::require_run(&c, &p)?;
             let milestone_id = ops::milestone_id(&run, &milestone)?;
-            let evidence = ops::Claim {
+            let mut evidence = ops::Claim {
                 commit,
                 urls: url,
                 ci,
@@ -471,6 +487,9 @@ fn run(cmd: Cmd) -> Result<()> {
                 note,
             }
             .evidence(&p)?;
+            if let Some(observation_id) = local_test {
+                evidence.push(speedrun_core::Evidence::LocalTest { observation_id });
+            }
             let resp = ops::append_now(
                 &Client::patient(),
                 &p,
@@ -483,8 +502,35 @@ fn run(cmd: Cmd) -> Result<()> {
             )?;
             if let Some(v) = &resp.verification {
                 println!("{}\n", ops::format_verification(v));
+            } else if let Some(job) = &resp.verification_job {
+                println!(
+                    "Evidence check {:?}; inspect with `speedrun verification {}`.\n",
+                    job.state, job.cause_event_id
+                );
             }
             print!("{}", ops::format_status(&ops::require_run(&c, &p)?));
+        }
+        Cmd::LocalTest { argv } => {
+            let p = Project::require(&cwd)?;
+            p.require_trusted()?;
+            let run = ops::require_run(&c, &p)?;
+            let response: serde_json::Value = Client::patient().post(
+                &format!("/v1/runs/{}/local-tests", run.run_id),
+                &serde_json::json!({"argv": argv}),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Cmd::Verification { event_id } => {
+            let status: speedrun_core::api::VerificationJobStatus =
+                c.get(&format!("/v1/verifications/{event_id}"))?;
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        }
+        Cmd::LocalTestHistory => {
+            let p = Project::require(&cwd)?;
+            let run = ops::require_run(&c, &p)?;
+            let attempts: Vec<speedrun_core::api::TestObservation> =
+                c.get(&format!("/v1/runs/{}/local-tests", run.run_id))?;
+            println!("{}", serde_json::to_string_pretty(&attempts)?);
         }
         Cmd::Add { title, description } => {
             let p = Project::require(&cwd)?;

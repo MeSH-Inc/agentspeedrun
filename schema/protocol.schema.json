@@ -16,6 +16,21 @@
     "append_response": {
       "$ref": "#/$defs/AppendResponse"
     },
+    "local_test_request": {
+      "$ref": "#/$defs/LocalTestRequest"
+    },
+    "test_observation": {
+      "$ref": "#/$defs/TestObservation"
+    },
+    "test_observations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TestObservation"
+      }
+    },
+    "verification_job_status": {
+      "$ref": "#/$defs/VerificationJobStatus"
+    },
     "prompt_request": {
       "$ref": "#/$defs/PromptRequest"
     },
@@ -52,6 +67,10 @@
     "append_request",
     "project_append_request",
     "append_response",
+    "local_test_request",
+    "test_observation",
+    "test_observations",
+    "verification_job_status",
     "prompt_request",
     "prompt_response",
     "active_run_response",
@@ -645,6 +664,22 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "local_test"
+            },
+            "observation_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "observation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "stripe_event"
             },
             "event_id": {
@@ -782,6 +817,16 @@
               "type": "null"
             }
           ]
+        },
+        "verification_job": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerificationJobStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -810,10 +855,247 @@
             "type": "string"
           },
           "default": []
+        },
+        "scope": {
+          "$ref": "#/$defs/VerificationScope",
+          "default": "local"
+        },
+        "status": {
+          "$ref": "#/$defs/VerificationStatus",
+          "default": "failed"
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VerificationFact"
+          },
+          "default": []
+        },
+        "observer": {
+          "type": "string",
+          "default": ""
+        },
+        "observer_version": {
+          "type": "string",
+          "default": ""
         }
       },
       "required": [
         "verified"
+      ]
+    },
+    "VerificationScope": {
+      "type": "string",
+      "enum": [
+        "local",
+        "public"
+      ]
+    },
+    "VerificationStatus": {
+      "type": "string",
+      "enum": [
+        "verified",
+        "failed",
+        "unavailable"
+      ]
+    },
+    "VerificationFact": {
+      "description": "Only facts actually checked by the observer; these do not assert product semantics.",
+      "type": "string",
+      "enum": [
+        "git_commit_in_history",
+        "public_url_reachable",
+        "legal_pages_present",
+        "ci_run_passed",
+        "local_tests_passed",
+        "stripe_payment_valid"
+      ]
+    },
+    "VerificationJobStatus": {
+      "type": "object",
+      "properties": {
+        "cause_event_id": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/VerificationJobState"
+        },
+        "attempts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "report": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerificationReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "cause_event_id",
+        "state",
+        "attempts"
+      ]
+    },
+    "VerificationJobState": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "checking",
+        "verified",
+        "failed",
+        "unavailable",
+        "stale"
+      ]
+    },
+    "LocalTestRequest": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "argv"
+      ]
+    },
+    "TestObservation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/TestStatus"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "observer": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/VerificationScope"
+        }
+      },
+      "required": [
+        "id",
+        "run_id",
+        "project_id",
+        "head",
+        "argv",
+        "status",
+        "observed_at",
+        "observer",
+        "scope"
+      ]
+    },
+    "TestStatus": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "running"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "interrupted"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "success"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            },
+            "exit_code": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "timed_out"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "context_changed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
       ]
     },
     "PromptRequest": {
@@ -1252,6 +1534,17 @@
             "type": "string"
           },
           "default": []
+        },
+        "verification_policy": {
+          "description": "Explicit verification rule. Absent only in historical rulesets.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerificationPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1259,6 +1552,16 @@
         "title",
         "description",
         "required_trust"
+      ]
+    },
+    "VerificationPolicy": {
+      "type": "string",
+      "enum": [
+        "semantic_claim",
+        "deployment",
+        "legal_pages",
+        "local_tests_or_ci",
+        "first_payment"
       ]
     },
     "ChainReport": {
