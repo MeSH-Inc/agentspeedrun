@@ -11,7 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add rustfmt clippy \
     && rustup target add wasm32-wasip2 x86_64-unknown-linux-musl
-ENV CI=true CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 NPM_CONFIG_UPDATE_NOTIFIER=false
+RUN useradd --create-home --uid 10001 --shell /bin/bash ci
+ENV HOME=/home/ci CARGO_HOME=/home/ci/.cargo \
+    CI=true CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 NPM_CONFIG_UPDATE_NOTIFIER=false
 WORKDIR /workspace
-COPY . .
+COPY --chown=ci:ci . .
+USER ci
 CMD ["bash", ".buildkite/run.sh"]
