@@ -73,6 +73,8 @@ missing, check that the correct host and project are selected, restart the host,
 and send another prompt. `speedrun flush` retries pending writes queued while the
 daemon was unavailable; it does not retry permanently rejected requests. See
 [troubleshooting](docs/TROUBLESHOOTING.md) for specific symptoms and recovery.
+If `doctor` reports spool write failures, some events may not have been queued;
+`flush` can retry only events that were saved successfully.
 
 The explicit adapter-only commands below remain available. Claude Code uses a
 plugin; VS Code's extension adds a display and tools while Copilot hooks capture

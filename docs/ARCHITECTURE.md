@@ -33,8 +33,13 @@ The CLI commits each durable request to its SQLite outbox before sending it.
 A flusher leases pending rows transactionally and retries expired leases after a
 crash. Unknown outcomes are retried with the original event ID and credential;
 acknowledged rows are removed and rejected rows are retained within a size cap.
-Storage failures are reported through the spool failure counter. Legacy JSONL
-spools are imported transactionally on an explicit `speedrun flush`; bounded
+The encrypted outbox uses SQLite WAL with `synchronous=FULL`, allowing recovery
+snapshots to overlap writers on the same host. Keep the database and its WAL
+together, or use the SQLite recovery snapshot; WAL requires a local filesystem
+shared by processes on one host. Fresh enqueues retry transient SQLite
+contention for up to five seconds. If an event still cannot be queued, the CLI
+attempts to increment the spool failure counter; hooks continue to exit successfully.
+Legacy JSONL spools are imported transactionally on an explicit `speedrun flush`; bounded
 hook flushes skip legacy imports to meet their deadline.
 
 ## Event log

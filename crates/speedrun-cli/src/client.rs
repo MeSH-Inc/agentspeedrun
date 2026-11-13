@@ -466,6 +466,9 @@ enum Delivery {
 /// event has been attempted. Hooks must return to their host quickly, so an
 /// entry this does not reach stays spooled for a later flush.
 const FLUSH_BUDGET: Duration = Duration::from_secs(3);
+// Keep the hook bounded while giving concurrent writers another chance to
+// durably enqueue its own event before any network request is attempted.
+const DURABLE_ENQUEUE_BUDGET: Duration = Duration::from_secs(5);
 
 impl Client {
     pub fn new() -> Self {
@@ -661,8 +664,15 @@ impl Client {
             body: body.clone(),
             credential: self.credential,
         };
-        let db = open_outbox().map_err(storage_error)?;
-        let id = enqueue(&db, &entry, Some(&owner)).map_err(storage_error)?;
+        let deadline = Instant::now() + DURABLE_ENQUEUE_BUDGET;
+        let dir = spool_dir();
+        let db = retry_sqlite_busy(deadline, || open_outbox_at(&dir, Some(deadline)))
+            .map_err(durable_storage_error)?;
+        let id = retry_sqlite_busy(deadline, || {
+            set_busy_deadline(&db, Some(deadline))?;
+            enqueue(&db, &entry, Some(&owner))
+        })
+        .map_err(durable_storage_error)?;
         let outcome = match self.ready() {
             Ok(()) => self.send("POST", path, Some(body), Delivery::Fresh, self.credential),
             Err(error) => Err(error),
@@ -875,10 +885,6 @@ pub(crate) fn test_enqueue_prompt(spool: &Path, id: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn open_outbox() -> anyhow::Result<Connection> {
-    open_outbox_at(&spool_dir(), None)
-}
-
 // A bounded hook flush never waits for the legacy import lock or performs an
 // unbounded file import. Explicit flushes still import before delivering.
 fn prepare_flush(dir: &Path, deadline: Option<Instant>) -> anyhow::Result<Option<Connection>> {
@@ -918,6 +924,47 @@ fn set_busy_deadline(db: &Connection, deadline: Option<Instant>) -> anyhow::Resu
     Ok(())
 }
 
+fn is_sqlite_busy(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
+        matches!(
+            e.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    })
+}
+
+fn retry_sqlite_busy<T>(
+    deadline: Instant,
+    mut action: impl FnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    loop {
+        match action() {
+            Err(error) if is_sqlite_busy(&error) && Instant::now() < deadline => {
+                std::thread::sleep(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(10)),
+                );
+            }
+            result => return result,
+        }
+    }
+}
+
+fn enable_outbox_wal(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<()> {
+    set_busy_deadline(db, deadline)?;
+    let mode: String = db.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        set_busy_deadline(db, deadline)?;
+        let mode: String = db.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        anyhow::ensure!(
+            mode.eq_ignore_ascii_case("wal"),
+            "outbox could not enter WAL mode"
+        );
+    }
+    Ok(())
+}
+
 fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> anyhow::Result<Connection> {
     let db = Connection::open(path)?;
     for statement in ["PRAGMA synchronous=FULL;", "PRAGMA secure_delete=ON;"] {
@@ -927,6 +974,7 @@ fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> any
     // Once initialized, opening an outbox needs no write lock. This matters
     // when another process is already claiming or acknowledging a message.
     if initialized_outbox_is_ready(&db, deadline)? {
+        enable_outbox_wal(&db, deadline)?;
         return Ok(db);
     }
     for statement in [
@@ -940,6 +988,9 @@ fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> any
         db.execute_batch(statement)?;
     }
     initialize_outbox_crypto(&db, path)?;
+    // Enter WAL only after any legacy plaintext has been encrypted and scrubbed.
+    // Recovery snapshots can then read without blocking fresh hook writes.
+    enable_outbox_wal(&db, deadline)?;
     Ok(db)
 }
 
@@ -1336,15 +1387,16 @@ fn report_storage_error(error: &anyhow::Error) {
 
 fn storage_error(error: anyhow::Error) -> CallError {
     // Contention leaves the row intact and is not a failed durable write.
-    let busy = error.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
-        matches!(
-            e.sqlite_error_code(),
-            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-        )
-    });
-    if !busy {
+    if !is_sqlite_busy(&error) {
         report_storage_error(&error);
     }
+    CallError::Storage(error.to_string())
+}
+
+fn durable_storage_error(error: anyhow::Error) -> CallError {
+    // Enqueue has not succeeded, so even a busy error may mean the event was
+    // never durably queued and must be included in the failure counter.
+    report_storage_error(&error);
     CallError::Storage(error.to_string())
 }
 
@@ -1438,18 +1490,32 @@ fn report_spool_write_error(action: &str, file: &Path, e: &std::io::Error) {
 }
 
 fn increment_spool_write_failures() -> std::io::Result<()> {
-    let path = spool_write_failures_path();
-    let next = read_count(&path)?.saturating_add(1);
+    increment_spool_write_failures_at(&spool_write_failures_path())
+}
+
+fn increment_spool_write_failures_at(path: &Path) -> std::io::Result<()> {
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path.with_file_name(".spool-write-failures.lock"))?;
+    lock.lock()?;
+    let next = read_count(path)?.saturating_add(1);
     let temp = path.with_file_name(format!(".spool-write-failures-{}.tmp", speedrun_core::new_id()));
     let mut file = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(&temp)?;
     write!(file, "{next}")?;
     file.sync_all()?;
-    fs::rename(&temp, &path)
+    fs::rename(&temp, path)?;
+    fs::File::open(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("counter has no parent"))?,
+    )?
+    .sync_all()
 }
 
 /// A capped log of refused spool entries. `append` is the only way to write
@@ -1814,6 +1880,11 @@ mod tests {
                 .windows(b"private prompt".len())
                 .any(|w| w == b"private prompt")
         );
+        let wal = fs::read(dir.path().join("pending.sqlite3-wal")).unwrap();
+        assert!(
+            !wal.windows(b"private prompt".len())
+                .any(|w| w == b"private prompt")
+        );
         let decoded = unprotect_entry(&db, serde_json::from_str(&stored).unwrap()).unwrap();
         assert_eq!(decoded.body["content"], "private prompt");
         let mut tampered: SpoolEntry = serde_json::from_str(&stored).unwrap();
@@ -1957,6 +2028,8 @@ mod tests {
                 .windows(b"legacy secret".len())
                 .any(|w| w == b"legacy secret")
         );
+        let wal = fs::read(dir.path().join("pending.sqlite3-wal")).unwrap();
+        assert!(!wal.windows(b"legacy secret".len()).any(|w| w == b"legacy secret"));
     }
 
     #[test]
@@ -2109,6 +2182,96 @@ mod tests {
     }
 
     #[test]
+    fn outbox_writer_commits_while_a_reader_holds_a_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = open_outbox_path(&path).unwrap();
+        let mode: String = db.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+        let synchronous: i64 = db.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
+        assert_eq!(mode, "wal");
+        assert_eq!(synchronous, 2, "commits must retain FULL synchronization");
+        enqueue(&db, &sample_entry(), None).unwrap();
+        let reader = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        reader.execute_batch("BEGIN;").unwrap();
+        let count: i64 = reader
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let worker_path = path.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = open_outbox_path(&worker_path).and_then(|db| enqueue(&db, &sample_entry(), None));
+            let _ = tx.send(result);
+        });
+        let while_reading = rx.recv_timeout(Duration::from_secs(5));
+        reader.execute_batch("ROLLBACK;").unwrap();
+        worker.join().unwrap();
+        while_reading.expect("writer blocked behind the reader").unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn durable_enqueue_retries_busy_without_duplicate_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let writer = open_outbox_path(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let worker_path = path.clone();
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = open_outbox_path(&worker_path).and_then(|db| {
+                retry_sqlite_busy(Instant::now() + Duration::from_secs(5), || {
+                    db.busy_timeout(Duration::from_millis(20))?;
+                    let _ = attempt_tx.send(());
+                    enqueue(&db, &sample_entry(), None)
+                })
+            });
+            let _ = result_tx.send(result);
+        });
+        let first = attempt_rx.recv_timeout(Duration::from_secs(3));
+        let second = attempt_rx.recv_timeout(Duration::from_secs(3));
+        writer.execute_batch("ROLLBACK;").unwrap();
+        let result = result_rx.recv_timeout(Duration::from_secs(5));
+        worker.join().unwrap();
+        first.expect("first enqueue attempt did not start");
+        second.expect("busy enqueue was not retried");
+        result.unwrap().unwrap();
+        let count: i64 = writer
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn concurrent_spool_write_failures_are_all_counted() {
+        const WORKERS: usize = 4;
+        const WRITES: usize = 5;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spool-write-failures");
+        let errors = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..WORKERS {
+                let path = &path;
+                let errors = &errors;
+                scope.spawn(move || {
+                    for _ in 0..WRITES {
+                        if let Err(error) = increment_spool_write_failures_at(path) {
+                            errors.lock().unwrap().push(error);
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        assert!(errors.into_inner().unwrap().is_empty());
+        assert_eq!(read_count(&path).unwrap(), (WORKERS * WRITES) as u64);
+    }
+
+    #[test]
     fn failed_rejection_does_not_discard_the_leased_entry() {
         let dir = tempfile::tempdir().unwrap();
         let db = open_outbox_path(&dir.path().join("test.sqlite")).unwrap();
@@ -2163,27 +2326,31 @@ mod tests {
         let path = dir.path().join("pending.sqlite3");
         let db = open_outbox_path(&path).unwrap();
         let id = enqueue(&db, &sample_entry(), Some("worker")).unwrap();
-        db.execute_batch("BEGIN EXCLUSIVE;").unwrap();
-        let start = Instant::now();
-        assert!(prepare_flush(dir.path(), Some(start + Duration::from_millis(100))).is_err());
-        assert!(start.elapsed() < Duration::from_secs(1));
-        db.execute_batch("ROLLBACK;").unwrap();
-
-        let reader = open_outbox_path(&path).unwrap();
-        reader.execute_batch("BEGIN;").unwrap();
-        let _: i64 = reader
-            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+        let writer = open_outbox_path(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        // WAL readers can open an initialized outbox while another writer is
+        // active, but acknowledgements still honor their write deadline.
+        let reader = prepare_flush(dir.path(), Some(Instant::now() + Duration::from_secs(5)))
+            .unwrap()
             .unwrap();
         let start = Instant::now();
         assert!(
-            finish_with_deadline(&db, id, "worker", false, Some(start + Duration::from_millis(100))).is_err()
+            finish_with_deadline(
+                &reader,
+                id,
+                "worker",
+                false,
+                Some(start + Duration::from_millis(100))
+            )
+            .is_err()
         );
-        assert!(start.elapsed() < Duration::from_secs(1));
-        reader.execute_batch("ROLLBACK;").unwrap();
-        let count: i64 = db
+        assert!(start.elapsed() < Duration::from_secs(5));
+        writer.execute_batch("ROLLBACK;").unwrap();
+        let count: i64 = reader
             .query_row("SELECT COUNT(*) FROM outbox WHERE id=?1", [id], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "failed acknowledgement must keep the event");
+        finish(&reader, id, "worker", false).unwrap();
     }
 
     /// M7.d: writers refused at the same moment, with the log trimming under

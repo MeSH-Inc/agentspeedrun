@@ -1096,6 +1096,20 @@ fn audit_m7_c_a_failed_spool_write_is_counted_and_doctor_shows_it() {
 }
 
 #[test]
+fn a_busy_initial_enqueue_is_counted_as_a_failed_spool_write() {
+    let machine = Machine::new();
+    assert!(machine.prompt("initialize the outbox").status.success());
+    let path = machine.data_dir().join("spool/pending.sqlite3");
+    let writer = rusqlite::Connection::open(path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    let blocked = machine.prompt("this write is blocked");
+    writer.execute_batch("ROLLBACK;").unwrap();
+    assert!(blocked.status.success(), "ingest must not break its host");
+    let (_, stdout) = machine.doctor();
+    assert!(has_line(&stdout, "spool write failures: 1"), "{stdout}");
+}
+
+#[test]
 fn audit_w4_a_doctor_explains_a_daemon_serving_another_data_dir() {
     // V0.2 W4: a hook run with a mismatched data dir spools and `doctor` explains why.
     let machine = Machine::new();
