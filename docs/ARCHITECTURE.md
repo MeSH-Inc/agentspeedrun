@@ -29,20 +29,25 @@ speedrund (daemon, 127.0.0.1:7477)
 
 `$SPEEDRUN_HOME` defaults to `$XDG_DATA_HOME/agentspeedrun` or `~/.local/share/agentspeedrun`.
 
-The CLI commits each durable request to its SQLite outbox before sending it.
-A flusher leases pending rows transactionally and retries expired leases after a
-crash. Unknown outcomes are retried with the original event ID and credential;
-acknowledged rows are removed and rejected rows are retained within a size cap.
-The encrypted outbox uses SQLite WAL with `synchronous=FULL`, allowing recovery
-snapshots to overlap writers on the same host. Keep the database and its WAL
-together, or use the SQLite recovery snapshot; WAL requires a local filesystem
-shared by processes on one host. Fresh enqueues retry transient SQLite
-contention for up to five seconds. Cold initialization and legacy plaintext
-scrubbing are serialized across processes; waiting for that lock uses the same
-deadline. If an event still cannot be queued, the CLI attempts to increment the
-spool failure counter; hooks continue to exit successfully.
-Legacy JSONL spools are imported transactionally on an explicit `speedrun flush`; bounded
-hook flushes skip legacy imports to meet their deadline.
+The CLI durably queues each request before sending it. An admission lock orders
+SQLite inserts and encrypted spill files: if SQLite is busy, a recovery snapshot
+is running, or an earlier spill awaits import, the request is written to an
+authenticated file instead. Later requests cannot bypass that spill. Flushers
+import the files in order before claiming rows; an import lock and stable source
+identity reconcile a crash between the SQLite commit and file removal. A directly
+admitted fresh request is still sent before the backlog; a spilled request joins
+the backlog. Active leases may be overtaken, and retries use the original event
+ID and credential. Failed lease transitions are saved as encrypted outcome files
+and replayed before new claims. Rejected rows retain their existing size cap.
+
+SQLite uses WAL with `synchronous=FULL`; the database, WAL, spill files, outcome
+files, and `spool/outbox.key` form the live outbox. Use a local filesystem shared
+by processes on one host, and use the recovery command for a consistent copy.
+Cold initialization and legacy plaintext scrubbing remain serialized and bounded.
+If neither SQLite nor a spill can save an event, the CLI attempts to increment the
+spool failure counter; hooks continue to exit successfully. Legacy JSONL spools
+are imported on an explicit `speedrun flush`; bounded hook flushes import only
+the new encrypted spill and outcome files.
 
 ## Event log
 

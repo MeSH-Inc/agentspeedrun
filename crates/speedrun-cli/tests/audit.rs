@@ -1135,7 +1135,7 @@ fn audit_m7_c_a_failed_spool_write_is_counted_and_doctor_shows_it() {
 }
 
 #[test]
-fn a_busy_initial_enqueue_is_counted_as_a_failed_spool_write() {
+fn a_busy_enqueue_is_encrypted_and_replayed_after_the_writer_releases() {
     let machine = Machine::new();
     assert!(machine.prompt("initialize the outbox").status.success());
     let path = machine.data_dir().join("spool/pending.sqlite3");
@@ -1145,7 +1145,28 @@ fn a_busy_initial_enqueue_is_counted_as_a_failed_spool_write() {
     writer.execute_batch("ROLLBACK;").unwrap();
     assert!(blocked.status.success(), "ingest must not break its host");
     let (_, stdout) = machine.doctor();
-    assert!(has_line(&stdout, "spool write failures: 1"), "{stdout}");
+    assert!(has_line(&stdout, "spooled: 2"), "{stdout}");
+    assert!(has_line(&stdout, "spool write failures: 0"), "{stdout}");
+    let sidecars: Vec<_> = std::fs::read_dir(machine.data_dir().join("spool"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("flushing-fast-"))
+        .collect();
+    assert_eq!(sidecars.len(), 1);
+    assert!(!contains(
+        &std::fs::read(sidecars[0].path()).unwrap(),
+        "this write is blocked"
+    ));
+    let daemon = RefusingDaemon::start(&machine);
+    let flushed = machine.speedrun(&["flush"], b"");
+    assert!(
+        flushed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&flushed.stderr)
+    );
+    let refused = daemon.refused();
+    assert_eq!(refused.len(), 2);
+    assert!(refused.iter().any(|body| contains(body, "this write is blocked")));
 }
 
 #[test]

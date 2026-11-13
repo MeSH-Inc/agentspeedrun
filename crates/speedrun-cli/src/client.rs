@@ -26,6 +26,8 @@ use speedrun_core::{
     paths,
 };
 
+pub(crate) mod ingress;
+
 #[derive(Debug)]
 pub enum CallError {
     /// The daemon could not be reached (not running, or no token yet).
@@ -94,6 +96,8 @@ pub enum SpoolReason {
     Undelivered,
     /// It was sent but not answered in time, so the daemon may hold it already.
     DeliveryUnknown,
+    /// The local queue was busy; replay may already have delivered the entry.
+    Deferred,
 }
 
 impl SpoolReason {
@@ -388,7 +392,7 @@ pub(crate) fn spool_stats() -> std::io::Result<SpoolStats> {
                 let flushing = entry
                     .file_name()
                     .to_str()
-                    .is_some_and(|name| name.starts_with("flushing-"));
+                    .is_some_and(|name| name.starts_with("flushing-") && !ingress::is_outcome(name));
                 if flushing && entry.file_type()?.is_file() {
                     spooled = spooled.saturating_add(count_lines(&entry.path())?);
                 }
@@ -466,8 +470,7 @@ enum Delivery {
 /// event has been attempted. Hooks must return to their host quickly, so an
 /// entry this does not reach stays spooled for a later flush.
 const FLUSH_BUDGET: Duration = Duration::from_secs(3);
-// Keep the hook bounded while giving concurrent writers another chance to
-// durably enqueue its own event before any network request is attempted.
+// Bound initialization and admission before any event body is sent.
 const DURABLE_ENQUEUE_BUDGET: Duration = Duration::from_secs(5);
 
 impl Client {
@@ -646,11 +649,10 @@ impl Client {
         self.send("POST", path, Some(body), Delivery::Fresh, self.credential)
     }
 
-    /// POST that must not be lost. The fresh event goes out before the spool:
-    /// verify the daemon, attempt this write, then flush the backlog for at
-    /// most [`FLUSH_BUDGET`]. Entries the budget does not reach stay spooled,
-    /// in order. When the daemon has not proved the token, the write is
-    /// spooled without a flush because there is no proven base to deliver to.
+    /// Commit a durable request before delivery. When admitted directly, the
+    /// fresh event goes out before a bounded backlog flush. If admission spills,
+    /// it joins the ordered backlog and a bounded flush is attempted only after
+    /// the daemon proves its identity.
     pub fn post_durable<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -668,11 +670,19 @@ impl Client {
         let dir = spool_dir();
         let db = retry_sqlite_busy(deadline, || open_outbox_at(&dir, Some(deadline)))
             .map_err(durable_storage_error)?;
-        let id = retry_sqlite_busy(deadline, || {
-            set_busy_deadline(&db, Some(deadline))?;
-            enqueue(&db, &entry, Some(&owner))
-        })
-        .map_err(durable_storage_error)?;
+        let id = match ingress::admit(&db, &dir, &entry, &owner, deadline).map_err(durable_storage_error)? {
+            ingress::Admission::Leased(id) => id,
+            ingress::Admission::Deferred => {
+                return match self.ready() {
+                    Ok(()) => {
+                        let _ = self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
+                        Ok(Durable::Spooled(SpoolReason::Deferred))
+                    }
+                    Err(error) if error.should_spool() => Ok(Durable::Spooled(SpoolReason::of(&error))),
+                    Err(error) => Err(error),
+                };
+            }
+        };
         let outcome = match self.ready() {
             Ok(()) => self.send("POST", path, Some(body), Delivery::Fresh, self.credential),
             Err(error) => Err(error),
@@ -680,7 +690,7 @@ impl Client {
         match outcome {
             Ok(value) => {
                 if let Err(error) = finish(&db, id, &owner, false) {
-                    report_storage_error(&error);
+                    preserve_outcome(&db, &dir, id, &owner, ingress::Transition::Accepted, &error);
                 }
                 let _ = self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
                 Ok(Durable::Recorded(value))
@@ -690,13 +700,24 @@ impl Client {
                 // near-zero busy timeout. Give the release its normal bounded
                 // timeout so a transient writer does not strand the lease.
                 if let Err(storage) = release_after_fresh_attempt(&db, id, &owner) {
-                    report_storage_error(&storage);
+                    preserve_outcome(&db, &dir, id, &owner, ingress::Transition::Release, &storage);
                 }
                 Ok(Durable::Spooled(SpoolReason::of(&error)))
             }
             Err(error) => {
                 if let Err(storage) = finish_rejected(&db, id, &owner, &error, None) {
-                    report_storage_error(&storage);
+                    let status = match error {
+                        CallError::Api { status, .. } => Some(status),
+                        _ => None,
+                    };
+                    preserve_outcome(
+                        &db,
+                        &dir,
+                        id,
+                        &owner,
+                        ingress::Transition::Rejected(status),
+                        &storage,
+                    );
                 }
                 Err(error)
             }
@@ -803,7 +824,8 @@ impl Client {
     /// Claim one outbox row at a time. Expired leases are recoverable after
     /// crashes; event IDs make an uncertain delivery safe to replay.
     pub fn flush_spool(&self, deadline: Option<Instant>) -> Result<usize, CallError> {
-        let Some(db) = prepare_flush(&spool_dir(), deadline).map_err(storage_error)? else {
+        let dir = spool_dir();
+        let Some(db) = prepare_flush(&dir, deadline).map_err(storage_error)? else {
             return Ok(0);
         };
         let owner = speedrun_core::new_id();
@@ -813,7 +835,9 @@ impl Client {
                 break;
             }
             set_busy_deadline(&db, deadline).map_err(storage_error)?;
-            let Some((id, entry)) = claim(&db, &owner).map_err(storage_error)? else {
+            let Some((id, entry)) =
+                ingress::claim_next(&db, &dir, &owner, deadline).map_err(storage_error)?
+            else {
                 break;
             };
             let outcome = self.send::<Value>(
@@ -825,15 +849,54 @@ impl Client {
             );
             match outcome {
                 Ok(_) => {
-                    finish_with_deadline(&db, id, &owner, false, deadline).map_err(storage_error)?;
+                    if let Err(error) = finish_with_deadline(&db, id, &owner, false, deadline) {
+                        ingress::preserve_transition(&db, &dir, id, &owner, ingress::Transition::Accepted)
+                            .map_err(storage_error)?;
+                        report_io_error(
+                            "defer outbox acknowledgement",
+                            &dir,
+                            &std::io::Error::other(error.to_string()),
+                        );
+                        delivered += 1;
+                        break;
+                    }
                     delivered += 1;
                 }
                 Err(error) if error.should_spool() => {
                     set_busy_deadline(&db, deadline).map_err(storage_error)?;
-                    release(&db, id, &owner).map_err(storage_error)?;
+                    if let Err(storage) = release(&db, id, &owner) {
+                        ingress::preserve_transition(&db, &dir, id, &owner, ingress::Transition::Release)
+                            .map_err(storage_error)?;
+                        report_io_error(
+                            "defer outbox release",
+                            &dir,
+                            &std::io::Error::other(storage.to_string()),
+                        );
+                    }
                     break;
                 }
-                Err(error) => finish_rejected(&db, id, &owner, &error, deadline).map_err(storage_error)?,
+                Err(error) => {
+                    if let Err(storage) = finish_rejected(&db, id, &owner, &error, deadline) {
+                        let status = match error {
+                            CallError::Api { status, .. } => Some(status),
+                            _ => None,
+                        };
+                        ingress::preserve_transition(
+                            &db,
+                            &dir,
+                            id,
+                            &owner,
+                            ingress::Transition::Rejected(status),
+                        )
+                        .map_err(storage_error)?;
+                        report_io_error(
+                            "defer outbox rejection",
+                            &dir,
+                            &std::io::Error::other(storage.to_string()),
+                        );
+                        break;
+                    }
+                }
             }
         }
         Ok(delivered)
@@ -863,9 +926,8 @@ fn transport_error(t: &ureq::Transport) -> CallError {
     }
 }
 
-// SQLite holds the only live copy until acknowledgement or durable rejection.
-// FULL synchronous mode and a transaction around each state transition protect
-// against process and power failure. A lease is longer than any request timeout.
+// SQLite rows and encrypted spill files are durable before delivery. FULL
+// synchronous mode protects SQLite transitions; a lease is longer than a request.
 const LEASE_SECONDS: i64 = 300;
 const REJECTED_LIMIT: i64 = 4 * 1024 * 1024;
 
@@ -886,6 +948,37 @@ pub(crate) fn test_enqueue_prompt(spool: &Path, id: &str) -> anyhow::Result<()> 
     };
     enqueue(&db, &entry, None)?;
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn test_admit_prompt(spool: &Path, id: &str) -> anyhow::Result<()> {
+    let db = open_outbox_at(spool, None)?;
+    let entry = SpoolEntry {
+        path: "/v1/prompts".into(),
+        body: serde_json::json!({"event_id": id, "content": "recovery fixture"}),
+        credential: Credential::Full,
+    };
+    if let ingress::Admission::Leased(id) = ingress::admit(
+        &db,
+        spool,
+        &entry,
+        "test",
+        Instant::now() + Duration::from_secs(10),
+    )? {
+        release(&db, id, "test")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn test_drain_prompt_ids(spool: &Path) -> anyhow::Result<Vec<String>> {
+    let db = open_outbox_at(spool, None)?;
+    let mut ids = Vec::new();
+    while let Some((id, entry)) = ingress::claim_next(&db, spool, "test-replay", None)? {
+        ids.push(entry.body["event_id"].as_str().unwrap().to_owned());
+        finish(&db, id, "test-replay", false)?;
+    }
+    Ok(ids)
 }
 
 // A bounded hook flush never waits for the legacy import lock or performs an
@@ -1438,6 +1531,21 @@ fn report_storage_error(error: &anyhow::Error) {
     );
 }
 
+fn preserve_outcome(
+    db: &Connection,
+    dir: &Path,
+    id: i64,
+    owner: &str,
+    transition: ingress::Transition,
+    original: &anyhow::Error,
+) {
+    if let Err(error) = ingress::preserve_transition(db, dir, id, owner, transition) {
+        report_storage_error(&anyhow::anyhow!(
+            "{original}; could not preserve outcome: {error}"
+        ));
+    }
+}
+
 fn storage_error(error: anyhow::Error) -> CallError {
     // Contention leaves the row intact and is not a failed durable write.
     if !is_sqlite_busy(&error) {
@@ -1470,7 +1578,9 @@ fn import_legacy(db: &Connection, dir: &Path) -> anyhow::Result<()> {
     for item in fs::read_dir(dir)? {
         let item = item?;
         let name = item.file_name().to_string_lossy().into_owned();
-        if name != "pending.jsonl" && name != "rejected.jsonl" && !name.starts_with("flushing-") {
+        if ingress::is_sidecar(&name)
+            || (name != "pending.jsonl" && name != "rejected.jsonl" && !name.starts_with("flushing-"))
+        {
             continue;
         }
         let bytes = fs::read(item.path())?;

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use chacha20poly1305::{
@@ -181,6 +181,12 @@ fn validate(dir: &Path) -> Result<()> {
     if expected.contains_key("spool/pending.sqlite3") {
         verify_sqlite(&dir.join("spool/pending.sqlite3"))?;
         crate::client::validate_existing_outbox(&dir.join("spool/pending.sqlite3"))?;
+    }
+    if expected.keys().any(|name| {
+        name.strip_prefix("spool/")
+            .is_some_and(crate::client::ingress::is_sidecar)
+    }) {
+        crate::client::ingress::validate_sidecars(&dir.join("spool"))?;
     }
     for name in ["prompt.key", "content.key"] {
         sign::parse_seed(&fs::read_to_string(dir.join(name))?).map_err(anyhow::Error::msg)?;
@@ -398,10 +404,20 @@ fn create_in_place(
             .truncate(false)
             .mode(0o600)
             .open(path)?;
-        f.try_lock().context("legacy spool import is busy")?;
+        ensure!(
+            crate::client::ingress::lock_until(&f, Some(Instant::now() + Duration::from_secs(2)))?,
+            "legacy spool import is busy"
+        );
         Some(f)
     } else {
         None
+    };
+    // While the import lock is held, new admissions use immutable spill files.
+    // Capture their names once so the bundle does not mix different points in time.
+    let sidecars = if import_lock.is_some() {
+        crate::client::ingress::snapshot_files(&spool)?
+    } else {
+        Vec::new()
     };
     private_dir(destination)?;
     let result = (|| -> Result<()> {
@@ -450,11 +466,15 @@ fn create_in_place(
                 if n == "outbox.key"
                     || n == "pending.jsonl"
                     || n == "rejected.jsonl"
-                    || n.starts_with("flushing-")
+                    || (n.starts_with("flushing-") && !crate::client::ingress::is_sidecar(n))
                 {
                     copy_file(&item.path(), &destination.join("spool").join(&name))?;
                     checkpoint(&format!("create.spool.{n}"))?;
                 }
+            }
+            for name in &sidecars {
+                copy_file(&spool.join(name), &destination.join("spool").join(name))?;
+                checkpoint(&format!("create.spool.{name}"))?;
             }
         }
         checkpoint("create.spool")?;
@@ -903,12 +923,8 @@ mod tests {
                         serde_json::json!({"prompt": "checkpoint fixture", "session_id": session})
                     )?;
                     ensure!(hook.wait()?.success(), "checkpoint hook failed");
-                    let db = Connection::open(source.join("spool/pending.sqlite3"))?;
-                    let count: i64 = db.query_row(
-                        "SELECT COUNT(*) FROM outbox WHERE json_extract(entry, '$.body.session_id')=?1",
-                        [&session],
-                        |row| row.get(0),
-                    )?;
+                    let count =
+                        crate::client::ingress::test_count_entries(&source.join("spool"), Some(&session))?;
                     ensure!(count == 1, "checkpoint hook was not durably queued");
                     std::process::Command::new("kill")
                         .args(["-KILL", &std::process::id().to_string()])
@@ -989,8 +1005,16 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(creates.len(), 20);
-        assert_eq!(restores.len(), 20);
+        let spill_count = creates
+            .iter()
+            .filter(|point| {
+                point.starts_with("create.spool.flushing-fast-")
+                    || point.starts_with("create.spool.flushing-outcome-")
+            })
+            .count();
+        assert_eq!(creates.len(), 20 + spill_count);
+        assert_eq!(restores.len(), 20 + spill_count);
+        let checkpoint_hooks = (creates.len() + restores.len()) as i64;
         for (mode, input, points) in [("create", &source, creates), ("restore", &bundle, restores)] {
             for (i, point) in points.iter().enumerate() {
                 let output = root.path().join(format!("killed-{mode}-{i}"));
@@ -1005,14 +1029,9 @@ mod tests {
                     .status().unwrap();
                 use std::os::unix::process::ExitStatusExt;
                 assert_eq!(status.signal(), Some(9), "{mode} {point}");
-                let db = Connection::open(source.join("spool/pending.sqlite3")).unwrap();
-                let accepted: i64 = db
-                    .query_row(
-                        "SELECT COUNT(*) FROM outbox WHERE json_extract(entry, '$.body.session_id')=?1",
-                        [&session],
-                        |row| row.get(0),
-                    )
-                    .unwrap();
+                let accepted =
+                    crate::client::ingress::test_count_entries(&source.join("spool"), Some(&session))
+                        .unwrap();
                 assert_eq!(accepted, 1, "checkpoint hook lost after {mode} {point}");
                 if point.ends_with(".published") {
                     assert!(output.exists(), "published destination missing at {point}");
@@ -1050,11 +1069,8 @@ mod tests {
         validate(&bundle).unwrap();
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let hooks = worker.join().unwrap();
-        let db = Connection::open(source.join("spool/pending.sqlite3")).unwrap();
-        let count: i64 = db
-            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, hooks + 42); // two fixture rows and 40 checkpoint hooks
+        let count = crate::client::ingress::test_count_entries(&source.join("spool"), None).unwrap();
+        assert_eq!(count, hooks + 2 + checkpoint_hooks); // two fixture rows plus one hook per checkpoint
         crate::client::validate_existing_outbox(&source.join("spool/pending.sqlite3")).unwrap();
     }
 
@@ -1094,6 +1110,79 @@ mod tests {
             .unwrap();
         assert_eq!(count, accepted + 1);
         restore(&bundle, &root.path().join("restored-concurrent")).unwrap();
+    }
+
+    #[test]
+    fn recovery_preserves_ordered_spills_and_excludes_later_admissions() {
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        let spool = source.join("spool");
+        fs::remove_file(spool.join("outbox.key")).unwrap();
+        crate::client::test_enqueue_prompt(&spool, "before-database").unwrap();
+        let lock = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(spool.join("import.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        crate::client::test_admit_prompt(&spool, "before-spill").unwrap();
+        drop(lock);
+        let bundle = root.path().join("ordered-bundle");
+        let mut admitted_after_cut = false;
+        create_with_checkpoints(&source, &bundle, &mut |point| {
+            if point == "create.outbox" {
+                crate::client::test_admit_prompt(&spool, "after-cut").unwrap();
+                admitted_after_cut = true;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(admitted_after_cut);
+        validate(&bundle).unwrap();
+        let restored = root.path().join("ordered-restored");
+        restore(&bundle, &restored).unwrap();
+        let ids = crate::client::test_drain_prompt_ids(&restored.join("spool")).unwrap();
+        assert_eq!(ids, ["pending-1", "before-database", "before-spill"]);
+        let live = crate::client::test_drain_prompt_ids(&spool).unwrap();
+        assert_eq!(
+            live,
+            ["pending-1", "before-database", "before-spill", "after-cut"]
+        );
+    }
+
+    #[test]
+    fn recovery_rejects_a_tampered_spill_even_with_updated_manifest_checksum() {
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        let spool = source.join("spool");
+        fs::remove_file(spool.join("outbox.key")).unwrap();
+        crate::client::test_enqueue_prompt(&spool, "initial").unwrap();
+        let lock = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(spool.join("import.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        crate::client::test_admit_prompt(&spool, "spill").unwrap();
+        drop(lock);
+        let bundle = root.path().join("tampered-bundle");
+        create(&source, &bundle).unwrap();
+        let mut manifest: Manifest =
+            serde_json::from_slice(&fs::read(bundle.join(MANIFEST)).unwrap()).unwrap();
+        let name = manifest
+            .files
+            .keys()
+            .find(|name| name.starts_with("spool/flushing-fast-"))
+            .unwrap()
+            .clone();
+        fs::write(bundle.join(&name), b"tampered\n").unwrap();
+        manifest
+            .files
+            .insert(name.clone(), sha256_hex(&fs::read(bundle.join(&name)).unwrap()));
+        fs::write(bundle.join(MANIFEST), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(validate(&bundle).is_err());
     }
 
     #[test]
