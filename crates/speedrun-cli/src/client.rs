@@ -951,10 +951,14 @@ fn retry_sqlite_busy<T>(
     }
 }
 
-fn enable_outbox_wal(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<()> {
+fn outbox_wal_enabled(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<bool> {
     set_busy_deadline(db, deadline)?;
     let mode: String = db.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
-    if !mode.eq_ignore_ascii_case("wal") {
+    Ok(mode.eq_ignore_ascii_case("wal"))
+}
+
+fn enable_outbox_wal(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<()> {
+    if !outbox_wal_enabled(db, deadline)? {
         set_busy_deadline(db, deadline)?;
         let mode: String = db.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
         anyhow::ensure!(
@@ -1009,8 +1013,7 @@ fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> any
     }
     // Once initialized, opening an outbox needs no write lock. This matters
     // when another process is already claiming or acknowledging a message.
-    if initialized_outbox_is_ready(&db, deadline)? {
-        enable_outbox_wal(&db, deadline)?;
+    if initialized_outbox_is_ready(&db, deadline)? && outbox_wal_enabled(&db, deadline)? {
         return Ok(db);
     }
     let _initialization = lock_outbox_initialization(path, deadline)?;
@@ -2086,6 +2089,24 @@ mod tests {
         drop(lock);
         let db = open_outbox_path(&path).unwrap();
         assert!(initialized_outbox_is_ready(&db, None).unwrap());
+    }
+
+    #[test]
+    fn switching_an_existing_outbox_to_wal_uses_the_initialization_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = open_outbox_path(&path).unwrap();
+        let mode: String = db
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        drop(db);
+        let lock = lock_outbox_initialization(&path, None).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        assert!(open_outbox_path_with_deadline(&path, Some(deadline)).is_err());
+        drop(lock);
+        let db = open_outbox_path(&path).unwrap();
+        assert!(outbox_wal_enabled(&db, None).unwrap());
     }
 
     #[test]
