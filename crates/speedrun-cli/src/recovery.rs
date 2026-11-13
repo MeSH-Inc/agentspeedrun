@@ -945,22 +945,31 @@ mod tests {
         let source = fault_source(root.path());
         fs::remove_file(source.join("spool/outbox.key")).unwrap();
         crate::client::test_enqueue_prompt(&source.join("spool"), "before-crashes").unwrap();
+        // Guarantee that spill publication is one of the crash checkpoints.
+        // Bound the number of background hooks below so the number of
+        // checkpoints cannot grow with machine speed or filesystem latency.
+        let import = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(source.join("spool/import.lock"))
+            .unwrap();
+        import.lock().unwrap();
+        crate::client::test_admit_prompt(&source.join("spool"), "before-spill-crashes").unwrap();
+        drop(import);
         let project = root.path().join("project");
         fs::create_dir_all(project.join(".speedrun")).unwrap();
         fs::write(project.join(".speedrun/project.json"), r#"{"project_id":"01KAUDITPROJECT0000000000","category_id":"any-percent","category_version":1,"created_at":"2026-11-01T00:00:00Z"}"#).unwrap();
         fs::write(source.join("trusted-projects.json"), serde_json::json!([{"project_id":"01KAUDITPROJECT0000000000","root":project.canonicalize().unwrap()}]).to_string()).unwrap();
         fs::write(source.join("token"), "fixture-token").unwrap();
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let _stop_on_drop = StopOnDrop(stop.clone());
-        let worker_stop = stop.clone();
         let worker_source = source.clone();
         let worker_project = project.clone();
-        let (ready, wait_ready) = std::sync::mpsc::channel();
+        let (request_hook, hook_requests) = std::sync::mpsc::channel::<()>();
+        let (hook_finished, wait_hook) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             use std::io::Write;
-            use std::sync::atomic::Ordering;
             let mut count = 0;
-            while !worker_stop.load(Ordering::SeqCst) {
+            while hook_requests.recv().is_ok() {
                 let mut hook = std::process::Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
@@ -985,20 +994,21 @@ mod tests {
                 .unwrap();
                 assert!(hook.wait().unwrap().success());
                 count += 1;
-                if count == 1 {
-                    ready.send(()).unwrap();
-                }
+                hook_finished.send(()).unwrap();
             }
             count
         });
-        wait_ready.recv().unwrap();
+        request_hook.send(()).unwrap();
+        wait_hook.recv().unwrap();
         let bundle = root.path().join("bundle");
         let mut creates = Vec::new();
+        request_hook.send(()).unwrap();
         create_with_checkpoints(&source, &bundle, &mut |p| {
             creates.push(p.to_owned());
             Ok(())
         })
         .unwrap();
+        wait_hook.recv().unwrap();
         let mut restores = Vec::new();
         restore_with_checkpoints(&bundle, &root.path().join("initial"), &mut |p| {
             restores.push(p.to_owned());
@@ -1012,6 +1022,8 @@ mod tests {
                     || point.starts_with("create.spool.flushing-outcome-")
             })
             .count();
+        assert!(spill_count >= 1, "encrypted spill checkpoint is missing");
+        assert!(spill_count <= 3, "background fixture traffic was not bounded");
         assert_eq!(creates.len(), 20 + spill_count);
         assert_eq!(restores.len(), 20 + spill_count);
         let checkpoint_hooks = (creates.len() + restores.len()) as i64;
@@ -1020,6 +1032,7 @@ mod tests {
                 let output = root.path().join(format!("killed-{mode}-{i}"));
                 let spec = format!("{mode}|{}|{}|{point}", input.display(), output.display());
                 let session = format!("checkpoint-{mode}-{i}");
+                request_hook.send(()).unwrap();
                 let status = std::process::Command::new(std::env::current_exe().unwrap())
                     .args(["--exact", "recovery::tests::process_death_at_every_checkpoint_preserves_inputs_and_never_clobbers", "--quiet"])
                     .env("SPEEDRUN_RECOVERY_TEST_CHILD", spec)
@@ -1027,6 +1040,7 @@ mod tests {
                     .env("SPEEDRUN_RECOVERY_PROJECT", &project)
                     .env("SPEEDRUN_RECOVERY_SESSION", &session)
                     .status().unwrap();
+                wait_hook.recv().unwrap();
                 use std::os::unix::process::ExitStatusExt;
                 assert_eq!(status.signal(), Some(9), "{mode} {point}");
                 let accepted =
@@ -1067,10 +1081,10 @@ mod tests {
             }
         }
         validate(&bundle).unwrap();
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(request_hook);
         let hooks = worker.join().unwrap();
         let count = crate::client::ingress::test_count_entries(&source.join("spool"), None).unwrap();
-        assert_eq!(count, hooks + 2 + checkpoint_hooks); // two fixture rows plus one hook per checkpoint
+        assert_eq!(count, hooks + 3 + checkpoint_hooks); // three fixtures plus one hook per checkpoint
         crate::client::validate_existing_outbox(&source.join("spool/pending.sqlite3")).unwrap();
     }
 
