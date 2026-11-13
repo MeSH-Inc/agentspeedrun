@@ -2027,7 +2027,7 @@ mod tests {
                     {
                         std::thread::yield_now();
                     }
-                    Err(error) => panic!("claim or acknowledgement failed: {error:#}"),
+                    Err(error) => panic!("outbox operation failed: {error:#}"),
                 }
             }
         }
@@ -2036,7 +2036,7 @@ mod tests {
                 let path = &path;
                 let ids = &ids;
                 scope.spawn(move || {
-                    let db = open_outbox_path(path).unwrap();
+                    let db = retry_busy(|| open_outbox_path(path));
                     let owner = format!("worker-{n}");
                     while let Some((id, _)) = retry_busy(|| claim(&db, &owner)) {
                         ids.lock().unwrap().push(id);
