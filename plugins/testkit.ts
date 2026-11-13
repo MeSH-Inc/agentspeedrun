@@ -35,6 +35,25 @@ export type SandboxOptions = {
   daemonEnv?: Record<string, string>;
 };
 
+/** Wait for this child, not an unrelated service that happens to use the port. */
+export async function waitForDaemon(daemon: ChildProcess, port: number, timeoutMs = 20_000): Promise<void> {
+  let spawnError: Error | undefined;
+  daemon.on("error", (error) => { spawnError = error; });
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    if (spawnError) throw new Error(`speedrund could not start: ${spawnError.message}`);
+    if (daemon.exitCode !== null || daemon.signalCode !== null) {
+      throw new Error(`speedrund exited before becoming healthy: ${daemon.exitCode ?? daemon.signalCode}`);
+    }
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/health`, { signal: AbortSignal.timeout(500) });
+      if (response.ok && (await response.json()).pid === daemon.pid) return;
+    } catch { /* The child may still be starting. */ }
+    await Bun.sleep(50);
+  }
+  throw new Error(`speedrund did not become healthy within ${timeoutMs}ms`);
+}
+
 export async function sandbox(options: SandboxOptions = {}): Promise<Sandbox> {
   const root = mkdtempSync(join(tmpdir(), "speedrun-adapter-"));
   const port = 20000 + Math.floor(Math.random() * 20000);
@@ -49,38 +68,38 @@ export async function sandbox(options: SandboxOptions = {}): Promise<Sandbox> {
     // A fixed GitHub token, so the verifier never asks `gh` for the user's own.
     env: { ...process.env, SPEEDRUN_GITHUB_TOKEN: "sandbox-token", ...options.daemonEnv },
   });
-  for (let i = 0; ; i++) {
-    try {
-      if ((await fetch(`http://127.0.0.1:${port}/v1/health`)).ok) break;
-    } catch {}
-    if (i > 50) throw new Error("speedrund did not start; run `cargo build` first");
-    await Bun.sleep(50);
+  try {
+    await waitForDaemon(daemon, port);
+    const project = join(root, "project");
+    const git = (...a: string[]) => execFileSync("git", ["-C", project, ...a], { stdio: "pipe" });
+    const commit = (message: string) =>
+      git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", message);
+    execFileSync("git", ["init", "-q", project]);
+    git("remote", "add", "origin", `https://github.com/${REPOSITORY}.git`);
+    commit("init");
+    const cli = (...args: string[]) => execFileSync(SPEEDRUN, args, { cwd: project, encoding: "utf8" });
+    cli("init", "--category", options.category ?? "any-percent");
+    return {
+      project,
+      cli,
+      commit,
+      head: () => git("rev-parse", "HEAD").toString().trim(),
+      status: () => JSON.parse(cli("status", "--json")),
+      events: () =>
+        cli("log")
+          .trim()
+          .split("\n")
+          .map((l) => JSON.parse(l)),
+      close: () => {
+        daemon.kill();
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    daemon.kill();
+    rmSync(root, { recursive: true, force: true });
+    throw error;
   }
-  const project = join(root, "project");
-  const git = (...a: string[]) => execFileSync("git", ["-C", project, ...a], { stdio: "pipe" });
-  const commit = (message: string) =>
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", message);
-  execFileSync("git", ["init", "-q", project]);
-  git("remote", "add", "origin", `https://github.com/${REPOSITORY}.git`);
-  commit("init");
-  const cli = (...args: string[]) => execFileSync(SPEEDRUN, args, { cwd: project, encoding: "utf8" });
-  cli("init", "--category", options.category ?? "any-percent");
-  return {
-    project,
-    cli,
-    commit,
-    head: () => git("rev-parse", "HEAD").toString().trim(),
-    status: () => JSON.parse(cli("status", "--json")),
-    events: () =>
-      cli("log")
-        .trim()
-        .split("\n")
-        .map((l) => JSON.parse(l)),
-    close: () => {
-      daemon.kill();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
 }
 
 /** A stand-in for GitHub's API that reports every Actions run of
