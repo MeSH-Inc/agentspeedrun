@@ -920,10 +920,17 @@ fn set_busy_deadline(db: &Connection, deadline: Option<Instant>) -> anyhow::Resu
 
 fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> anyhow::Result<Connection> {
     let db = Connection::open(path)?;
+    for statement in ["PRAGMA synchronous=FULL;", "PRAGMA secure_delete=ON;"] {
+        set_busy_deadline(&db, deadline)?;
+        db.execute_batch(statement)?;
+    }
+    // Once initialized, opening an outbox needs no write lock. This matters
+    // when another process is already claiming or acknowledging a message.
+    if initialized_outbox_is_ready(&db, deadline)? {
+        return Ok(db);
+    }
     for statement in [
-        "PRAGMA synchronous=FULL;",
         "PRAGMA auto_vacuum=FULL;",
-        "PRAGMA secure_delete=ON;",
         "CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease_until INTEGER, source TEXT UNIQUE);",
         "CREATE TABLE IF NOT EXISTS outbox_rejections (id INTEGER PRIMARY KEY, status INTEGER, rejected_at INTEGER NOT NULL);",
         "CREATE TABLE IF NOT EXISTS outbox_ids (id INTEGER PRIMARY KEY CHECK(id=1), highwater INTEGER NOT NULL); INSERT OR IGNORE INTO outbox_ids SELECT 1, COALESCE(MAX(id),0) FROM outbox;",
@@ -934,6 +941,52 @@ fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> any
     }
     initialize_outbox_crypto(&db, path)?;
     Ok(db)
+}
+
+// A partially initialized or interrupted migration must take the ordinary
+// initialization path. The fast path checks both the schema and the encrypted
+// key marker before accepting an existing outbox.
+fn initialized_outbox_is_ready(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<bool> {
+    set_busy_deadline(db, deadline)?;
+    let objects: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE (type='table' AND name IN ('outbox','outbox_rejections','outbox_ids','outbox_crypto')) OR (type='trigger' AND name='outbox_track_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if objects != 5 {
+        return Ok(false);
+    }
+    set_busy_deadline(db, deadline)?;
+    let highwater_present: bool =
+        db.query_row("SELECT EXISTS(SELECT 1 FROM outbox_ids WHERE id=1)", [], |row| {
+            row.get(0)
+        })?;
+    set_busy_deadline(db, deadline)?;
+    let verifier: Option<(String, bool)> = db
+        .query_row(
+            "SELECT verifier,scrub_pending FROM outbox_crypto WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((verifier, false)) = verifier else {
+        return Ok(false);
+    };
+    if !highwater_present {
+        return Ok(false);
+    }
+    verify_outbox_key(db, &verifier)?;
+    Ok(true)
+}
+
+fn verify_outbox_key(db: &Connection, verifier: &str) -> anyhow::Result<()> {
+    let key = read_outbox_key(db)?;
+    let envelope: Value = serde_json::from_str(verifier)?;
+    anyhow::ensure!(
+        open_sealed(&key, &envelope, b"outbox-key-v1")? == b"speedrun outbox",
+        "invalid outbox key"
+    );
+    Ok(())
 }
 
 // The key is independent of daemon keys: retain it with the outbox during recovery.
@@ -1112,12 +1165,7 @@ fn initialize_outbox_crypto(db: &Connection, path: &Path) -> anyhow::Result<()> 
         )
         .optional()?;
     if let Some((verifier, scrub_pending)) = verifier {
-        let key = read_outbox_key(&tx)?;
-        let envelope: Value = serde_json::from_str(&verifier)?;
-        anyhow::ensure!(
-            open_sealed(&key, &envelope, b"outbox-key-v1")? == b"speedrun outbox",
-            "invalid outbox key"
-        );
+        verify_outbox_key(&tx, &verifier)?;
         tx.commit()?;
         if scrub_pending {
             scrub_migrated_outbox(db)?;
@@ -1981,6 +2029,18 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), 100);
+    }
+
+    #[test]
+    fn initialized_outbox_opens_while_another_writer_holds_a_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.sqlite");
+        let writer = open_outbox_path(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let reader = open_outbox_path_with_deadline(&path, Some(deadline)).unwrap();
+        drop(reader);
+        writer.execute_batch("ROLLBACK;").unwrap();
     }
 
     #[test]
