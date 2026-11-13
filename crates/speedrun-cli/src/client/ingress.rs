@@ -313,11 +313,17 @@ pub(crate) fn validate_sidecars(dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 pub(crate) fn test_count_entries(dir: &Path, session: Option<&str>) -> anyhow::Result<i64> {
+    let _queue = queue_lock(dir, None)?.expect("unbounded lock");
+    test_count_snapshot_entries(dir, session)
+}
+
+// A completed recovery bundle is immutable and must not gain a lock file.
+#[cfg(test)]
+pub(crate) fn test_count_snapshot_entries(dir: &Path, session: Option<&str>) -> anyhow::Result<i64> {
     let db = Connection::open_with_flags(
         dir.join("pending.sqlite3"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
-    let _queue = queue_lock(dir, None)?.expect("unbounded lock");
     let mut count: i64 = if let Some(session) = session {
         db.query_row(
             "SELECT COUNT(*) FROM outbox WHERE json_extract(entry, '$.body.session_id')=?1",

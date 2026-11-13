@@ -1317,15 +1317,10 @@ mod tests {
         stop.store(true, Ordering::SeqCst);
         let count = worker.join().unwrap();
         validate(&bundle).unwrap();
-        let snapshot = Connection::open(bundle.join("spool/pending.sqlite3")).unwrap();
-        let included: i64 = snapshot
-            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
-            .unwrap();
+        let included =
+            crate::client::ingress::test_count_snapshot_entries(&bundle.join("spool"), None).unwrap();
         assert!(included >= 1 && included <= count);
-        let live = Connection::open(source.join("spool/pending.sqlite3")).unwrap();
-        let live_count: i64 = live
-            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
-            .unwrap();
+        let live_count = crate::client::ingress::test_count_entries(&source.join("spool"), None).unwrap();
         assert_eq!(live_count, count);
         restore(&bundle, &root.path().join("hook-restored")).unwrap();
     }
