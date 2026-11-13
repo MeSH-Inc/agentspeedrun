@@ -40,6 +40,11 @@ the backlog. Active leases may be overtaken, and retries use the original event
 ID and credential. Failed lease transitions are saved as encrypted outcome files
 and replayed before new claims. Rejected rows retain their existing size cap.
 
+Spill sequence reservations are persisted in a compact high-water-mark index,
+so admitting a request does not repeatedly sort the backlog. The index is derived:
+if a recovery bundle has spill files but no index, admission rebuilds the high
+water mark from those files before publishing another one.
+
 SQLite uses WAL with `synchronous=FULL`; the database, WAL, spill files, outcome
 files, and `spool/outbox.key` form the live outbox. Use a local filesystem shared
 by processes on one host, and use the recovery command for a consistent copy.

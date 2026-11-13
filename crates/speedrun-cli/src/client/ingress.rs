@@ -2,10 +2,14 @@
 //! direct rows and spill files; the import lock excludes claims while a file's
 //! transaction and durable removal are being reconciled.
 use super::*;
+use std::io::{Read, Seek, SeekFrom};
 
 const FAST: &str = "flushing-fast-";
 const OUTCOME: &str = "flushing-outcome-";
 const IMPORT_BATCH: usize = 32;
+const SEQUENCE: &str = ".spill-sequence";
+const SEQUENCE_RECORD: u64 = 16;
+const SEQUENCE_COMPACT_AT: u64 = SEQUENCE_RECORD * 4096;
 
 pub(super) enum Admission {
     Leased(i64),
@@ -106,7 +110,25 @@ fn files_with_prefix(dir: &Path, prefix: &str) -> anyhow::Result<Vec<String>> {
     Ok(names)
 }
 
-fn next_fast_name(dir: &Path) -> anyhow::Result<String> {
+fn has_fast_files(dir: &Path) -> anyhow::Result<bool> {
+    for item in fs::read_dir(dir)? {
+        let item = item?;
+        let name = item
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("non-UTF-8 spool filename"))?;
+        if name.starts_with(FAST) {
+            anyhow::ensure!(
+                item.file_type()?.is_file(),
+                "spool item is not a regular file: {name}"
+            );
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn last_spill_sequence(dir: &Path) -> anyhow::Result<u64> {
     let mut last = 0u64;
     for name in files_with_prefix(dir, FAST)? {
         let suffix = name.strip_prefix(FAST).expect("prefix checked");
@@ -116,9 +138,86 @@ fn next_fast_name(dir: &Path) -> anyhow::Result<String> {
         anyhow::ensure!(number.len() == 20, "invalid spill sequence");
         last = last.max(number.parse()?);
     }
+    Ok(last)
+}
+
+// An append-only, checksummed high-water mark avoids scanning the backlog for
+// every hook. Persist the reservation before publishing a spill: a crash can
+// leave a gap, but a later admission can never sort ahead of an older spill.
+fn next_fast_name(dir: &Path) -> anyhow::Result<String> {
+    let path = dir.join(SEQUENCE);
+    let (mut file, created) = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+    {
+        Ok(file) => (file, true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::ensure!(
+                fs::symlink_metadata(&path)?.file_type().is_file(),
+                "spill sequence is not a regular file"
+            );
+            (OpenOptions::new().read(true).write(true).open(&path)?, false)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if created {
+        // Make the sequence file's directory entry durable before it can
+        // reserve numbers for any durable spill files.
+        fs::File::open(dir)?.sync_all()?;
+    }
+    let mut length = file.metadata()?.len();
+    let complete = length - length % SEQUENCE_RECORD;
+    let mut reconcile = complete != length;
+    if complete != length {
+        file.set_len(complete)?;
+        length = complete;
+    }
+    let mut last = None;
+    while length >= SEQUENCE_RECORD {
+        file.seek(SeekFrom::Start(length - SEQUENCE_RECORD))?;
+        let mut record = [0u8; SEQUENCE_RECORD as usize];
+        file.read_exact(&mut record)?;
+        let value = u64::from_le_bytes(record[..8].try_into()?);
+        let inverse = u64::from_le_bytes(record[8..].try_into()?);
+        if value != 0 && value == !inverse {
+            last = Some(value);
+            break;
+        }
+        reconcile = true;
+        length -= SEQUENCE_RECORD;
+        file.set_len(length)?;
+    }
+    let mut last = match last {
+        Some(last) => last,
+        // A restored bundle deliberately omits this derived index.
+        None => last_spill_sequence(dir)?,
+    };
+    if reconcile {
+        last = last.max(last_spill_sequence(dir)?);
+    }
     let next = last
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("spill sequence exhausted"))?;
+    let mut record = [0u8; SEQUENCE_RECORD as usize];
+    record[..8].copy_from_slice(&next.to_le_bytes());
+    record[8..].copy_from_slice(&(!next).to_le_bytes());
+    file.seek(SeekFrom::End(0))?;
+    file.write_all(&record)?;
+    file.sync_data()?;
+    if file.metadata()?.len() >= SEQUENCE_COMPACT_AT {
+        // The old file already contains the durable reservation, so either
+        // side of this atomic replacement is safe after a crash.
+        let mut temp = tempfile::Builder::new()
+            .prefix(".sequence-stage-")
+            .tempfile_in(dir)?;
+        temp.write_all(&record)?;
+        temp.as_file().sync_all()?;
+        temp.persist(&path).map_err(|e| e.error)?;
+        fs::File::open(dir)?.sync_all()?;
+    }
     Ok(format!("{FAST}{next:020}-{}", speedrun_core::new_id()))
 }
 
@@ -154,7 +253,7 @@ pub(super) fn admit(
     // A recovery snapshot or an importer holds this lock. Never wait for it
     // while holding admission: add a spill file instead.
     let import = try_import_lock(dir)?;
-    if import.is_some() && files_with_prefix(dir, FAST)?.is_empty() {
+    if import.is_some() && !has_fast_files(dir)? {
         db.busy_timeout(Duration::ZERO)?;
         match enqueue(db, entry, Some(owner)) {
             Ok(id) => return Ok(Admission::Leased(id)),
@@ -267,7 +366,7 @@ pub(super) fn claim_next(
         let Some(_queue) = queue_lock(dir, deadline)? else {
             return Ok(None);
         };
-        if !files_with_prefix(dir, FAST)?.is_empty() {
+        if has_fast_files(dir)? {
             continue;
         }
         set_busy_deadline(db, deadline)?;
@@ -399,6 +498,68 @@ mod tests {
         }
         assert!(claim_next(&db, dir.path(), "replay", None).unwrap().is_none());
         assert!(files_with_prefix(dir.path(), FAST).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sequence_recovers_from_torn_records_and_missing_derived_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_outbox_at(dir.path(), None).unwrap();
+        let lock = open_lock(dir.path(), "import.lock").unwrap();
+        lock.lock().unwrap();
+        defer(&db, dir.path(), "first");
+        defer(&db, dir.path(), "second");
+        // Model a crash after reserving an ID but before publishing a spill.
+        let abandoned = next_fast_name(dir.path()).unwrap();
+        assert!(abandoned.starts_with(&format!("{FAST}{:020}-", 3)));
+        OpenOptions::new()
+            .append(true)
+            .open(dir.path().join(SEQUENCE))
+            .unwrap()
+            .write_all(&[0xAA; 19])
+            .unwrap();
+        defer(&db, dir.path(), "after-torn-record");
+        // Recovery bundles omit the derived index; reconstruct it from the
+        // existing immutable spills before accepting a new one.
+        fs::remove_file(dir.path().join(SEQUENCE)).unwrap();
+        defer(&db, dir.path(), "after-restored-index");
+        drop(lock);
+        for expected in ["first", "second", "after-torn-record", "after-restored-index"] {
+            let (id, actual) = claim_next(&db, dir.path(), "replay", None).unwrap().unwrap();
+            assert_eq!(actual.body["event_id"], expected);
+            finish(&db, id, "replay", false).unwrap();
+        }
+        assert!(claim_next(&db, dir.path(), "replay", None).unwrap().is_none());
+    }
+
+    #[test]
+    fn sequence_compaction_keeps_the_reserved_high_water_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = [0u8; SEQUENCE_RECORD as usize];
+        record[..8].copy_from_slice(&41u64.to_le_bytes());
+        record[8..].copy_from_slice(&(!41u64).to_le_bytes());
+        let mut file = fs::File::create(dir.path().join(SEQUENCE)).unwrap();
+        for _ in 0..4095 {
+            file.write_all(&record).unwrap();
+        }
+        drop(file);
+        let name = next_fast_name(dir.path()).unwrap();
+        assert!(name.starts_with(&format!("{FAST}{:020}-", 42)));
+        assert_eq!(
+            fs::metadata(dir.path().join(SEQUENCE)).unwrap().len(),
+            SEQUENCE_RECORD
+        );
+        let next = next_fast_name(dir.path()).unwrap();
+        assert!(next.starts_with(&format!("{FAST}{:020}-", 43)));
+    }
+
+    #[test]
+    fn sequence_index_refuses_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("other");
+        fs::write(&other, b"keep").unwrap();
+        std::os::unix::fs::symlink(&other, dir.path().join(SEQUENCE)).unwrap();
+        assert!(next_fast_name(dir.path()).is_err());
+        assert_eq!(fs::read(&other).unwrap(), b"keep");
     }
 
     #[test]
