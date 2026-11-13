@@ -965,6 +965,42 @@ fn enable_outbox_wal(db: &Connection, deadline: Option<Instant>) -> anyhow::Resu
     Ok(())
 }
 
+// Schema creation, key setup, and legacy plaintext scrubbing form one
+// cross-process operation. Only cold or interrupted initialization takes this
+// lock; initialized outboxes still open without a write lock.
+fn lock_outbox_initialization(path: &Path, deadline: Option<Instant>) -> anyhow::Result<fs::File> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("outbox has no directory"))?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(parent.join(".outbox-initialize.lock"))?;
+    if let Some(deadline) = deadline {
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+                Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(10)),
+                    );
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    anyhow::bail!("timed out waiting for outbox initialization");
+                }
+            }
+        }
+    } else {
+        lock.lock()?;
+    }
+    Ok(lock)
+}
+
 fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> anyhow::Result<Connection> {
     let db = Connection::open(path)?;
     for statement in ["PRAGMA synchronous=FULL;", "PRAGMA secure_delete=ON;"] {
@@ -973,6 +1009,12 @@ fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> any
     }
     // Once initialized, opening an outbox needs no write lock. This matters
     // when another process is already claiming or acknowledging a message.
+    if initialized_outbox_is_ready(&db, deadline)? {
+        enable_outbox_wal(&db, deadline)?;
+        return Ok(db);
+    }
+    let _initialization = lock_outbox_initialization(path, deadline)?;
+    // Another opener may have completed initialization while we waited.
     if initialized_outbox_is_ready(&db, deadline)? {
         enable_outbox_wal(&db, deadline)?;
         return Ok(db);
@@ -2030,6 +2072,56 @@ mod tests {
         );
         let wal = fs::read(dir.path().join("pending.sqlite3-wal")).unwrap();
         assert!(!wal.windows(b"legacy secret".len()).any(|w| w == b"legacy secret"));
+    }
+
+    #[test]
+    fn cold_outbox_initialization_honors_its_lock_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let lock = lock_outbox_initialization(&path, None).unwrap();
+        let start = Instant::now();
+        let result = open_outbox_path_with_deadline(&path, Some(start + Duration::from_millis(100)));
+        assert!(result.is_err(), "another initializer holds the lock");
+        assert!(start.elapsed() < Duration::from_secs(5));
+        drop(lock);
+        let db = open_outbox_path(&path).unwrap();
+        assert!(initialized_outbox_is_ready(&db, None).unwrap());
+    }
+
+    #[test]
+    fn concurrent_cold_outbox_initializers_all_enqueue() {
+        const WORKERS: usize = 8;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let barrier = std::sync::Barrier::new(WORKERS);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..WORKERS)
+                .map(|_| {
+                    let path = &path;
+                    let barrier = &barrier;
+                    scope.spawn(move || -> anyhow::Result<()> {
+                        barrier.wait();
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        let db = retry_sqlite_busy(deadline, || {
+                            open_outbox_path_with_deadline(path, Some(deadline))
+                        })?;
+                        retry_sqlite_busy(deadline, || {
+                            set_busy_deadline(&db, Some(deadline))?;
+                            enqueue(&db, &sample_entry(), None)
+                        })?;
+                        Ok(())
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().unwrap().unwrap();
+            }
+        });
+        let db = open_outbox_path(&path).unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, WORKERS as i64);
     }
 
     #[test]

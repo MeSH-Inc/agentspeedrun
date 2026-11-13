@@ -575,13 +575,25 @@ fn audit_m7_b_refused_spool_entries_do_not_accumulate_without_bound() {
     // client tens of milliseconds, and this test runs in every ratchet measurement.
     const PROMPTS: usize = 256;
     let machine = Machine::new();
+    let hook_errors = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for worker in 0..8 {
             let machine = &machine;
+            let hook_errors = &hook_errors;
             scope.spawn(move || {
                 for i in (worker..PROMPTS).step_by(8) {
                     let line = format!("prompt {i}: add pagination to the list view. ");
-                    machine.prompt(&line.repeat(64 * 1024 / line.len()));
+                    let output = machine.prompt(&line.repeat(64 * 1024 / line.len()));
+                    if !output.status.success() || !output.stderr.is_empty() {
+                        let mut errors = hook_errors.lock().unwrap();
+                        if errors.len() < 16 {
+                            errors.push(format!(
+                                "prompt {i}: status {}, stderr {}",
+                                output.status,
+                                String::from_utf8_lossy(&output.stderr)
+                            ));
+                        }
+                    }
                 }
             });
         }
@@ -594,7 +606,20 @@ fn audit_m7_b_refused_spool_entries_do_not_accumulate_without_bound() {
         machine.speedrun(&["flush"], b"");
     }
     let refused = daemon.refused();
-    assert_eq!(refused.len(), PROMPTS, "every spooled prompt was refused once");
+    if refused.len() != PROMPTS {
+        let path = machine.data_dir().join("spool/pending.sqlite3");
+        let states = rusqlite::Connection::open(path).and_then(|db| {
+            let mut stmt = db.prepare("SELECT state, COUNT(*) FROM outbox GROUP BY state")?;
+            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        });
+        let (_, doctor) = machine.doctor();
+        panic!(
+            "every spooled prompt must be refused once: got {} of {PROMPTS}; states: {states:?}; doctor: {doctor}; hook errors: {:?}",
+            refused.len(),
+            hook_errors.into_inner().unwrap()
+        );
+    }
     let refused_bytes: usize = refused.iter().map(Vec::len).sum();
     let kept_bytes: usize = machine.stored_files().iter().map(|(_, b)| b.len()).sum();
     assert!(

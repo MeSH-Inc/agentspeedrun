@@ -37,8 +37,10 @@ The encrypted outbox uses SQLite WAL with `synchronous=FULL`, allowing recovery
 snapshots to overlap writers on the same host. Keep the database and its WAL
 together, or use the SQLite recovery snapshot; WAL requires a local filesystem
 shared by processes on one host. Fresh enqueues retry transient SQLite
-contention for up to five seconds. If an event still cannot be queued, the CLI
-attempts to increment the spool failure counter; hooks continue to exit successfully.
+contention for up to five seconds. Cold initialization and legacy plaintext
+scrubbing are serialized across processes within that budget. If an event still
+cannot be queued, the CLI attempts to increment the spool failure counter;
+hooks continue to exit successfully.
 Legacy JSONL spools are imported transactionally on an explicit `speedrun flush`; bounded
 hook flushes skip legacy imports to meet their deadline.
 
