@@ -2003,53 +2003,97 @@ mod tests {
 
     #[test]
     fn concurrent_flushers_claim_distinct_rows() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        const WORKERS: usize = 4;
+        const ROUNDS: usize = 5;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.sqlite");
         let db = open_outbox_path(&path).unwrap();
-        for _ in 0..100 {
+        for _ in 0..(WORKERS * ROUNDS) {
             enqueue(&db, &sample_entry(), None).unwrap();
         }
-        let ids = std::sync::Mutex::new(Vec::new());
+        let connections = (0..WORKERS)
+            .map(|_| open_outbox_path(&path).unwrap())
+            .collect::<Vec<_>>();
+        let claims = std::sync::Mutex::new(Vec::new());
+        let errors = std::sync::Mutex::new(Vec::new());
+        let failed = AtomicBool::new(false);
+        let round = Barrier::new(WORKERS);
         // SQLite may return BUSY after the configured bounded wait. A real
         // flusher reports that transient failure and a later flush can retry;
         // exercise that contract while still requiring distinct claims.
-        fn retry_busy<T>(mut action: impl FnMut() -> anyhow::Result<T>) -> T {
+        fn retry_busy<T>(mut action: impl FnMut() -> anyhow::Result<T>) -> anyhow::Result<T> {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 match action() {
-                    Ok(value) => return value,
+                    Ok(value) => return Ok(value),
                     Err(error)
                         if matches!(
                             error.downcast_ref::<rusqlite::Error>(),
                             Some(rusqlite::Error::SqliteFailure(inner, _))
-                                if inner.code == rusqlite::ErrorCode::DatabaseBusy
+                                if matches!(inner.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
                         ) && Instant::now() < deadline =>
                     {
-                        std::thread::yield_now();
+                        std::thread::sleep(Duration::from_millis(2));
                     }
-                    Err(error) => panic!("outbox operation failed: {error:#}"),
+                    Err(error) => return Err(error),
                 }
             }
         }
         std::thread::scope(|scope| {
-            for n in 0..4 {
-                let path = &path;
-                let ids = &ids;
+            for (n, db) in connections.into_iter().enumerate() {
+                let claims = &claims;
+                let errors = &errors;
+                let failed = &failed;
+                let round = &round;
                 scope.spawn(move || {
-                    let db = retry_busy(|| open_outbox_path(path));
                     let owner = format!("worker-{n}");
-                    while let Some((id, _)) = retry_busy(|| claim(&db, &owner)) {
-                        ids.lock().unwrap().push(id);
-                        retry_busy(|| finish(&db, id, &owner, false));
+                    // Every worker competes once per round. No worker can
+                    // monopolize the database and make scheduler fairness a
+                    // hidden precondition of the duplicate-claim assertion.
+                    for _ in 0..ROUNDS {
+                        round.wait();
+                        match retry_busy(|| claim(&db, &owner)) {
+                            Ok(Some((id, _))) => claims.lock().unwrap().push((id, owner.clone())),
+                            Ok(None) => {
+                                errors
+                                    .lock()
+                                    .unwrap()
+                                    .push("outbox became empty early".to_owned());
+                                failed.store(true, Ordering::SeqCst);
+                            }
+                            Err(error) => {
+                                errors
+                                    .lock()
+                                    .unwrap()
+                                    .push(format!("outbox claim failed: {error:#}"));
+                                failed.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        round.wait();
+                        if failed.load(Ordering::SeqCst) {
+                            break;
+                        }
                     }
                 });
             }
         });
-        let mut ids = ids.into_inner().unwrap();
-        assert_eq!(ids.len(), 100);
+        let errors = errors.into_inner().unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let claims = claims.into_inner().unwrap();
+        let mut ids = claims.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        assert_eq!(ids.len(), WORKERS * ROUNDS);
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 100);
+        assert_eq!(ids.len(), WORKERS * ROUNDS);
+        for (id, owner) in claims {
+            finish(&db, id, &owner, false).unwrap();
+        }
+        assert!(claim(&db, "after").unwrap().is_none());
     }
 
     #[test]
