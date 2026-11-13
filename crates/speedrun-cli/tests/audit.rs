@@ -160,6 +160,10 @@ impl Machine {
     /// Run `speedrun` in `dir`. Without `addr`, the client is not told the daemon's
     /// address and must find it itself.
     fn run_in(&self, dir: &Path, args: &[&str], stdin: &[u8], addr: bool) -> Output {
+        self.run_in_with_debug(dir, args, stdin, addr, false)
+    }
+
+    fn run_in_with_debug(&self, dir: &Path, args: &[&str], stdin: &[u8], addr: bool, debug: bool) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_speedrun"));
         command
             .args(args)
@@ -173,6 +177,9 @@ impl Machine {
             command.env("SPEEDRUN_ADDR", self.addr());
         } else {
             command.env_remove("SPEEDRUN_ADDR");
+        }
+        if debug {
+            command.env("SPEEDRUN_DEBUG", "1");
         }
         let mut child = command
             .stdin(Stdio::piped())
@@ -583,7 +590,14 @@ fn audit_m7_b_refused_spool_entries_do_not_accumulate_without_bound() {
             scope.spawn(move || {
                 for i in (worker..PROMPTS).step_by(8) {
                     let line = format!("prompt {i}: add pagination to the list view. ");
-                    let output = machine.prompt(&line.repeat(64 * 1024 / line.len()));
+                    let prompt = line.repeat(64 * 1024 / line.len());
+                    let output = machine.run_in_with_debug(
+                        &machine.project_root(),
+                        &["ingest", "prompt", "--host", "test", "--session", "s"],
+                        prompt.as_bytes(),
+                        true,
+                        true,
+                    );
                     if !output.status.success() || !output.stderr.is_empty() {
                         let mut errors = hook_errors.lock().unwrap();
                         if errors.len() < 16 {

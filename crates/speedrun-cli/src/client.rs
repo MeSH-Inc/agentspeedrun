@@ -686,7 +686,10 @@ impl Client {
                 Ok(Durable::Recorded(value))
             }
             Err(error) if error.should_spool() => {
-                if let Err(storage) = release(&db, id, &owner) {
+                // The enqueue deadline may have left this connection with a
+                // near-zero busy timeout. Give the release its normal bounded
+                // timeout so a transient writer does not strand the lease.
+                if let Err(storage) = release_after_fresh_attempt(&db, id, &owner) {
                     report_storage_error(&storage);
                 }
                 Ok(Durable::Spooled(SpoolReason::of(&error)))
@@ -1354,6 +1357,11 @@ fn release(db: &Connection, id: i64, owner: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn release_after_fresh_attempt(db: &Connection, id: i64, owner: &str) -> anyhow::Result<()> {
+    set_busy_deadline(db, None)?;
+    release(db, id, owner)
+}
+
 fn finish(db: &Connection, id: i64, owner: &str, rejected: bool) -> anyhow::Result<()> {
     finish_with_deadline(db, id, owner, rejected, None)
 }
@@ -1441,7 +1449,11 @@ fn storage_error(error: anyhow::Error) -> CallError {
 fn durable_storage_error(error: anyhow::Error) -> CallError {
     // Enqueue has not succeeded, so even a busy error may mean the event was
     // never durably queued and must be included in the failure counter.
-    report_storage_error(&error);
+    report_spool_write_error(
+        "enqueue outbox",
+        &spool_dir().join("pending.sqlite3"),
+        &std::io::Error::other(error.to_string()),
+    );
     CallError::Storage(error.to_string())
 }
 
@@ -2357,6 +2369,45 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn fresh_release_does_not_inherit_an_expired_enqueue_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let writer = open_outbox_path(&path).unwrap();
+        let id = enqueue(&writer, &sample_entry(), Some("worker")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let worker_path = path.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = Connection::open(worker_path).and_then(|db| {
+                db.busy_timeout(Duration::ZERO)?;
+                started_tx.send(()).unwrap();
+                Ok(db)
+            });
+            let result = result
+                .map_err(anyhow::Error::from)
+                .and_then(|db| release_after_fresh_attempt(&db, id, "worker"));
+            let _ = result_tx.send(result);
+        });
+        started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let premature = result_rx.recv_timeout(Duration::from_millis(100));
+        writer.execute_batch("ROLLBACK;").unwrap();
+        let result = match premature {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                result_rx.recv_timeout(Duration::from_secs(3)).unwrap()
+            }
+            Err(error) => panic!("release worker stopped: {error}"),
+        };
+        worker.join().unwrap();
+        result.unwrap();
+        let state: String = writer
+            .query_row("SELECT state FROM outbox WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "pending");
     }
 
     #[test]
