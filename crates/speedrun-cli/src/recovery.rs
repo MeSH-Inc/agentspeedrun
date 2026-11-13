@@ -88,8 +88,14 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 fn snapshot(src: &Path, dest: &Path) -> Result<()> {
+    snapshot_with_timeout(src, dest, Duration::from_secs(30))
+}
+fn snapshot_with_timeout(src: &Path, dest: &Path, timeout: Duration) -> Result<()> {
     regular(src)?;
     let db = Connection::open_with_flags(src, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    // Recovery can overlap an active outbox writer. Wait for transient SQLite
+    // contention explicitly instead of relying on the driver's default timeout.
+    db.busy_timeout(timeout)?;
     let dest = dest.to_str().context("snapshot destination is not UTF-8")?;
     db.execute("VACUUM INTO ?1", [dest])?;
     fs::set_permissions(dest, fs::Permissions::from_mode(0o600))?;
@@ -523,6 +529,14 @@ fn restore_in_place(
 mod tests {
     use super::*;
 
+    struct StopOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     fn source(root: &Path) -> PathBuf {
         let dir = root.join("source");
         private_dir(&dir).unwrap();
@@ -630,6 +644,65 @@ mod tests {
             "pending"
         );
         assert!(restore(&bundle, &dest).is_err());
+    }
+
+    #[test]
+    fn snapshot_waits_for_a_transient_exclusive_writer() {
+        use std::sync::mpsc::{self, RecvTimeoutError};
+
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.sqlite");
+        let destination = root.path().join("snapshot.sqlite");
+        let writer = Connection::open(&source).unwrap();
+        writer
+            .execute_batch(
+                "CREATE TABLE data (value TEXT); INSERT INTO data VALUES ('saved'); BEGIN EXCLUSIVE;",
+            )
+            .unwrap();
+        let fast_source = source.clone();
+        let fast_destination = root.path().join("busy.sqlite");
+        let (fast_tx, fast_rx) = mpsc::channel();
+        let fast_worker = std::thread::spawn(move || {
+            let _ = fast_tx.send(snapshot_with_timeout(
+                &fast_source,
+                &fast_destination,
+                Duration::ZERO,
+            ));
+        });
+        let immediate = fast_rx.recv_timeout(Duration::from_secs(1));
+        writer.execute_batch("ROLLBACK;").unwrap();
+        fast_worker.join().unwrap();
+        assert!(
+            immediate
+                .expect("zero timeout must not wait for the writer")
+                .is_err()
+        );
+        writer.execute_batch("BEGIN EXCLUSIVE;").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker_destination = destination.clone();
+        let worker = std::thread::spawn(move || {
+            let _ = tx.send(snapshot_with_timeout(
+                &source,
+                &worker_destination,
+                Duration::from_secs(10),
+            ));
+        });
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        // Release even if the worker returned unexpectedly so it can be joined.
+        writer.execute_batch("ROLLBACK;").unwrap();
+        let result = match early {
+            Err(RecvTimeoutError::Timeout) => rx.recv_timeout(Duration::from_secs(15)).unwrap(),
+            other => panic!("snapshot did not wait for the writer: {other:?}"),
+        };
+        worker.join().unwrap();
+        result.unwrap();
+        let saved = Connection::open(&destination).unwrap();
+        assert_eq!(
+            saved
+                .query_row("SELECT value FROM data", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "saved"
+        );
     }
 
     #[test]
@@ -862,6 +935,7 @@ mod tests {
         fs::write(source.join("trusted-projects.json"), serde_json::json!([{"project_id":"01KAUDITPROJECT0000000000","root":project.canonicalize().unwrap()}]).to_string()).unwrap();
         fs::write(source.join("token"), "fixture-token").unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _stop_on_drop = StopOnDrop(stop.clone());
         let worker_stop = stop.clone();
         let worker_source = source.clone();
         let worker_project = project.clone();
@@ -1056,6 +1130,7 @@ mod tests {
         fs::remove_file(spool.join("outbox.key")).unwrap();
         crate::client::test_enqueue_prompt(&spool, "before").unwrap();
         let stop = Arc::new(AtomicBool::new(false));
+        let _stop_on_drop = StopOnDrop(stop.clone());
         let worker_stop = stop.clone();
         let worker_spool = spool.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -1109,6 +1184,7 @@ mod tests {
         fs::write(source.join("trusted-projects.json"), serde_json::json!([{"project_id":"01KAUDITPROJECT0000000000","root":project.canonicalize().unwrap()}]).to_string()).unwrap();
         fs::write(source.join("token"), "fixture-token").unwrap();
         let stop = Arc::new(AtomicBool::new(false));
+        let _stop_on_drop = StopOnDrop(stop.clone());
         let worker_stop = stop.clone();
         let worker_source = source.clone();
         let worker_project = project.clone();

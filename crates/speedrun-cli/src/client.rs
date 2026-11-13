@@ -2080,6 +2080,9 @@ mod tests {
     #[test]
     fn bounded_flush_skips_a_locked_legacy_import() {
         let dir = tempfile::tempdir().unwrap();
+        // Initialize before the timed part so slow durable filesystem setup is
+        // not confused with waiting for the unrelated legacy import lock.
+        drop(open_outbox_at(dir.path(), None).unwrap());
         let lock = OpenOptions::new()
             .create(true)
             .write(true)
@@ -2089,15 +2092,22 @@ mod tests {
         lock.lock().unwrap();
         let entry = serde_json::to_string(&sample_entry()).unwrap();
         fs::write(dir.path().join("pending.jsonl"), format!("{entry}\n")).unwrap();
-        let start = Instant::now();
-        let db = prepare_flush(dir.path(), Some(start + Duration::from_millis(100)))
-            .unwrap()
-            .unwrap();
-        assert!(start.elapsed() < Duration::from_secs(1));
-        assert!(claim(&db, "hook").unwrap().is_none());
-        assert!(dir.path().join("pending.jsonl").exists());
+        let path = dir.path().to_owned();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<bool> {
+                let db = prepare_flush(&path, Some(Instant::now() + Duration::from_secs(15)))?
+                    .ok_or_else(|| anyhow::anyhow!("flush deadline elapsed before opening"))?;
+                Ok(claim(&db, "hook")?.is_none())
+            })();
+            let _ = tx.send(result);
+        });
+        let completed_while_locked = rx.recv_timeout(Duration::from_secs(5));
+        // Release before joining so a regression waiting on this lock can exit.
         drop(lock);
-        drop(db);
+        worker.join().unwrap();
+        assert!(completed_while_locked.unwrap().unwrap());
+        assert!(dir.path().join("pending.jsonl").exists());
         let db = prepare_flush(dir.path(), None).unwrap().unwrap();
         assert!(claim(&db, "explicit").unwrap().is_some());
         assert!(!dir.path().join("pending.jsonl").exists());

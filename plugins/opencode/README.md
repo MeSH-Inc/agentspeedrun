@@ -36,7 +36,7 @@ Failures never interrupt opencode. Set `SPEEDRUN_DEBUG=1` to see them.
 ## Develop
 
 ```bash
-npm ci --ignore-scripts && npx tsc --noEmit && bun test
+npm ci --ignore-scripts && npx tsc --noEmit && npm test
 ```
 
 Tests drive the plugin against the real `speedrun` and `speedrund` from

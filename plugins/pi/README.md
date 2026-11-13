@@ -44,7 +44,7 @@ Failures never interrupt the agent. Set `SPEEDRUN_DEBUG=1` to see them.
 ## Develop
 
 ```bash
-npm ci --ignore-scripts && npx tsc --noEmit && bun test
+npm ci --ignore-scripts && npx tsc --noEmit && npm test
 ```
 
 Tests drive the extension against the real `speedrun` and `speedrund` from

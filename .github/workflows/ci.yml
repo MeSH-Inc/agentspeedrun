@@ -38,7 +38,7 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npx tsc --noEmit
-          bun test
+          npm test
 
   vscode:
     runs-on: ubuntu-latest

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Some recovery tests intentionally spawn writers and child processes. Running
+# unrelated test cases concurrently multiplies contention on a bounded runner.
+export RUST_TEST_THREADS=1
 
 case "${1:-all}" in
   rust)
@@ -13,7 +16,7 @@ case "${1:-all}" in
     cd "plugins/$1"
     npm ci --ignore-scripts --no-audit --no-fund
     npx tsc --noEmit
-    bun test
+    npm test
     ;;
   vscode)
     cargo build --locked
