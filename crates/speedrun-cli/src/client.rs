@@ -2010,6 +2010,27 @@ mod tests {
             enqueue(&db, &sample_entry(), None).unwrap();
         }
         let ids = std::sync::Mutex::new(Vec::new());
+        // SQLite may return BUSY after the configured bounded wait. A real
+        // flusher reports that transient failure and a later flush can retry;
+        // exercise that contract while still requiring distinct claims.
+        fn retry_busy<T>(mut action: impl FnMut() -> anyhow::Result<T>) -> T {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                match action() {
+                    Ok(value) => return value,
+                    Err(error)
+                        if matches!(
+                            error.downcast_ref::<rusqlite::Error>(),
+                            Some(rusqlite::Error::SqliteFailure(inner, _))
+                                if inner.code == rusqlite::ErrorCode::DatabaseBusy
+                        ) && Instant::now() < deadline =>
+                    {
+                        std::thread::yield_now();
+                    }
+                    Err(error) => panic!("claim or acknowledgement failed: {error:#}"),
+                }
+            }
+        }
         std::thread::scope(|scope| {
             for n in 0..4 {
                 let path = &path;
@@ -2017,9 +2038,9 @@ mod tests {
                 scope.spawn(move || {
                     let db = open_outbox_path(path).unwrap();
                     let owner = format!("worker-{n}");
-                    while let Some((id, _)) = claim(&db, &owner).unwrap() {
+                    while let Some((id, _)) = retry_busy(|| claim(&db, &owner)) {
                         ids.lock().unwrap().push(id);
-                        finish(&db, id, &owner, false).unwrap();
+                        retry_busy(|| finish(&db, id, &owner, false));
                     }
                 });
             }
