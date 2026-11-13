@@ -5,6 +5,9 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { readPublishedAddress, waitForDaemon } from "./daemon-testkit.cjs";
+
+export { waitForDaemon };
 
 const REPO = resolve(import.meta.dir, "..");
 const BIN_DIR = join(REPO, "target", "debug");
@@ -37,50 +40,67 @@ export type SandboxOptions = {
 
 export async function sandbox(options: SandboxOptions = {}): Promise<Sandbox> {
   const root = mkdtempSync(join(tmpdir(), "speedrun-adapter-"));
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  Object.assign(process.env, {
-    SPEEDRUN_HOME: join(root, "home"),
-    SPEEDRUN_ADDR: `127.0.0.1:${port}`,
-    SPEEDRUN_BIN: SPEEDRUN,
-    SPEEDRUN_NO_AUTOSTART: "1",
-  });
-  const daemon: ChildProcess = spawn(join(BIN_DIR, "speedrund"), [], {
-    stdio: "ignore",
-    // A fixed GitHub token, so the verifier never asks `gh` for the user's own.
-    env: { ...process.env, SPEEDRUN_GITHUB_TOKEN: "sandbox-token", ...options.daemonEnv },
-  });
-  for (let i = 0; ; i++) {
-    try {
-      if ((await fetch(`http://127.0.0.1:${port}/v1/health`)).ok) break;
-    } catch {}
-    if (i > 50) throw new Error("speedrund did not start; run `cargo build` first");
-    await Bun.sleep(50);
-  }
-  const project = join(root, "project");
-  const git = (...a: string[]) => execFileSync("git", ["-C", project, ...a], { stdio: "pipe" });
-  const commit = (message: string) =>
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", message);
-  execFileSync("git", ["init", "-q", project]);
-  git("remote", "add", "origin", `https://github.com/${REPOSITORY}.git`);
-  commit("init");
-  const cli = (...args: string[]) => execFileSync(SPEEDRUN, args, { cwd: project, encoding: "utf8" });
-  cli("init", "--category", options.category ?? "any-percent");
-  return {
-    project,
-    cli,
-    commit,
-    head: () => git("rev-parse", "HEAD").toString().trim(),
-    status: () => JSON.parse(cli("status", "--json")),
-    events: () =>
-      cli("log")
-        .trim()
-        .split("\n")
-        .map((l) => JSON.parse(l)),
-    close: () => {
-      daemon.kill();
-      rmSync(root, { recursive: true, force: true });
-    },
+  const home = join(root, "home");
+  const previous = Object.fromEntries(
+    ["SPEEDRUN_HOME", "SPEEDRUN_ADDR", "SPEEDRUN_BIN", "SPEEDRUN_NO_AUTOSTART"]
+      .map((key) => [key, process.env[key]]),
+  );
+  const restoreEnv = () => {
+    if (process.env.SPEEDRUN_HOME !== home) return;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   };
+  const daemon: ChildProcess = spawn(join(BIN_DIR, "speedrund"), [], {
+    stdio: ["ignore", "ignore", "pipe"],
+    // A fixed GitHub token, so the verifier never asks `gh` for the user's own.
+    env: { ...process.env, ...options.daemonEnv, SPEEDRUN_GITHUB_TOKEN: "sandbox-token", SPEEDRUN_HOME: home, SPEEDRUN_ADDR: "127.0.0.1:0" },
+  });
+  let stderr = "";
+  daemon.stderr?.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-8_192); });
+  try {
+    const address = await waitForDaemon(daemon, () => readPublishedAddress(home));
+    Object.assign(process.env, {
+      SPEEDRUN_HOME: home,
+      SPEEDRUN_ADDR: address,
+      SPEEDRUN_BIN: SPEEDRUN,
+      SPEEDRUN_NO_AUTOSTART: "1",
+    });
+    const env = { ...process.env };
+    const project = join(root, "project");
+    const git = (...a: string[]) => execFileSync("git", ["-C", project, ...a], { stdio: "pipe" });
+    const commit = (message: string) =>
+      git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", message);
+    execFileSync("git", ["init", "-q", project]);
+    git("remote", "add", "origin", `https://github.com/${REPOSITORY}.git`);
+    commit("init");
+    const cli = (...args: string[]) => execFileSync(SPEEDRUN, args, { cwd: project, encoding: "utf8", env });
+    cli("init", "--category", options.category ?? "any-percent");
+    return {
+      project,
+      cli,
+      commit,
+      head: () => git("rev-parse", "HEAD").toString().trim(),
+      status: () => JSON.parse(cli("status", "--json")),
+      events: () =>
+        cli("log")
+          .trim()
+          .split("\n")
+          .map((l) => JSON.parse(l)),
+      close: () => {
+        daemon.kill();
+        rmSync(root, { recursive: true, force: true });
+        restoreEnv();
+      },
+    };
+  } catch (error) {
+    daemon.kill();
+    rmSync(root, { recursive: true, force: true });
+    restoreEnv();
+    if (stderr) throw new Error(`${String(error)}\nDaemon stderr:\n${stderr}`, { cause: error });
+    throw error;
+  }
 }
 
 /** A stand-in for GitHub's API that reports every Actions run of

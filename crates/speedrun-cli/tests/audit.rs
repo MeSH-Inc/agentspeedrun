@@ -160,6 +160,10 @@ impl Machine {
     /// Run `speedrun` in `dir`. Without `addr`, the client is not told the daemon's
     /// address and must find it itself.
     fn run_in(&self, dir: &Path, args: &[&str], stdin: &[u8], addr: bool) -> Output {
+        self.run_in_with_debug(dir, args, stdin, addr, false)
+    }
+
+    fn run_in_with_debug(&self, dir: &Path, args: &[&str], stdin: &[u8], addr: bool, debug: bool) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_speedrun"));
         command
             .args(args)
@@ -173,6 +177,9 @@ impl Machine {
             command.env("SPEEDRUN_ADDR", self.addr());
         } else {
             command.env_remove("SPEEDRUN_ADDR");
+        }
+        if debug {
+            command.env("SPEEDRUN_DEBUG", "1");
         }
         let mut child = command
             .stdin(Stdio::piped())
@@ -575,13 +582,32 @@ fn audit_m7_b_refused_spool_entries_do_not_accumulate_without_bound() {
     // client tens of milliseconds, and this test runs in every ratchet measurement.
     const PROMPTS: usize = 256;
     let machine = Machine::new();
+    let hook_errors = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for worker in 0..8 {
             let machine = &machine;
+            let hook_errors = &hook_errors;
             scope.spawn(move || {
                 for i in (worker..PROMPTS).step_by(8) {
                     let line = format!("prompt {i}: add pagination to the list view. ");
-                    machine.prompt(&line.repeat(64 * 1024 / line.len()));
+                    let prompt = line.repeat(64 * 1024 / line.len());
+                    let output = machine.run_in_with_debug(
+                        &machine.project_root(),
+                        &["ingest", "prompt", "--host", "test", "--session", "s"],
+                        prompt.as_bytes(),
+                        true,
+                        true,
+                    );
+                    if !output.status.success() || !output.stderr.is_empty() {
+                        let mut errors = hook_errors.lock().unwrap();
+                        if errors.len() < 16 {
+                            errors.push(format!(
+                                "prompt {i}: status {}, stderr {}",
+                                output.status,
+                                String::from_utf8_lossy(&output.stderr)
+                            ));
+                        }
+                    }
                 }
             });
         }
@@ -594,7 +620,20 @@ fn audit_m7_b_refused_spool_entries_do_not_accumulate_without_bound() {
         machine.speedrun(&["flush"], b"");
     }
     let refused = daemon.refused();
-    assert_eq!(refused.len(), PROMPTS, "every spooled prompt was refused once");
+    if refused.len() != PROMPTS {
+        let path = machine.data_dir().join("spool/pending.sqlite3");
+        let states = rusqlite::Connection::open(path).and_then(|db| {
+            let mut stmt = db.prepare("SELECT state, COUNT(*) FROM outbox GROUP BY state")?;
+            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        });
+        let (_, doctor) = machine.doctor();
+        panic!(
+            "every spooled prompt must be refused once: got {} of {PROMPTS}; states: {states:?}; doctor: {doctor}; hook errors: {:?}",
+            refused.len(),
+            hook_errors.into_inner().unwrap()
+        );
+    }
     let refused_bytes: usize = refused.iter().map(Vec::len).sum();
     let kept_bytes: usize = machine.stored_files().iter().map(|(_, b)| b.len()).sum();
     assert!(
@@ -1093,6 +1132,41 @@ fn audit_m7_c_a_failed_spool_write_is_counted_and_doctor_shows_it() {
     std::fs::set_permissions(&spool, std::fs::Permissions::from_mode(0o700)).unwrap();
     let (_, stdout) = machine.doctor();
     assert!(has_line(&stdout, "spool write failures: 1"), "{stdout}");
+}
+
+#[test]
+fn a_busy_enqueue_is_encrypted_and_replayed_after_the_writer_releases() {
+    let machine = Machine::new();
+    assert!(machine.prompt("initialize the outbox").status.success());
+    let path = machine.data_dir().join("spool/pending.sqlite3");
+    let writer = rusqlite::Connection::open(path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    let blocked = machine.prompt("this write is blocked");
+    writer.execute_batch("ROLLBACK;").unwrap();
+    assert!(blocked.status.success(), "ingest must not break its host");
+    let (_, stdout) = machine.doctor();
+    assert!(has_line(&stdout, "spooled: 2"), "{stdout}");
+    assert!(has_line(&stdout, "spool write failures: 0"), "{stdout}");
+    let sidecars: Vec<_> = std::fs::read_dir(machine.data_dir().join("spool"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("flushing-fast-"))
+        .collect();
+    assert_eq!(sidecars.len(), 1);
+    assert!(!contains(
+        &std::fs::read(sidecars[0].path()).unwrap(),
+        "this write is blocked"
+    ));
+    let daemon = RefusingDaemon::start(&machine);
+    let flushed = machine.speedrun(&["flush"], b"");
+    assert!(
+        flushed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&flushed.stderr)
+    );
+    let refused = daemon.refused();
+    assert_eq!(refused.len(), 2);
+    assert!(refused.iter().any(|body| contains(body, "this write is blocked")));
 }
 
 #[test]

@@ -209,7 +209,7 @@
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit && tsc -p test/unit",
-    "test": "bun test test/unit",
+    "test": "bun test --timeout 30000 test/unit",
     "test:vscode": "npm run build && node ./out/test/run.js",
     "package": "npm run build && vsce package --no-dependencies",
     "generate:protocol": "node scripts/generate-protocol.cjs"

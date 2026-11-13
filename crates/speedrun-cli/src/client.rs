@@ -26,6 +26,8 @@ use speedrun_core::{
     paths,
 };
 
+pub(crate) mod ingress;
+
 #[derive(Debug)]
 pub enum CallError {
     /// The daemon could not be reached (not running, or no token yet).
@@ -94,6 +96,8 @@ pub enum SpoolReason {
     Undelivered,
     /// It was sent but not answered in time, so the daemon may hold it already.
     DeliveryUnknown,
+    /// The local queue was busy; replay may already have delivered the entry.
+    Deferred,
 }
 
 impl SpoolReason {
@@ -388,7 +392,7 @@ pub(crate) fn spool_stats() -> std::io::Result<SpoolStats> {
                 let flushing = entry
                     .file_name()
                     .to_str()
-                    .is_some_and(|name| name.starts_with("flushing-"));
+                    .is_some_and(|name| name.starts_with("flushing-") && !ingress::is_outcome(name));
                 if flushing && entry.file_type()?.is_file() {
                     spooled = spooled.saturating_add(count_lines(&entry.path())?);
                 }
@@ -466,6 +470,8 @@ enum Delivery {
 /// event has been attempted. Hooks must return to their host quickly, so an
 /// entry this does not reach stays spooled for a later flush.
 const FLUSH_BUDGET: Duration = Duration::from_secs(3);
+// Bound initialization and admission before any event body is sent.
+const DURABLE_ENQUEUE_BUDGET: Duration = Duration::from_secs(5);
 
 impl Client {
     pub fn new() -> Self {
@@ -643,11 +649,10 @@ impl Client {
         self.send("POST", path, Some(body), Delivery::Fresh, self.credential)
     }
 
-    /// POST that must not be lost. The fresh event goes out before the spool:
-    /// verify the daemon, attempt this write, then flush the backlog for at
-    /// most [`FLUSH_BUDGET`]. Entries the budget does not reach stay spooled,
-    /// in order. When the daemon has not proved the token, the write is
-    /// spooled without a flush because there is no proven base to deliver to.
+    /// Commit a durable request before delivery. When admitted directly, the
+    /// fresh event goes out before a bounded backlog flush. If admission spills,
+    /// it joins the ordered backlog and a bounded flush is attempted only after
+    /// the daemon proves its identity.
     pub fn post_durable<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -661,8 +666,23 @@ impl Client {
             body: body.clone(),
             credential: self.credential,
         };
-        let db = open_outbox().map_err(storage_error)?;
-        let id = enqueue(&db, &entry, Some(&owner)).map_err(storage_error)?;
+        let deadline = Instant::now() + DURABLE_ENQUEUE_BUDGET;
+        let dir = spool_dir();
+        let db = retry_sqlite_busy(deadline, || open_outbox_at(&dir, Some(deadline)))
+            .map_err(durable_storage_error)?;
+        let id = match ingress::admit(&db, &dir, &entry, &owner, deadline).map_err(durable_storage_error)? {
+            ingress::Admission::Leased(id) => id,
+            ingress::Admission::Deferred => {
+                return match self.ready() {
+                    Ok(()) => {
+                        let _ = self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
+                        Ok(Durable::Spooled(SpoolReason::Deferred))
+                    }
+                    Err(error) if error.should_spool() => Ok(Durable::Spooled(SpoolReason::of(&error))),
+                    Err(error) => Err(error),
+                };
+            }
+        };
         let outcome = match self.ready() {
             Ok(()) => self.send("POST", path, Some(body), Delivery::Fresh, self.credential),
             Err(error) => Err(error),
@@ -670,20 +690,34 @@ impl Client {
         match outcome {
             Ok(value) => {
                 if let Err(error) = finish(&db, id, &owner, false) {
-                    report_storage_error(&error);
+                    preserve_outcome(&db, &dir, id, &owner, ingress::Transition::Accepted, &error);
                 }
                 let _ = self.flush_spool(Some(Instant::now() + FLUSH_BUDGET));
                 Ok(Durable::Recorded(value))
             }
             Err(error) if error.should_spool() => {
-                if let Err(storage) = release(&db, id, &owner) {
-                    report_storage_error(&storage);
+                // The enqueue deadline may have left this connection with a
+                // near-zero busy timeout. Give the release its normal bounded
+                // timeout so a transient writer does not strand the lease.
+                if let Err(storage) = release_after_fresh_attempt(&db, id, &owner) {
+                    preserve_outcome(&db, &dir, id, &owner, ingress::Transition::Release, &storage);
                 }
                 Ok(Durable::Spooled(SpoolReason::of(&error)))
             }
             Err(error) => {
                 if let Err(storage) = finish_rejected(&db, id, &owner, &error, None) {
-                    report_storage_error(&storage);
+                    let status = match error {
+                        CallError::Api { status, .. } => Some(status),
+                        _ => None,
+                    };
+                    preserve_outcome(
+                        &db,
+                        &dir,
+                        id,
+                        &owner,
+                        ingress::Transition::Rejected(status),
+                        &storage,
+                    );
                 }
                 Err(error)
             }
@@ -790,7 +824,8 @@ impl Client {
     /// Claim one outbox row at a time. Expired leases are recoverable after
     /// crashes; event IDs make an uncertain delivery safe to replay.
     pub fn flush_spool(&self, deadline: Option<Instant>) -> Result<usize, CallError> {
-        let Some(db) = prepare_flush(&spool_dir(), deadline).map_err(storage_error)? else {
+        let dir = spool_dir();
+        let Some(db) = prepare_flush(&dir, deadline).map_err(storage_error)? else {
             return Ok(0);
         };
         let owner = speedrun_core::new_id();
@@ -800,7 +835,9 @@ impl Client {
                 break;
             }
             set_busy_deadline(&db, deadline).map_err(storage_error)?;
-            let Some((id, entry)) = claim(&db, &owner).map_err(storage_error)? else {
+            let Some((id, entry)) =
+                ingress::claim_next(&db, &dir, &owner, deadline).map_err(storage_error)?
+            else {
                 break;
             };
             let outcome = self.send::<Value>(
@@ -812,15 +849,54 @@ impl Client {
             );
             match outcome {
                 Ok(_) => {
-                    finish_with_deadline(&db, id, &owner, false, deadline).map_err(storage_error)?;
+                    if let Err(error) = finish_with_deadline(&db, id, &owner, false, deadline) {
+                        ingress::preserve_transition(&db, &dir, id, &owner, ingress::Transition::Accepted)
+                            .map_err(storage_error)?;
+                        report_io_error(
+                            "defer outbox acknowledgement",
+                            &dir,
+                            &std::io::Error::other(error.to_string()),
+                        );
+                        delivered += 1;
+                        break;
+                    }
                     delivered += 1;
                 }
                 Err(error) if error.should_spool() => {
                     set_busy_deadline(&db, deadline).map_err(storage_error)?;
-                    release(&db, id, &owner).map_err(storage_error)?;
+                    if let Err(storage) = release(&db, id, &owner) {
+                        ingress::preserve_transition(&db, &dir, id, &owner, ingress::Transition::Release)
+                            .map_err(storage_error)?;
+                        report_io_error(
+                            "defer outbox release",
+                            &dir,
+                            &std::io::Error::other(storage.to_string()),
+                        );
+                    }
                     break;
                 }
-                Err(error) => finish_rejected(&db, id, &owner, &error, deadline).map_err(storage_error)?,
+                Err(error) => {
+                    if let Err(storage) = finish_rejected(&db, id, &owner, &error, deadline) {
+                        let status = match error {
+                            CallError::Api { status, .. } => Some(status),
+                            _ => None,
+                        };
+                        ingress::preserve_transition(
+                            &db,
+                            &dir,
+                            id,
+                            &owner,
+                            ingress::Transition::Rejected(status),
+                        )
+                        .map_err(storage_error)?;
+                        report_io_error(
+                            "defer outbox rejection",
+                            &dir,
+                            &std::io::Error::other(storage.to_string()),
+                        );
+                        break;
+                    }
+                }
             }
         }
         Ok(delivered)
@@ -850,9 +926,8 @@ fn transport_error(t: &ureq::Transport) -> CallError {
     }
 }
 
-// SQLite holds the only live copy until acknowledgement or durable rejection.
-// FULL synchronous mode and a transaction around each state transition protect
-// against process and power failure. A lease is longer than any request timeout.
+// SQLite rows and encrypted spill files are durable before delivery. FULL
+// synchronous mode protects SQLite transitions; a lease is longer than a request.
 const LEASE_SECONDS: i64 = 300;
 const REJECTED_LIMIT: i64 = 4 * 1024 * 1024;
 
@@ -875,8 +950,35 @@ pub(crate) fn test_enqueue_prompt(spool: &Path, id: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn open_outbox() -> anyhow::Result<Connection> {
-    open_outbox_at(&spool_dir(), None)
+#[cfg(test)]
+pub(crate) fn test_admit_prompt(spool: &Path, id: &str) -> anyhow::Result<()> {
+    let db = open_outbox_at(spool, None)?;
+    let entry = SpoolEntry {
+        path: "/v1/prompts".into(),
+        body: serde_json::json!({"event_id": id, "content": "recovery fixture"}),
+        credential: Credential::Full,
+    };
+    if let ingress::Admission::Leased(id) = ingress::admit(
+        &db,
+        spool,
+        &entry,
+        "test",
+        Instant::now() + Duration::from_secs(10),
+    )? {
+        release(&db, id, "test")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn test_drain_prompt_ids(spool: &Path) -> anyhow::Result<Vec<String>> {
+    let db = open_outbox_at(spool, None)?;
+    let mut ids = Vec::new();
+    while let Some((id, entry)) = ingress::claim_next(&db, spool, "test-replay", None)? {
+        ids.push(entry.body["event_id"].as_str().unwrap().to_owned());
+        finish(&db, id, "test-replay", false)?;
+    }
+    Ok(ids)
 }
 
 // A bounded hook flush never waits for the legacy import lock or performs an
@@ -918,12 +1020,106 @@ fn set_busy_deadline(db: &Connection, deadline: Option<Instant>) -> anyhow::Resu
     Ok(())
 }
 
+fn is_sqlite_busy(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
+        matches!(
+            e.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    })
+}
+
+fn retry_sqlite_busy<T>(
+    deadline: Instant,
+    mut action: impl FnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    loop {
+        match action() {
+            Err(error) if is_sqlite_busy(&error) && Instant::now() < deadline => {
+                std::thread::sleep(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(10)),
+                );
+            }
+            result => return result,
+        }
+    }
+}
+
+fn outbox_wal_enabled(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<bool> {
+    set_busy_deadline(db, deadline)?;
+    let mode: String = db.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    Ok(mode.eq_ignore_ascii_case("wal"))
+}
+
+fn enable_outbox_wal(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<()> {
+    if !outbox_wal_enabled(db, deadline)? {
+        set_busy_deadline(db, deadline)?;
+        let mode: String = db.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        anyhow::ensure!(
+            mode.eq_ignore_ascii_case("wal"),
+            "outbox could not enter WAL mode"
+        );
+    }
+    Ok(())
+}
+
+// Schema creation, key setup, and legacy plaintext scrubbing form one
+// cross-process operation. Only cold or interrupted initialization takes this
+// lock; initialized outboxes still open without a write lock.
+fn lock_outbox_initialization(path: &Path, deadline: Option<Instant>) -> anyhow::Result<fs::File> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("outbox has no directory"))?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(parent.join(".outbox-initialize.lock"))?;
+    if let Some(deadline) = deadline {
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+                Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(10)),
+                    );
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    anyhow::bail!("timed out waiting for outbox initialization");
+                }
+            }
+        }
+    } else {
+        lock.lock()?;
+    }
+    Ok(lock)
+}
+
 fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> anyhow::Result<Connection> {
     let db = Connection::open(path)?;
+    for statement in ["PRAGMA synchronous=FULL;", "PRAGMA secure_delete=ON;"] {
+        set_busy_deadline(&db, deadline)?;
+        db.execute_batch(statement)?;
+    }
+    // Once initialized, opening an outbox needs no write lock. This matters
+    // when another process is already claiming or acknowledging a message.
+    if initialized_outbox_is_ready(&db, deadline)? && outbox_wal_enabled(&db, deadline)? {
+        return Ok(db);
+    }
+    let _initialization = lock_outbox_initialization(path, deadline)?;
+    // Another opener may have completed initialization while we waited.
+    if initialized_outbox_is_ready(&db, deadline)? {
+        enable_outbox_wal(&db, deadline)?;
+        return Ok(db);
+    }
     for statement in [
-        "PRAGMA synchronous=FULL;",
         "PRAGMA auto_vacuum=FULL;",
-        "PRAGMA secure_delete=ON;",
         "CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, entry TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease_until INTEGER, source TEXT UNIQUE);",
         "CREATE TABLE IF NOT EXISTS outbox_rejections (id INTEGER PRIMARY KEY, status INTEGER, rejected_at INTEGER NOT NULL);",
         "CREATE TABLE IF NOT EXISTS outbox_ids (id INTEGER PRIMARY KEY CHECK(id=1), highwater INTEGER NOT NULL); INSERT OR IGNORE INTO outbox_ids SELECT 1, COALESCE(MAX(id),0) FROM outbox;",
@@ -933,7 +1129,56 @@ fn open_outbox_path_with_deadline(path: &Path, deadline: Option<Instant>) -> any
         db.execute_batch(statement)?;
     }
     initialize_outbox_crypto(&db, path)?;
+    // Enter WAL only after any legacy plaintext has been encrypted and scrubbed.
+    // Recovery snapshots can then read without blocking fresh hook writes.
+    enable_outbox_wal(&db, deadline)?;
     Ok(db)
+}
+
+// A partially initialized or interrupted migration must take the ordinary
+// initialization path. The fast path checks both the schema and the encrypted
+// key marker before accepting an existing outbox.
+fn initialized_outbox_is_ready(db: &Connection, deadline: Option<Instant>) -> anyhow::Result<bool> {
+    set_busy_deadline(db, deadline)?;
+    let objects: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE (type='table' AND name IN ('outbox','outbox_rejections','outbox_ids','outbox_crypto')) OR (type='trigger' AND name='outbox_track_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if objects != 5 {
+        return Ok(false);
+    }
+    set_busy_deadline(db, deadline)?;
+    let highwater_present: bool =
+        db.query_row("SELECT EXISTS(SELECT 1 FROM outbox_ids WHERE id=1)", [], |row| {
+            row.get(0)
+        })?;
+    set_busy_deadline(db, deadline)?;
+    let verifier: Option<(String, bool)> = db
+        .query_row(
+            "SELECT verifier,scrub_pending FROM outbox_crypto WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((verifier, false)) = verifier else {
+        return Ok(false);
+    };
+    if !highwater_present {
+        return Ok(false);
+    }
+    verify_outbox_key(db, &verifier)?;
+    Ok(true)
+}
+
+fn verify_outbox_key(db: &Connection, verifier: &str) -> anyhow::Result<()> {
+    let key = read_outbox_key(db)?;
+    let envelope: Value = serde_json::from_str(verifier)?;
+    anyhow::ensure!(
+        open_sealed(&key, &envelope, b"outbox-key-v1")? == b"speedrun outbox",
+        "invalid outbox key"
+    );
+    Ok(())
 }
 
 // The key is independent of daemon keys: retain it with the outbox during recovery.
@@ -1112,12 +1357,7 @@ fn initialize_outbox_crypto(db: &Connection, path: &Path) -> anyhow::Result<()> 
         )
         .optional()?;
     if let Some((verifier, scrub_pending)) = verifier {
-        let key = read_outbox_key(&tx)?;
-        let envelope: Value = serde_json::from_str(&verifier)?;
-        anyhow::ensure!(
-            open_sealed(&key, &envelope, b"outbox-key-v1")? == b"speedrun outbox",
-            "invalid outbox key"
-        );
+        verify_outbox_key(&tx, &verifier)?;
         tx.commit()?;
         if scrub_pending {
             scrub_migrated_outbox(db)?;
@@ -1210,6 +1450,11 @@ fn release(db: &Connection, id: i64, owner: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn release_after_fresh_attempt(db: &Connection, id: i64, owner: &str) -> anyhow::Result<()> {
+    set_busy_deadline(db, None)?;
+    release(db, id, owner)
+}
+
 fn finish(db: &Connection, id: i64, owner: &str, rejected: bool) -> anyhow::Result<()> {
     finish_with_deadline(db, id, owner, rejected, None)
 }
@@ -1286,17 +1531,37 @@ fn report_storage_error(error: &anyhow::Error) {
     );
 }
 
+fn preserve_outcome(
+    db: &Connection,
+    dir: &Path,
+    id: i64,
+    owner: &str,
+    transition: ingress::Transition,
+    original: &anyhow::Error,
+) {
+    if let Err(error) = ingress::preserve_transition(db, dir, id, owner, transition) {
+        report_storage_error(&anyhow::anyhow!(
+            "{original}; could not preserve outcome: {error}"
+        ));
+    }
+}
+
 fn storage_error(error: anyhow::Error) -> CallError {
     // Contention leaves the row intact and is not a failed durable write.
-    let busy = error.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
-        matches!(
-            e.sqlite_error_code(),
-            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-        )
-    });
-    if !busy {
+    if !is_sqlite_busy(&error) {
         report_storage_error(&error);
     }
+    CallError::Storage(error.to_string())
+}
+
+fn durable_storage_error(error: anyhow::Error) -> CallError {
+    // Enqueue has not succeeded, so even a busy error may mean the event was
+    // never durably queued and must be included in the failure counter.
+    report_spool_write_error(
+        "enqueue outbox",
+        &spool_dir().join("pending.sqlite3"),
+        &std::io::Error::other(error.to_string()),
+    );
     CallError::Storage(error.to_string())
 }
 
@@ -1313,7 +1578,9 @@ fn import_legacy(db: &Connection, dir: &Path) -> anyhow::Result<()> {
     for item in fs::read_dir(dir)? {
         let item = item?;
         let name = item.file_name().to_string_lossy().into_owned();
-        if name != "pending.jsonl" && name != "rejected.jsonl" && !name.starts_with("flushing-") {
+        if ingress::is_sidecar(&name)
+            || (name != "pending.jsonl" && name != "rejected.jsonl" && !name.starts_with("flushing-"))
+        {
             continue;
         }
         let bytes = fs::read(item.path())?;
@@ -1390,18 +1657,32 @@ fn report_spool_write_error(action: &str, file: &Path, e: &std::io::Error) {
 }
 
 fn increment_spool_write_failures() -> std::io::Result<()> {
-    let path = spool_write_failures_path();
-    let next = read_count(&path)?.saturating_add(1);
+    increment_spool_write_failures_at(&spool_write_failures_path())
+}
+
+fn increment_spool_write_failures_at(path: &Path) -> std::io::Result<()> {
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path.with_file_name(".spool-write-failures.lock"))?;
+    lock.lock()?;
+    let next = read_count(path)?.saturating_add(1);
     let temp = path.with_file_name(format!(".spool-write-failures-{}.tmp", speedrun_core::new_id()));
     let mut file = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(&temp)?;
     write!(file, "{next}")?;
     file.sync_all()?;
-    fs::rename(&temp, &path)
+    fs::rename(&temp, path)?;
+    fs::File::open(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("counter has no parent"))?,
+    )?
+    .sync_all()
 }
 
 /// A capped log of refused spool entries. `append` is the only way to write
@@ -1766,6 +2047,11 @@ mod tests {
                 .windows(b"private prompt".len())
                 .any(|w| w == b"private prompt")
         );
+        let wal = fs::read(dir.path().join("pending.sqlite3-wal")).unwrap();
+        assert!(
+            !wal.windows(b"private prompt".len())
+                .any(|w| w == b"private prompt")
+        );
         let decoded = unprotect_entry(&db, serde_json::from_str(&stored).unwrap()).unwrap();
         assert_eq!(decoded.body["content"], "private prompt");
         let mut tampered: SpoolEntry = serde_json::from_str(&stored).unwrap();
@@ -1909,6 +2195,76 @@ mod tests {
                 .windows(b"legacy secret".len())
                 .any(|w| w == b"legacy secret")
         );
+        let wal = fs::read(dir.path().join("pending.sqlite3-wal")).unwrap();
+        assert!(!wal.windows(b"legacy secret".len()).any(|w| w == b"legacy secret"));
+    }
+
+    #[test]
+    fn cold_outbox_initialization_honors_its_lock_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let lock = lock_outbox_initialization(&path, None).unwrap();
+        let start = Instant::now();
+        let result = open_outbox_path_with_deadline(&path, Some(start + Duration::from_millis(100)));
+        assert!(result.is_err(), "another initializer holds the lock");
+        assert!(start.elapsed() < Duration::from_secs(5));
+        drop(lock);
+        let db = open_outbox_path(&path).unwrap();
+        assert!(initialized_outbox_is_ready(&db, None).unwrap());
+    }
+
+    #[test]
+    fn switching_an_existing_outbox_to_wal_uses_the_initialization_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = open_outbox_path(&path).unwrap();
+        let mode: String = db
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        drop(db);
+        let lock = lock_outbox_initialization(&path, None).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        assert!(open_outbox_path_with_deadline(&path, Some(deadline)).is_err());
+        drop(lock);
+        let db = open_outbox_path(&path).unwrap();
+        assert!(outbox_wal_enabled(&db, None).unwrap());
+    }
+
+    #[test]
+    fn concurrent_cold_outbox_initializers_all_enqueue() {
+        const WORKERS: usize = 8;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let barrier = std::sync::Barrier::new(WORKERS);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..WORKERS)
+                .map(|_| {
+                    let path = &path;
+                    let barrier = &barrier;
+                    scope.spawn(move || -> anyhow::Result<()> {
+                        barrier.wait();
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        let db = retry_sqlite_busy(deadline, || {
+                            open_outbox_path_with_deadline(path, Some(deadline))
+                        })?;
+                        retry_sqlite_busy(deadline, || {
+                            set_busy_deadline(&db, Some(deadline))?;
+                            enqueue(&db, &sample_entry(), None)
+                        })?;
+                        Ok(())
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().unwrap().unwrap();
+            }
+        });
+        let db = open_outbox_path(&path).unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, WORKERS as i64);
     }
 
     #[test]
@@ -1955,32 +2311,238 @@ mod tests {
 
     #[test]
     fn concurrent_flushers_claim_distinct_rows() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        const WORKERS: usize = 4;
+        const ROUNDS: usize = 5;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.sqlite");
         let db = open_outbox_path(&path).unwrap();
-        for _ in 0..100 {
+        for _ in 0..(WORKERS * ROUNDS) {
             enqueue(&db, &sample_entry(), None).unwrap();
         }
-        let ids = std::sync::Mutex::new(Vec::new());
+        let connections = (0..WORKERS)
+            .map(|_| open_outbox_path(&path).unwrap())
+            .collect::<Vec<_>>();
+        let claims = std::sync::Mutex::new(Vec::new());
+        let errors = std::sync::Mutex::new(Vec::new());
+        let failed = AtomicBool::new(false);
+        let round = Barrier::new(WORKERS);
+        // SQLite may return BUSY after the configured bounded wait. A real
+        // flusher reports that transient failure and a later flush can retry;
+        // exercise that contract while still requiring distinct claims.
+        fn retry_busy<T>(mut action: impl FnMut() -> anyhow::Result<T>) -> anyhow::Result<T> {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                match action() {
+                    Ok(value) => return Ok(value),
+                    Err(error)
+                        if matches!(
+                            error.downcast_ref::<rusqlite::Error>(),
+                            Some(rusqlite::Error::SqliteFailure(inner, _))
+                                if matches!(inner.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+                        ) && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         std::thread::scope(|scope| {
-            for n in 0..4 {
-                let path = &path;
-                let ids = &ids;
+            for (n, db) in connections.into_iter().enumerate() {
+                let claims = &claims;
+                let errors = &errors;
+                let failed = &failed;
+                let round = &round;
                 scope.spawn(move || {
-                    let db = open_outbox_path(path).unwrap();
                     let owner = format!("worker-{n}");
-                    while let Some((id, _)) = claim(&db, &owner).unwrap() {
-                        ids.lock().unwrap().push(id);
-                        finish(&db, id, &owner, false).unwrap();
+                    // Every worker competes once per round. No worker can
+                    // monopolize the database and make scheduler fairness a
+                    // hidden precondition of the duplicate-claim assertion.
+                    for _ in 0..ROUNDS {
+                        round.wait();
+                        match retry_busy(|| claim(&db, &owner)) {
+                            Ok(Some((id, _))) => claims.lock().unwrap().push((id, owner.clone())),
+                            Ok(None) => {
+                                errors
+                                    .lock()
+                                    .unwrap()
+                                    .push("outbox became empty early".to_owned());
+                                failed.store(true, Ordering::SeqCst);
+                            }
+                            Err(error) => {
+                                errors
+                                    .lock()
+                                    .unwrap()
+                                    .push(format!("outbox claim failed: {error:#}"));
+                                failed.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        round.wait();
+                        if failed.load(Ordering::SeqCst) {
+                            break;
+                        }
                     }
                 });
             }
         });
-        let mut ids = ids.into_inner().unwrap();
-        assert_eq!(ids.len(), 100);
+        let errors = errors.into_inner().unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let claims = claims.into_inner().unwrap();
+        let mut ids = claims.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        assert_eq!(ids.len(), WORKERS * ROUNDS);
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 100);
+        assert_eq!(ids.len(), WORKERS * ROUNDS);
+        for (id, owner) in claims {
+            finish(&db, id, &owner, false).unwrap();
+        }
+        assert!(claim(&db, "after").unwrap().is_none());
+    }
+
+    #[test]
+    fn initialized_outbox_opens_while_another_writer_holds_a_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.sqlite");
+        let writer = open_outbox_path(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let reader = open_outbox_path_with_deadline(&path, Some(deadline)).unwrap();
+        drop(reader);
+        writer.execute_batch("ROLLBACK;").unwrap();
+    }
+
+    #[test]
+    fn outbox_writer_commits_while_a_reader_holds_a_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let db = open_outbox_path(&path).unwrap();
+        let mode: String = db.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+        let synchronous: i64 = db.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
+        assert_eq!(mode, "wal");
+        assert_eq!(synchronous, 2, "commits must retain FULL synchronization");
+        enqueue(&db, &sample_entry(), None).unwrap();
+        let reader = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        reader.execute_batch("BEGIN;").unwrap();
+        let count: i64 = reader
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let worker_path = path.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = open_outbox_path(&worker_path).and_then(|db| enqueue(&db, &sample_entry(), None));
+            let _ = tx.send(result);
+        });
+        let while_reading = rx.recv_timeout(Duration::from_secs(5));
+        reader.execute_batch("ROLLBACK;").unwrap();
+        worker.join().unwrap();
+        while_reading.expect("writer blocked behind the reader").unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn durable_enqueue_retries_busy_without_duplicate_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let writer = open_outbox_path(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let worker_path = path.clone();
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = open_outbox_path(&worker_path).and_then(|db| {
+                retry_sqlite_busy(Instant::now() + Duration::from_secs(5), || {
+                    db.busy_timeout(Duration::from_millis(20))?;
+                    let _ = attempt_tx.send(());
+                    enqueue(&db, &sample_entry(), None)
+                })
+            });
+            let _ = result_tx.send(result);
+        });
+        let first = attempt_rx.recv_timeout(Duration::from_secs(3));
+        let second = attempt_rx.recv_timeout(Duration::from_secs(3));
+        writer.execute_batch("ROLLBACK;").unwrap();
+        let result = result_rx.recv_timeout(Duration::from_secs(5));
+        worker.join().unwrap();
+        first.expect("first enqueue attempt did not start");
+        second.expect("busy enqueue was not retried");
+        result.unwrap().unwrap();
+        let count: i64 = writer
+            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn fresh_release_does_not_inherit_an_expired_enqueue_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.sqlite3");
+        let writer = open_outbox_path(&path).unwrap();
+        let id = enqueue(&writer, &sample_entry(), Some("worker")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let worker_path = path.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = Connection::open(worker_path).and_then(|db| {
+                db.busy_timeout(Duration::ZERO)?;
+                started_tx.send(()).unwrap();
+                Ok(db)
+            });
+            let result = result
+                .map_err(anyhow::Error::from)
+                .and_then(|db| release_after_fresh_attempt(&db, id, "worker"));
+            let _ = result_tx.send(result);
+        });
+        started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let premature = result_rx.recv_timeout(Duration::from_millis(100));
+        writer.execute_batch("ROLLBACK;").unwrap();
+        let result = match premature {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                result_rx.recv_timeout(Duration::from_secs(3)).unwrap()
+            }
+            Err(error) => panic!("release worker stopped: {error}"),
+        };
+        worker.join().unwrap();
+        result.unwrap();
+        let state: String = writer
+            .query_row("SELECT state FROM outbox WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "pending");
+    }
+
+    #[test]
+    fn concurrent_spool_write_failures_are_all_counted() {
+        const WORKERS: usize = 4;
+        const WRITES: usize = 5;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spool-write-failures");
+        let errors = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..WORKERS {
+                let path = &path;
+                let errors = &errors;
+                scope.spawn(move || {
+                    for _ in 0..WRITES {
+                        if let Err(error) = increment_spool_write_failures_at(path) {
+                            errors.lock().unwrap().push(error);
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        assert!(errors.into_inner().unwrap().is_empty());
+        assert_eq!(read_count(&path).unwrap(), (WORKERS * WRITES) as u64);
     }
 
     #[test]
@@ -1999,6 +2561,9 @@ mod tests {
     #[test]
     fn bounded_flush_skips_a_locked_legacy_import() {
         let dir = tempfile::tempdir().unwrap();
+        // Initialize before the timed part so slow durable filesystem setup is
+        // not confused with waiting for the unrelated legacy import lock.
+        drop(open_outbox_at(dir.path(), None).unwrap());
         let lock = OpenOptions::new()
             .create(true)
             .write(true)
@@ -2008,15 +2573,22 @@ mod tests {
         lock.lock().unwrap();
         let entry = serde_json::to_string(&sample_entry()).unwrap();
         fs::write(dir.path().join("pending.jsonl"), format!("{entry}\n")).unwrap();
-        let start = Instant::now();
-        let db = prepare_flush(dir.path(), Some(start + Duration::from_millis(100)))
-            .unwrap()
-            .unwrap();
-        assert!(start.elapsed() < Duration::from_secs(1));
-        assert!(claim(&db, "hook").unwrap().is_none());
-        assert!(dir.path().join("pending.jsonl").exists());
+        let path = dir.path().to_owned();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<bool> {
+                let db = prepare_flush(&path, Some(Instant::now() + Duration::from_secs(15)))?
+                    .ok_or_else(|| anyhow::anyhow!("flush deadline elapsed before opening"))?;
+                Ok(claim(&db, "hook")?.is_none())
+            })();
+            let _ = tx.send(result);
+        });
+        let completed_while_locked = rx.recv_timeout(Duration::from_secs(5));
+        // Release before joining so a regression waiting on this lock can exit.
         drop(lock);
-        drop(db);
+        worker.join().unwrap();
+        assert!(completed_while_locked.unwrap().unwrap());
+        assert!(dir.path().join("pending.jsonl").exists());
         let db = prepare_flush(dir.path(), None).unwrap().unwrap();
         assert!(claim(&db, "explicit").unwrap().is_some());
         assert!(!dir.path().join("pending.jsonl").exists());
@@ -2028,27 +2600,31 @@ mod tests {
         let path = dir.path().join("pending.sqlite3");
         let db = open_outbox_path(&path).unwrap();
         let id = enqueue(&db, &sample_entry(), Some("worker")).unwrap();
-        db.execute_batch("BEGIN EXCLUSIVE;").unwrap();
-        let start = Instant::now();
-        assert!(prepare_flush(dir.path(), Some(start + Duration::from_millis(100))).is_err());
-        assert!(start.elapsed() < Duration::from_secs(1));
-        db.execute_batch("ROLLBACK;").unwrap();
-
-        let reader = open_outbox_path(&path).unwrap();
-        reader.execute_batch("BEGIN;").unwrap();
-        let _: i64 = reader
-            .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+        let writer = open_outbox_path(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        // WAL readers can open an initialized outbox while another writer is
+        // active, but acknowledgements still honor their write deadline.
+        let reader = prepare_flush(dir.path(), Some(Instant::now() + Duration::from_secs(5)))
+            .unwrap()
             .unwrap();
         let start = Instant::now();
         assert!(
-            finish_with_deadline(&db, id, "worker", false, Some(start + Duration::from_millis(100))).is_err()
+            finish_with_deadline(
+                &reader,
+                id,
+                "worker",
+                false,
+                Some(start + Duration::from_millis(100))
+            )
+            .is_err()
         );
-        assert!(start.elapsed() < Duration::from_secs(1));
-        reader.execute_batch("ROLLBACK;").unwrap();
-        let count: i64 = db
+        assert!(start.elapsed() < Duration::from_secs(5));
+        writer.execute_batch("ROLLBACK;").unwrap();
+        let count: i64 = reader
             .query_row("SELECT COUNT(*) FROM outbox WHERE id=?1", [id], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "failed acknowledgement must keep the event");
+        finish(&reader, id, "worker", false).unwrap();
     }
 
     /// M7.d: writers refused at the same moment, with the log trimming under

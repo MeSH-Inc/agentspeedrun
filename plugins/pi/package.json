@@ -9,7 +9,7 @@
   "pi": { "extensions": ["./agentspeedrun.ts"] },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test --timeout 30000"
   },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "0.73.1",

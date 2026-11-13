@@ -73,6 +73,8 @@ missing, check that the correct host and project are selected, restart the host,
 and send another prompt. `speedrun flush` retries pending writes queued while the
 daemon was unavailable; it does not retry permanently rejected requests. See
 [troubleshooting](docs/TROUBLESHOOTING.md) for specific symptoms and recovery.
+If `doctor` reports spool write failures, some events may not have been queued;
+`flush` can retry only events that were saved successfully.
 
 The explicit adapter-only commands below remain available. Claude Code uses a
 plugin; VS Code's extension adds a display and tools while Copilot hooks capture
@@ -138,8 +140,8 @@ Prompt ciphertext uses a private `content.key` file beside the database. This
 protects a database copy without that key; it does not protect against theft
 of the whole data directory. Erasure does not promise physical deletion from
 SQLite journals, filesystem snapshots, backups, or storage devices.
-Pending prompt text is also encrypted in the durable outbox under a separate
-`spool/outbox.key`. Existing legacy JSONL files remain plaintext until an
+Pending prompt text and contention spill files are encrypted in the durable
+outbox under a separate `spool/outbox.key`. Existing legacy JSONL files remain plaintext until an
 explicit `speedrun flush` migrates them; unreadable records are encrypted and
 retained as rejected diagnostics while later records are replayed.
 

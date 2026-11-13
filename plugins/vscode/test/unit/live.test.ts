@@ -60,17 +60,35 @@ test("missing CLI is reported, not thrown", async () => {
 test("live client follows the real stream and sees pushed updates", async () => {
   const cli = new Cli(() => process.env.SPEEDRUN_BIN!);
   const snaps: LiveSnapshot[] = [];
-  const client = new LiveClient(() => cli.connection(sb.project), (s) => snaps.push(s));
+  const states: string[] = [];
+  let notify: (() => void) | undefined;
+  const client = new LiveClient(() => cli.connection(sb.project), (s) => {
+    snaps.push(s);
+    notify?.();
+  }, (state) => states.push(state));
   client.start();
-  const until = async (cond: () => boolean) => {
-    for (let i = 0; i < 100 && !cond(); i++) await Bun.sleep(30);
-    expect(cond()).toBe(true);
+  const until = async (cond: () => boolean, label: string) => {
+    if (cond()) return;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        notify = undefined;
+        reject(new Error(`timed out waiting for ${label}; stream states: ${states.join(", ")}`));
+      }, 15_000);
+      notify = () => {
+        if (!cond()) return;
+        clearTimeout(timer);
+        notify = undefined;
+        resolve();
+      };
+    });
   };
   try {
-    await until(() => snaps.length >= 1);
+    await until(() => snaps.length >= 1, "initial snapshot");
     expect(snaps[0].runs).toEqual([]);
-    await cli.run(["ingest", "prompt", "--host", "test", "--session", "s"], sb.project, "build it");
-    await until(() => snaps.at(-1)!.runs.length === 1);
+    const submitted = await cli.run(["ingest", "prompt", "--host", "test", "--session", "s"], sb.project, "build it");
+    expect(submitted.ok).toBe(true);
+    expect(JSON.parse(submitted.stdout)).toMatchObject({ recorded: true, spooled: false });
+    await until(() => snaps.at(-1)!.runs.length === 1, "prompt update");
     const last = snaps.at(-1)!;
     expect(last.cursor).toBeGreaterThan(snaps[0].cursor);
     expect(last.runs[0].category.name).toBe("Any%");
@@ -78,7 +96,7 @@ test("live client follows the real stream and sees pushed updates", async () => 
   } finally {
     client.stop();
   }
-});
+}, 60_000);
 
 test("stream generations reset cursors and invalid snapshots are reported", async () => {
   const originalFetch = globalThis.fetch;

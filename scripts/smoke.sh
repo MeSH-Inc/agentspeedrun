@@ -35,7 +35,24 @@ git -c user.name=smoke -c user.email=smoke@example.com commit -q --allow-empty -
 sr init --category any-percent >/dev/null
 
 out=$(echo "build a todo app" | sr ingest prompt --host smoke --session s1)
-has "$out" '"run_started":true' || fail "prompt did not start a run: $out"
+if has "$out" '"run_started":true'; then
+  : # The daemon accepted the prompt during the autostart window.
+elif has "$out" '"recorded":true' && has "$out" '"spooled":true'; then
+  echo 'smoke: prompt queued during daemon startup; verifying replay'
+  # A slow autostart may leave the prompt durably queued. Do not start a
+  # replacement daemon: prove that the original autostart becomes ready,
+  # then deliver the queued prompt before making commit evidence.
+  ready=false
+  for _ in {1..100}; do
+    if sr daemon status >/dev/null 2>&1; then ready=true; break; fi
+    sleep 0.1
+  done
+  [[ "$ready" == true ]] || fail "autostart did not become ready: $out"
+  flushed=$(sr flush) || fail "could not deliver the queued prompt"
+  has "$flushed" 'delivered 1 spooled events' || fail "queued prompt was not delivered: $flushed"
+else
+  fail "prompt was neither started nor durably spooled: $out"
+fi
 # Commit evidence must be made after the run started, so commit once the prompt has started it.
 git -c user.name=smoke -c user.email=smoke@example.com commit -q --allow-empty -m scaffold
 

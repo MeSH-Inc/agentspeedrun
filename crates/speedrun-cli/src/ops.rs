@@ -92,6 +92,9 @@ pub fn append_now(c: &Client, p: &Project, payload: EventPayload) -> Result<Appe
         Durable::Spooled(SpoolReason::DeliveryUnknown) => bail!(
             "speedrund did not answer in time; it may already have recorded the change, and the spooled copy will be replayed without doubling it"
         ),
+        Durable::Spooled(SpoolReason::Deferred) => bail!(
+            "the outbox was busy; the queued change may already have been delivered and will be retried as needed"
+        ),
     }
 }
 

@@ -1,0 +1,15 @@
+steps:
+  - label: ":test_tube: Verify on Cachy"
+    key: verify-cachy
+    command: bash .buildkite/verify.sh
+    timeout_in_minutes: 90
+    agents:
+      queue: fleet-pilot-linux
+      fleet-host: cachy
+  - label: ":test_tube: Verify on ThinkPad"
+    key: verify-thinkpad
+    command: bash .buildkite/verify.sh
+    timeout_in_minutes: 90
+    agents:
+      queue: fleet-pilot-linux
+      fleet-host: thinkpad

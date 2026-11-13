@@ -116,7 +116,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     readinessRequestFolder = folder;
     try { await request; } finally { if (readinessRequest === request) { readinessRequest = undefined; readinessRequestFolder = undefined; } }
   }
-  const readinessTicker = setInterval(() => { void refreshReadiness(); }, 10_000);
+  // Periodic checks must not be suppressed by an earlier event-triggered
+  // check; otherwise an unlucky alignment can leave readiness stale for 20s.
+  const readinessTicker = setInterval(() => { void refreshReadiness(true); }, 10_000);
   context.subscriptions.push({ dispose: () => clearInterval(readinessTicker) });
   const ticker = setInterval(render, 1000);
   context.subscriptions.push({ dispose: () => clearInterval(ticker) });

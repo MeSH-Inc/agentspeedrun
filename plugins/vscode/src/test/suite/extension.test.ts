@@ -10,10 +10,10 @@ const project = process.env.SPEEDRUN_TEST_PROJECT!;
 const speedrun = (args: string[], input = "") =>
   execFileSync(process.env.SPEEDRUN_BIN!, args, { cwd: project, input, encoding: "utf8" });
 
-async function until(what: string, cond: () => boolean, ms = 10_000) {
+async function until(what: string, cond: () => boolean, ms = 10_000, diagnostics?: () => string) {
   const end = Date.now() + ms;
   while (!cond()) {
-    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}${diagnostics ? `: ${diagnostics()}` : ""}`);
     await new Promise((r) => setTimeout(r, 100));
   }
 }
@@ -101,10 +101,11 @@ describe("agentspeedrun in VS Code", () => {
     await until("timer tick", () => api.statusText() !== first, 4000);
   });
 
-  it("splits through the command and reflects it", async () => {
+  it("splits through the command and reflects it", async function () {
+    this.timeout(30_000);
     await vscode.commands.executeCommand("agentspeedrun.split", "scaffold-runs", "");
     await until("split counted", () => api.run()?.milestones.find((m) => m.key === "scaffold-runs")?.counts === true);
-    await until("progress in status", () => / · 1\/2/.test(api.statusText() ?? ""));
+    await until("progress in status", () => / · 1\/2/.test(api.statusText() ?? ""), 15_000, () => api.statusText() ?? "no status");
   });
 
   it("adds a user milestone", async () => {

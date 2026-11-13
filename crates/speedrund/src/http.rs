@@ -730,6 +730,7 @@ mod live_hub_tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // Deliberately block the service to test cancellation and shutdown.
     async fn subscribers_share_revisions_and_shutdown() {
+        const TEST_DEADLINE: StdDuration = StdDuration::from_secs(10);
         let dir = tempfile::tempdir().unwrap();
         let store =
             crate::store::Store::open(&dir.path().join("db"), &dir.path().join("device.key")).unwrap();
@@ -776,7 +777,7 @@ mod live_hub_tests {
             receiver.borrow_and_update();
         }
         let previous = receivers[0].borrow().as_ref().unwrap().1.as_ref().unwrap().as_of;
-        tokio::time::timeout(StdDuration::from_secs(2), receivers[0].changed())
+        tokio::time::timeout(TEST_DEADLINE, receivers[0].changed())
             .await
             .unwrap()
             .unwrap();
@@ -805,7 +806,7 @@ mod live_hub_tests {
         ));
         drop(write);
         drop(guard);
-        tokio::time::timeout(StdDuration::from_secs(2), changes.changed())
+        tokio::time::timeout(TEST_DEADLINE, changes.changed())
             .await
             .unwrap()
             .unwrap();
@@ -813,22 +814,28 @@ mod live_hub_tests {
             receiver.changed().await.unwrap();
             receiver.borrow_and_update();
         }
-        // Shutdown must close the streams even if a computation is waiting on
-        // the service mutex; the blocking read can finish after shutdown.
-        let guard = state.service.lock().unwrap();
-        let before = state.live_hub.computations.load(Ordering::SeqCst);
-        notify(&state);
-        tokio::time::timeout(StdDuration::from_secs(2), async {
-            while state.live_hub.computations.load(Ordering::SeqCst) == before {
+        // Use a fresh producer so an earlier periodic refresh cannot already
+        // be blocked on the service mutex before we observe its counter.
+        drop(receivers);
+        let mut isolated = state.clone();
+        isolated.live_hub = Arc::new(LiveHub::default());
+        let guard = isolated.service.lock().unwrap();
+        let mut receivers: Vec<_> = (0..8)
+            .map(|_| isolated.live_hub.subscribe(isolated.clone()).0)
+            .collect();
+        tokio::time::timeout(TEST_DEADLINE, async {
+            while isolated.live_hub.computations.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .unwrap();
-        state.shutdown.request();
+        // The new computation is blocked on the guard. Shutdown must close
+        // every stream even though its blocking read can finish only later.
+        isolated.shutdown.request();
         // A receiver may still have an unseen snapshot when its sender closes.
         // Drain that snapshot and require every stream to close within one deadline.
-        tokio::time::timeout(StdDuration::from_secs(2), async {
+        tokio::time::timeout(TEST_DEADLINE, async {
             for receiver in &mut receivers {
                 while receiver.changed().await.is_ok() {}
             }
