@@ -1,0 +1,12 @@
+services:
+  verify:
+    build:
+      context: ..
+      dockerfile: .buildkite/Dockerfile
+    init: true
+    cpuset: "0-3"
+    mem_limit: 5g
+    memswap_limit: 5g
+    shm_size: 1gb
+    environment:
+      SOURCE_DATE_EPOCH: "${SOURCE_DATE_EPOCH:?source commit timestamp required}"

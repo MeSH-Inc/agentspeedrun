@@ -9,8 +9,9 @@ work="$scratch/path with spaces"
 mkdir "$work"
 export HOME="$work/home" SPEEDRUN_HOME="$work/data" XDG_CONFIG_HOME="$work/config" XDG_DATA_HOME="$work/xdg-data"
 export SPEEDRUN_INSTALL_DIR="$work/bin" SPEEDRUN_SKIP_ATTESTATION=1
-export SPEEDRUN_VERSION="v$($root/scripts/version.py get)"
-export SPEEDRUN_ADDR="127.0.0.1:$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+SPEEDRUN_VERSION="v$("$root/scripts/version.py" get)"
+SPEEDRUN_ADDR="127.0.0.1:$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+export SPEEDRUN_VERSION SPEEDRUN_ADDR
 unset SPEEDRUN_NO_AUTOSTART SPEEDRUN_BIN
 mkdir -p "$HOME" "$work/assets" "$work/stage" "$work/repo" "$XDG_CONFIG_HOME/opencode"
 printf '%s\n' '{"dependencies":{"other":"1"},"private":true}' > "$XDG_CONFIG_HOME/opencode/package.json"
@@ -51,7 +52,8 @@ cleanup() {
 }
 trap cleanup EXIT
 for _ in {1..100}; do [ -s "$work/port" ] && break; sleep 0.05; done
-export SPEEDRUN_DOWNLOAD_URL="http://127.0.0.1:$(cat "$work/port")"
+SPEEDRUN_DOWNLOAD_URL="http://127.0.0.1:$(cat "$work/port")"
+export SPEEDRUN_DOWNLOAD_URL
 install() { sh "$root/install.sh"; }
 sr() { "$SPEEDRUN_INSTALL_DIR/speedrun" "$@"; }
 other daemon restart >/dev/null
@@ -127,6 +129,8 @@ sr flush >/dev/null
 sr capture | grep -qi captured
 # Daemon liveness must not depend on the external kill utility.
 mkdir "$work/no-kill"
+# The generated command must expand the marker when it runs, not while written.
+# shellcheck disable=SC2016
 printf '#!/bin/sh\n: > "$SPEEDRUN_TEST_KILL_MARKER"\nexit 127\n' > "$work/no-kill/kill"
 chmod +x "$work/no-kill/kill"
 SPEEDRUN_TEST_KILL_MARKER="$work/kill-invoked" PATH="$work/no-kill:$PATH" sr daemon stop

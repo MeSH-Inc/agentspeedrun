@@ -15,13 +15,14 @@ case "$(uname -s)/$(uname -m)" in
 esac
 file=$(basename "$archive")
 case "$file" in agentspeedrun-v*"-$target.tar.gz") ;; *) echo 'archive does not match this platform' >&2; exit 1 ;; esac
-prior_version=${file#agentspeedrun-}; prior_version=${prior_version%-$target.tar.gz}
+prior_version=${file#agentspeedrun-}; prior_version=${prior_version%-"$target".tar.gz}
 scratch=$(mktemp -d)
 work="$scratch/path with spaces"
 mkdir -p "$work/assets" "$work/stage" "$work/repo" "$work/home"
 export HOME="$work/home" SPEEDRUN_HOME="$work/data" XDG_CONFIG_HOME="$work/config" XDG_DATA_HOME="$work/xdg-data"
 export SPEEDRUN_INSTALL_DIR="$work/bin" SPEEDRUN_SKIP_ATTESTATION=1
-export SPEEDRUN_ADDR="127.0.0.1:$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+SPEEDRUN_ADDR="127.0.0.1:$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+export SPEEDRUN_ADDR
 unset SPEEDRUN_NO_AUTOSTART SPEEDRUN_BIN
 cp "$archive" "$work/assets/"
 cp "$sums" "$work/assets/baseline-sums"
@@ -45,7 +46,8 @@ cleanup() {
 }
 trap cleanup EXIT
 for _ in {1..100}; do [ -s "$work/port" ] && break; sleep 0.05; done
-export SPEEDRUN_DOWNLOAD_URL="http://127.0.0.1:$(cat "$work/port")"
+SPEEDRUN_DOWNLOAD_URL="http://127.0.0.1:$(cat "$work/port")"
+export SPEEDRUN_DOWNLOAD_URL
 export SPEEDRUN_VERSION="$prior_version"
 cp "$work/assets/baseline-sums" "$work/assets/SHA256SUMS"
 sh "$root/install.sh"
@@ -65,7 +67,8 @@ cp "$SPEEDRUN_HOME/trusted-projects.json" "$work/trust"
 sr daemon stop
 printf 'offline release prompt\n' | SPEEDRUN_NO_AUTOSTART=1 sr ingest prompt --host test --session upgrade | grep -q '"spooled":true'
 [ -s "$SPEEDRUN_HOME/spool/pending.jsonl" ] || { echo 'published release did not create a pending outbox' >&2; exit 1; }
-export SPEEDRUN_VERSION="v$($root/scripts/version.py get)"
+SPEEDRUN_VERSION="v$("$root/scripts/version.py" get)"
+export SPEEDRUN_VERSION
 name="agentspeedrun-$SPEEDRUN_VERSION-$target"
 mkdir "$work/stage/$name"
 cp "$bin/speedrun" "$bin/speedrund" "$root/README.md" "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$work/stage/$name/"
@@ -82,4 +85,4 @@ sr doctor | grep -q 'spooled: 0'
 sr log > "$work/flushed-log"
 [ "$(wc -l < "$work/flushed-log")" -gt "$(wc -l < "$work/before-log")" ] || { echo 'offline event was not recovered' >&2; exit 1; }
 sr verify
-printf 'release upgrade: ok (%s -> development build v%s; checkout %s)\n' "$prior_version" "$($root/scripts/version.py get)" "$(git -C "$root" rev-parse HEAD)"
+printf 'release upgrade: ok (%s -> development build v%s; checkout %s)\n' "$prior_version" "$("$root/scripts/version.py" get)" "$(git -C "$root" rev-parse HEAD)"

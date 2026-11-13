@@ -4,7 +4,8 @@
 # does (V0.2 C-4). Each must exit 0 within its timeout: on UserPromptSubmit
 # any other code blocks the user's prompt.
 #   scripts/hooks_against_release.sh [owner/repo]
-# Needs an authenticated gh (GH_TOKEN) and a Linux x86_64 host.
+# Public releases need curl and Python; authenticated gh also supports private repos.
+# Requires a Linux x86_64 host.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -13,14 +14,27 @@ target=x86_64-unknown-linux-musl
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-tag=$(gh api "repos/$repo/releases" \
-  --jq '[.[] | select(.draft | not) | select(.prerelease | not)][0].tag_name // empty')
+if [[ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
+  tag=$(gh api "repos/$repo/releases" \
+    --jq '[.[] | select(.draft | not) | select(.prerelease | not)][0].tag_name // empty')
+  authenticated=1
+else
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'invalid repository' >&2; exit 1; }
+  tag=$(curl -fsSL --retry 2 --max-time 30 "https://api.github.com/repos/$repo/releases?per_page=100" |
+    python3 -c 'import json,sys; releases=json.load(sys.stdin); assert isinstance(releases,list); print(next((r["tag_name"] for r in releases if not r["draft"] and not r["prerelease"]), ""))')
+  authenticated=0
+fi
 if [ -z "$tag" ]; then
   echo "hooks-against-release: $repo has no release yet; nothing to check"
   exit 0
 fi
 archive="agentspeedrun-$tag-$target.tar.gz"
-gh release download "$tag" -R "$repo" -D "$work" -p "$archive"
+if (( authenticated )); then
+  gh release download "$tag" -R "$repo" -D "$work" -p "$archive"
+else
+  encoded_tag=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1],safe=""))' "$tag")
+  curl -fsSL --retry 2 --max-time 120 -o "$work/$archive" "https://github.com/$repo/releases/download/$encoded_tag/$archive"
+fi
 tar -xzf "$work/$archive" -C "$work"
 export PATH="$work/agentspeedrun-$tag-$target:$PATH"
 export SPEEDRUN_HOME="$work/home" SPEEDRUN_NO_AUTOSTART=1

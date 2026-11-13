@@ -135,7 +135,9 @@ tar -xzf "$tmp/$archive" -C "$tmp"
 restart=0
 if matching_daemon; then restart=1; fi
 for b in speedrun speedrund; do
-  [ -f "$tmp/agentspeedrun-$version-$target/$b" ] && [ -x "$tmp/agentspeedrun-$version-$target/$b" ] || die "archive is missing executable $b"
+  if [ ! -f "$tmp/agentspeedrun-$version-$target/$b" ] || [ ! -x "$tmp/agentspeedrun-$version-$target/$b" ]; then
+    die "archive is missing executable $b"
+  fi
 done
 mkdir -p "$dest"
 # Stage the complete pair before replacing either executable.
