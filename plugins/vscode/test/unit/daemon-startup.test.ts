@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { waitForDaemon } from "../../../testkit";
+import { sandbox, waitForDaemon } from "../../../testkit";
 
 test("daemon startup waits for the right process on a slow host", async () => {
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], { stdio: "ignore" });
@@ -30,5 +30,30 @@ test("daemon startup reports a child that exits before becoming healthy", async 
   } finally {
     child.kill();
     server.stop(true);
+  }
+});
+
+test("simultaneous sandboxes use distinct kernel-assigned ports", async () => {
+  const originalRandom = Math.random;
+  Math.random = () => 0.5;
+  let first: Awaited<ReturnType<typeof sandbox>> | undefined;
+  let second: Awaited<ReturnType<typeof sandbox>> | undefined;
+  try {
+    first = await sandbox();
+    const firstAddress = process.env.SPEEDRUN_ADDR;
+    second = await sandbox();
+    expect(process.env.SPEEDRUN_ADDR).not.toBe(firstAddress);
+    for (const instance of [first, second]) {
+      const readiness = JSON.parse(instance.cli("readiness", "--json"));
+      expect(readiness.daemon).toBe("online");
+      expect(readiness.project).toBe("trusted");
+    }
+    second.close();
+    second = undefined;
+    expect(process.env.SPEEDRUN_ADDR).toBe(firstAddress);
+  } finally {
+    second?.close();
+    first?.close();
+    Math.random = originalRandom;
   }
 });

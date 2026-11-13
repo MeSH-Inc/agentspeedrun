@@ -5,6 +5,9 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { readPublishedAddress, waitForDaemon } from "./daemon-testkit.cjs";
+
+export { waitForDaemon };
 
 const REPO = resolve(import.meta.dir, "..");
 const BIN_DIR = join(REPO, "target", "debug");
@@ -35,41 +38,36 @@ export type SandboxOptions = {
   daemonEnv?: Record<string, string>;
 };
 
-/** Wait for this child, not an unrelated service that happens to use the port. */
-export async function waitForDaemon(daemon: ChildProcess, port: number, timeoutMs = 20_000): Promise<void> {
-  let spawnError: Error | undefined;
-  daemon.on("error", (error) => { spawnError = error; });
-  const deadline = performance.now() + timeoutMs;
-  while (performance.now() < deadline) {
-    if (spawnError) throw new Error(`speedrund could not start: ${spawnError.message}`);
-    if (daemon.exitCode !== null || daemon.signalCode !== null) {
-      throw new Error(`speedrund exited before becoming healthy: ${daemon.exitCode ?? daemon.signalCode}`);
-    }
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/v1/health`, { signal: AbortSignal.timeout(500) });
-      if (response.ok && (await response.json()).pid === daemon.pid) return;
-    } catch { /* The child may still be starting. */ }
-    await Bun.sleep(50);
-  }
-  throw new Error(`speedrund did not become healthy within ${timeoutMs}ms`);
-}
-
 export async function sandbox(options: SandboxOptions = {}): Promise<Sandbox> {
   const root = mkdtempSync(join(tmpdir(), "speedrun-adapter-"));
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  Object.assign(process.env, {
-    SPEEDRUN_HOME: join(root, "home"),
-    SPEEDRUN_ADDR: `127.0.0.1:${port}`,
-    SPEEDRUN_BIN: SPEEDRUN,
-    SPEEDRUN_NO_AUTOSTART: "1",
-  });
+  const home = join(root, "home");
+  const previous = Object.fromEntries(
+    ["SPEEDRUN_HOME", "SPEEDRUN_ADDR", "SPEEDRUN_BIN", "SPEEDRUN_NO_AUTOSTART"]
+      .map((key) => [key, process.env[key]]),
+  );
+  const restoreEnv = () => {
+    if (process.env.SPEEDRUN_HOME !== home) return;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
   const daemon: ChildProcess = spawn(join(BIN_DIR, "speedrund"), [], {
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "pipe"],
     // A fixed GitHub token, so the verifier never asks `gh` for the user's own.
-    env: { ...process.env, SPEEDRUN_GITHUB_TOKEN: "sandbox-token", ...options.daemonEnv },
+    env: { ...process.env, ...options.daemonEnv, SPEEDRUN_GITHUB_TOKEN: "sandbox-token", SPEEDRUN_HOME: home, SPEEDRUN_ADDR: "127.0.0.1:0" },
   });
+  let stderr = "";
+  daemon.stderr?.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-8_192); });
   try {
-    await waitForDaemon(daemon, port);
+    const address = await waitForDaemon(daemon, () => readPublishedAddress(home));
+    Object.assign(process.env, {
+      SPEEDRUN_HOME: home,
+      SPEEDRUN_ADDR: address,
+      SPEEDRUN_BIN: SPEEDRUN,
+      SPEEDRUN_NO_AUTOSTART: "1",
+    });
+    const env = { ...process.env };
     const project = join(root, "project");
     const git = (...a: string[]) => execFileSync("git", ["-C", project, ...a], { stdio: "pipe" });
     const commit = (message: string) =>
@@ -77,7 +75,7 @@ export async function sandbox(options: SandboxOptions = {}): Promise<Sandbox> {
     execFileSync("git", ["init", "-q", project]);
     git("remote", "add", "origin", `https://github.com/${REPOSITORY}.git`);
     commit("init");
-    const cli = (...args: string[]) => execFileSync(SPEEDRUN, args, { cwd: project, encoding: "utf8" });
+    const cli = (...args: string[]) => execFileSync(SPEEDRUN, args, { cwd: project, encoding: "utf8", env });
     cli("init", "--category", options.category ?? "any-percent");
     return {
       project,
@@ -93,11 +91,14 @@ export async function sandbox(options: SandboxOptions = {}): Promise<Sandbox> {
       close: () => {
         daemon.kill();
         rmSync(root, { recursive: true, force: true });
+        restoreEnv();
       },
     };
   } catch (error) {
     daemon.kill();
     rmSync(root, { recursive: true, force: true });
+    restoreEnv();
+    if (stderr) throw new Error(`${String(error)}\nDaemon stderr:\n${stderr}`, { cause: error });
     throw error;
   }
 }
